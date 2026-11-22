@@ -207,7 +207,14 @@ pub struct PlanResponse {
 
 /// A pending plan waiting for UI response
 pub(crate) struct PendingPlanEntry {
-    pub(crate) tx: oneshot::Sender<PlanResponse>,
+    request_id: String,
+    tx: oneshot::Sender<PlanReply>,
+}
+
+struct PlanReply {
+    response: PlanResponse,
+    ack: oneshot::Sender<Result<(), String>>,
+    deadline: tokio::time::Instant,
 }
 
 /// The HookServer manages incoming connections from agent hook scripts
@@ -261,8 +268,7 @@ enum PendingWebhookCheck {
         tool_use_id: String,
     },
     Plan {
-        title: String,
-        content: String,
+        request_id: String,
     },
 }
 
@@ -828,10 +834,10 @@ impl HookServer {
                 .pending_question
                 .as_ref()
                 .is_some_and(|pending| pending.tool_use_id.as_ref() == Some(tool_use_id)),
-            PendingWebhookCheck::Plan { title, content } => session
+            PendingWebhookCheck::Plan { request_id } => session
                 .pending_plan
                 .as_ref()
-                .is_some_and(|pending| pending.title == *title && pending.content == *content),
+                .is_some_and(|pending| pending.request_id.as_ref() == Some(request_id)),
         }
     }
 
@@ -1348,14 +1354,27 @@ impl HookServer {
                     Self::play_sound(&sound, SoundEvent::PlanApproval);
                 }
 
-                store.set_pending_plan(
-                    session_id,
-                    Some(PendingPlan {
-                        title: title.clone(),
-                        content: content.clone(),
-                        permissions: permissions.clone(),
-                    }),
-                );
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut pending_map = pending_plan.lock().await;
+                    pending_map.insert(
+                        session_id.clone(),
+                        PendingPlanEntry {
+                            request_id: request_id.clone(),
+                            tx,
+                        },
+                    );
+                    store.set_pending_plan(
+                        session_id,
+                        Some(PendingPlan {
+                            request_id: Some(request_id.clone()),
+                            title: title.clone(),
+                            content: content.clone(),
+                            permissions: permissions.clone(),
+                        }),
+                    );
+                }
                 Self::update_session_metadata_from_raw(&store, &raw);
                 Self::dispatch_webhook_event(
                     &config_store,
@@ -1366,8 +1385,7 @@ impl HookServer {
                     Self::source_for_webhook(&store, &raw, session_id, None),
                     session_id.clone(),
                     Some(PendingWebhookCheck::Plan {
-                        title: title.clone(),
-                        content: content.clone(),
+                        request_id: request_id.clone(),
                     }),
                 );
 
@@ -1380,31 +1398,47 @@ impl HookServer {
                     }
                 }
 
-                let (tx, rx) = oneshot::channel();
-                {
-                    let mut pending_map = pending_plan.lock().await;
-                    pending_map.insert(session_id.clone(), PendingPlanEntry { tx });
-                }
-
                 let response =
                     tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
 
                 match response {
-                    Ok(Ok(resp)) => {
-                        let json = serde_json::to_string(&resp)?;
-                        writer.write_all(json.as_bytes()).await?;
-                        writer.write_all(b"\n").await?;
-                        writer.flush().await?;
-
-                        Self::play_sound(&sound, SoundEvent::TaskConfirmation);
-                        store.set_pending_plan(session_id, None);
-                        store.update_phase(session_id, SessionPhase::Processing);
+                    Ok(Ok(reply)) => {
+                        let result = tokio::time::timeout_at(reply.deadline, async {
+                            let json = serde_json::to_vec(&reply.response)?;
+                            writer.write_all(&json).await?;
+                            writer.write_all(b"\n").await?;
+                            writer.flush().await?;
+                            Ok::<(), anyhow::Error>(())
+                        })
+                        .await
+                        .map_err(|_| {
+                            "The plan Hook did not receive the response in time.".to_string()
+                        })
+                        .and_then(|result| {
+                            result
+                                .map_err(|error| format!("Failed to write plan response: {error}"))
+                        });
+                        let delivered = result.is_ok();
+                        if delivered {
+                            store.clear_matching_plan(session_id, &request_id);
+                        }
+                        let _ = reply.ack.send(result);
+                        if delivered {
+                            drop(tokio::task::spawn_blocking(move || {
+                                Self::play_sound(&sound, SoundEvent::TaskConfirmation);
+                            }));
+                        }
                     }
                     _ => {
                         let mut pending_map = pending_plan.lock().await;
-                        pending_map.remove(session_id);
-                        store.set_pending_plan(session_id, None);
-                        log::warn!("Plan approval timed out for session {}", session_id);
+                        if pending_map
+                            .get(session_id)
+                            .is_some_and(|entry| entry.request_id == request_id)
+                        {
+                            pending_map.remove(session_id);
+                            store.clear_matching_plan(session_id, &request_id);
+                            log::warn!("Plan approval timed out for session {}", session_id);
+                        }
                     }
                 }
             }
@@ -3234,15 +3268,46 @@ impl HookServer {
         session_id: &str,
         mode: String,
         message: Option<String>,
+        request_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        let mut pending_map = self.pending_plans.lock().await;
-        if let Some(entry) = pending_map.remove(session_id) {
-            let response = PlanResponse { mode, message };
-            let _ = entry.tx.send(response);
-            Ok(())
-        } else {
-            anyhow::bail!("No pending plan for session {}", session_id)
-        }
+        let request_id = request_id
+            .ok_or_else(|| anyhow::anyhow!("The plan decision is missing its request ID."))?;
+        let entry = {
+            let mut pending_map = self.pending_plans.lock().await;
+            if !pending_map
+                .get(session_id)
+                .is_some_and(|entry| entry.request_id == request_id)
+                || self
+                    .session_store
+                    .get_session(session_id)
+                    .and_then(|session| session.pending_plan)
+                    .and_then(|plan| plan.request_id)
+                    .as_deref()
+                    != Some(request_id)
+            {
+                anyhow::bail!("The original plan is no longer awaiting a decision.")
+            }
+            pending_map.remove(session_id).ok_or_else(|| {
+                anyhow::anyhow!("The original plan is no longer awaiting a decision.")
+            })?
+        };
+        let (ack, delivered) = oneshot::channel();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        entry
+            .tx
+            .send(PlanReply {
+                response: PlanResponse { mode, message },
+                ack,
+                deadline,
+            })
+            .map_err(|_| anyhow::anyhow!("The plan Hook has stopped waiting for a decision."))?;
+        tokio::time::timeout_at(deadline + Duration::from_secs(1), delivered)
+            .await
+            .map_err(|_| anyhow::anyhow!("The plan Hook did not confirm the decision in time."))?
+            .map_err(|_| {
+                anyhow::anyhow!("The plan Hook disconnected before confirming the decision.")
+            })?
+            .map_err(anyhow::Error::msg)
     }
 
     pub async fn respond_auto_approve(
@@ -4126,6 +4191,145 @@ mod tests {
         assert!(error
             .to_string()
             .starts_with("Failed to write question response:"));
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_responses_keep_replacement_available_after_original_hook_ends() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let mut requests = Vec::new();
+        let mut prior_request_id = None;
+        for _ in 0..2 {
+            let (mut client, connection) = tokio::io::duplex(4096);
+            let task = tokio::spawn(HookServer::handle_connection(
+                connection,
+                server.connection_context(),
+            ));
+            let event = serde_json::json!({
+                "agent": "claude-code",
+                "event": "PlanApproval",
+                "session_id": "planning",
+                "plan_title": "Review changes",
+                "plan_content": "Review the same changes",
+            });
+            client
+                .write_all(format!("{event}\n").as_bytes())
+                .await
+                .unwrap();
+            let request_id = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if let Some(id) = store
+                        .get_session("planning")
+                        .and_then(|session| session.pending_plan)
+                        .and_then(|plan| plan.request_id)
+                        .filter(|id| Some(id) != prior_request_id.as_ref())
+                    {
+                        break id;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("plan should become visible");
+            prior_request_id = Some(request_id.clone());
+            requests.push((client, task, request_id));
+        }
+
+        let (mut current, current_task, current_id) = requests.pop().unwrap();
+        let (_original, original_task, original_id) = requests.pop().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), original_task)
+            .await
+            .expect("superseded Hook should finish")
+            .unwrap()
+            .unwrap();
+        let pending = store
+            .get_session("planning")
+            .and_then(|session| session.pending_plan)
+            .expect("replacement plan should still be pending");
+        assert_eq!(pending.request_id.as_deref(), Some(current_id.as_str()));
+        for stale_id in [None, Some(original_id.as_str())] {
+            assert!(server
+                .respond_plan("planning", "manual".to_string(), None, stale_id)
+                .await
+                .is_err());
+        }
+        server
+            .respond_plan("planning", "manual".to_string(), None, Some(&current_id))
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            BufReader::new(&mut current).read_line(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&response).unwrap()["mode"],
+            "manual",
+        );
+        current_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_responses_fail_when_the_waiting_hook_closes() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let (mut client, connection) = tokio::io::duplex(4096);
+        let task = tokio::spawn(HookServer::handle_connection(
+            connection,
+            server.connection_context(),
+        ));
+        let event = serde_json::json!({
+            "agent": "claude-code",
+            "event": "PlanApproval",
+            "session_id": "plan-disconnected",
+            "plan_content": "Review changes",
+        });
+        client
+            .write_all(format!("{event}\n").as_bytes())
+            .await
+            .unwrap();
+        let request_id = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(id) = store
+                    .get_session("plan-disconnected")
+                    .and_then(|session| session.pending_plan)
+                    .and_then(|plan| plan.request_id)
+                {
+                    break id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("plan should become visible");
+
+        drop(client);
+        let error = server
+            .respond_plan(
+                "plan-disconnected",
+                "manual".to_string(),
+                None,
+                Some(&request_id),
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("Failed to write plan response:"));
         task.await.unwrap().unwrap();
     }
 

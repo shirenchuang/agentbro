@@ -204,6 +204,7 @@ export interface SessionState {
   zellijSessionName?: string
   cmuxSurfaceId?: string
   cmuxWorkspaceId?: string
+  planRequestId?: string
   planTitle?: string
   planContent?: string
   planPermissions?: string[]

@@ -1135,43 +1135,38 @@ describe('HoverList interactions', () => {
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes inline plan actions without opening the row', () => {
+  it('routes inline plan actions without opening the row', async () => {
     const onSessionClick = vi.fn()
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_approval',
-          planTitle: 'Implementation plan',
-          planContent: '1. Fix the island',
-        })]}
-        onSessionClick={onSessionClick}
-      />,
-    )
+    const pending = session({
+      phase: 'waiting_approval',
+      planRequestId: 'inline-plan',
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix the island',
+    })
+    useSessionStore.setState({ sessions: { s1: pending }, sessionList: [pending], planReplies: new Map() })
+    render(<HoverList sessions={[pending]} onSessionClick={onSessionClick} />)
 
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Accept Edits' }))
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined)
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined, 'inline-plan')
     expect(onSessionClick).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planRequestId).toBeUndefined())
   })
 
-  it('accepts an inline plan once per native keyboard or primary pointer activation', async () => {
+  it('accepts an inline plan by keyboard and ignores repeats after delivery', async () => {
     const onSessionClick = vi.fn()
     const user = userEvent.setup()
-    render(
-      <HoverList
-        sessions={[session({ phase: 'waiting_approval', planTitle: 'Implementation plan' })]}
-        onSessionClick={onSessionClick}
-      />,
-    )
+    const pending = session({ phase: 'waiting_approval', planRequestId: 'inline-keyboard', planTitle: 'Implementation plan' })
+    useSessionStore.setState({ sessions: { s1: pending }, sessionList: [pending], planReplies: new Map() })
+    render(<HoverList sessions={[pending]} onSessionClick={onSessionClick} />)
 
     const accept = screen.getByRole('button', { name: 'Accept Edits' })
     accept.focus()
     await user.keyboard('{Enter}')
-    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'acceptEdits', undefined)
-    fireEvent.mouseDown(accept, { button: 2 })
-    expect(tauriMocks.respondPlan).toHaveBeenCalledTimes(1)
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'acceptEdits', undefined, 'inline-keyboard')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planRequestId).toBeUndefined())
     await user.click(accept)
-    expect(tauriMocks.respondPlan).toHaveBeenCalledTimes(2)
+    expect(tauriMocks.respondPlan).toHaveBeenCalledTimes(1)
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
@@ -1189,26 +1184,25 @@ describe('HoverList interactions', () => {
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('sends inline plan feedback from the input row without opening the row', () => {
+  it('sends inline plan feedback from the input row without opening the row', async () => {
     const onSessionClick = vi.fn()
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_approval',
-          planTitle: 'Implementation plan',
-          planContent: '1. Fix the island',
-        })]}
-        onSessionClick={onSessionClick}
-      />,
-    )
+    const pending = session({
+      phase: 'waiting_approval',
+      planRequestId: 'inline-feedback',
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix the island',
+    })
+    useSessionStore.setState({ sessions: { s1: pending }, sessionList: [pending], planReplies: new Map() })
+    render(<HoverList sessions={[pending]} onSessionClick={onSessionClick} />)
 
     const input = screen.getByPlaceholderText('Tell Claude what to change...')
     fireEvent.mouseDown(input)
     fireEvent.change(input, { target: { value: 'Please revise the scope' } })
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Send Feedback' }))
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'feedback', 'Please revise the scope')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'feedback', 'Please revise the scope', 'inline-feedback')
     expect(onSessionClick).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planRequestId).toBeUndefined())
   })
 
   it('only displays cache TTL when the setting is enabled', () => {

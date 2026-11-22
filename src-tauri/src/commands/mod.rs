@@ -3894,6 +3894,7 @@ pub async fn respond_plan(
     session_id: String,
     mode: String,
     message: Option<String>,
+    request_id: Option<String>,
 ) -> Result<(), String> {
     log::info!(
         "Plan response: session={}, mode={}, has_message={}",
@@ -3904,7 +3905,7 @@ pub async fn respond_plan(
 
     state
         .hook_server
-        .respond_plan(&session_id, mode, message)
+        .respond_plan(&session_id, mode, message, request_id.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
