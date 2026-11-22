@@ -1,8 +1,14 @@
-﻿function Find-PackControl([Windows.Automation.AutomationElement]$Root, [string]$Name) {
+﻿function Find-PackControl(
+    [Windows.Automation.AutomationElement]$Root,
+    [string]$Name,
+    [Windows.Automation.ControlType]$ControlType
+) {
     $condition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::NameProperty, $Name)
     foreach ($element in $Root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)) {
-        if (-not $element.Current.IsOffscreen) { return $element }
+        if (-not $element.Current.IsOffscreen -and (-not $ControlType -or $element.Current.ControlType -eq $ControlType)) {
+            return $element
+        }
     }
 }
 
@@ -77,14 +83,14 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
     Invoke-PackControl $submit
 }
 
-function Test-PackContentMatchLabel([Windows.Automation.AutomationElement]$Settings) {
-    if (Find-PackControl $Settings 'Content matches') { return $true }
+function Test-PackVisibleText([Windows.Automation.AutomationElement]$Settings, [string]$Expected) {
+    if (Find-PackControl $Settings $Expected) { return $true }
     $document = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Document)
     foreach ($element in $Settings.FindAll([Windows.Automation.TreeScope]::Descendants, $document)) {
         $text = $null
         if ($element.TryGetCurrentPattern([Windows.Automation.TextPattern]::Pattern, [ref]$text) -and
-            $text.DocumentRange.FindText('Content matches', $false, $false)) {
+            $text.DocumentRange.FindText($Expected, $false, $false)) {
             return $true
         }
     }
@@ -110,7 +116,7 @@ function Import-PackFixture(
         }
         if ($VerifyContents) {
             $null = Wait-IslandValue 'the version 2 preview with a matching content label' {
-                (Find-PackControl $Settings 'Recheck Skills') -and (Test-PackContentMatchLabel $Settings)
+                (Find-PackControl $Settings 'Recheck Skills') -and (Test-PackVisibleText $Settings 'Content matches')
             }
         }
     } catch {
@@ -227,6 +233,66 @@ function Test-InstalledPackManifest(
     Write-Output 'The installed app completed the Skill Pack round trip through native Windows file dialogs and Unicode paths.'
 }
 
+function Open-LinkedPackFixture(
+    [Windows.Automation.AutomationElement]$Settings,
+    [string]$Link,
+    [string]$Name
+) {
+    $open = Wait-IslandValue 'the Import from link button' {
+        $button = Find-PackControl $Settings 'Import from link'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Invoke-PackControl $open | Out-Host
+    $field = Wait-IslandValue 'the GitHub link field' {
+        Find-PackControl $Settings 'GitHub link' ([Windows.Automation.ControlType]::Edit)
+    }
+    Click-IslandElement $field 'GitHub link field' | Out-Host
+    if (-not [AgentBroSmokeInput]::PasteInWindow([IntPtr]$Settings.Current.NativeWindowHandle)) {
+        throw 'AgentBro Settings lost focus before pasting the GitHub link'
+    }
+    $review = Wait-IslandValue 'the pasted URL and enabled Review Skill Pack action' {
+        $inputValue = $field.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
+        $button = Find-PackControl $Settings 'Review Skill Pack'
+        if ($inputValue.Current.Value -ceq $Link -and $button -and $button.Current.IsEnabled) { $button }
+    }
+    Invoke-PackControl $review | Out-Host
+    Wait-IslandValue 'the downloaded Skill Pack preview' {
+        $button = Find-PackControl $Settings 'Create Skill Pack'
+        if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $Settings $Name)) { $button }
+    } -TimeoutSeconds 25
+}
+
+function Test-InstalledPackManifestLink(
+    [Windows.Automation.AutomationElement]$Island,
+    [string]$Link
+) {
+    $fixturePath = Join-Path $PSScriptRoot 'fixtures\github-skill-pack.agentbro-pack.json'
+    $manifest = Get-Content -LiteralPath $fixturePath -Raw -Encoding utf8 | ConvertFrom-Json
+    $source = $Link -replace '^https://github\.com/([^/]+/[^/]+)/blob/', 'https://raw.githubusercontent.com/$1/'
+    $settings = Open-InstalledAgentSkills $Island
+    $packs = Wait-IslandValue 'the Skill Packs navigation item' { Find-PackControl $settings '技能包' }
+    Invoke-PackControl $packs
+
+    $null = Open-LinkedPackFixture $settings $Link $manifest.name
+    $null = Wait-IslandValue 'the downloaded source URL' { Test-PackVisibleText $settings $source }
+    foreach ($skillId in $manifest.skillIds) {
+        $null = Wait-IslandValue "the downloaded Skill Pack member $skillId" { Test-PackVisibleText $settings $skillId }
+    }
+    $cancel = Wait-IslandValue 'the Cancel action on the downloaded preview' { Find-PackControl $settings 'Cancel' }
+    Invoke-PackControl $cancel
+    $null = Wait-IslandValue 'the preview closing without creating the pack' {
+        -not (Find-PackControl $settings 'Create Skill Pack') -and -not (Test-PackVisibleText $settings $manifest.name)
+    }
+    Write-Output 'The installed app showed the downloaded source and member. Cancel left the pack uncreated.'
+
+    $confirm = Open-LinkedPackFixture $settings $Link $manifest.name
+    Invoke-PackControl $confirm
+    $null = Wait-IslandValue 'the imported GitHub Skill Pack notice' {
+        Find-PackControl $settings "Imported $($manifest.name) as a new Skill Pack."
+    }
+    Write-Output 'The installed app imported the public GitHub Skill Pack after explicit confirmation.'
+}
+
 function Test-InstalledPinnedPackManifest(
     [Windows.Automation.AutomationElement]$Island,
     [string]$ImportPath,
@@ -257,7 +323,7 @@ function Test-InstalledPinnedPackManifest(
     Invoke-PackControl $restore
     $confirm = Wait-IslandValue 'the enabled Create Skill Pack action after verifying the restored Skill' {
         $button = Find-PackControl $settings 'Create Skill Pack'
-        if ($button -and $button.Current.IsEnabled -and (Test-PackContentMatchLabel $settings)) { $button }
+        if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings 'Content matches')) { $button }
     }
     $content = Get-Content -LiteralPath $destination -Encoding UTF8 -Raw
     if ($content -cnotmatch 'Pinned fixture commit\.' -or $content -cmatch 'Later branch content\.') {

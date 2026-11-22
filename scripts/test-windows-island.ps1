@@ -11,6 +11,7 @@ param(
     [string]$PackExportPath,
     [string]$PinnedPackImportPath,
     [string]$PinnedPackExportPath,
+    [string]$PackManifestLink,
     [switch]$TracePermissionUi,
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
@@ -179,6 +180,17 @@ public static class AgentBroSmokeInput {
         return true;
     }
 
+    public static bool PasteInWindow(IntPtr window) {
+        if (window == IntPtr.Zero || GetForegroundWindow() != window) return false;
+        const ushort Control = 0x11;
+        const ushort V = 0x56;
+        InjectInputs(new[] {
+            KeyboardEvent(Control, 0, 0), KeyboardEvent(V, 0, 0),
+            KeyboardEvent(V, 0, KeyUp), KeyboardEvent(Control, 0, KeyUp)
+        });
+        return true;
+    }
+
     public static void AppendCharacter(char unit) {
         const ushort End = 0x23;
         InjectInputs(new[] {
@@ -212,13 +224,13 @@ public static class AgentBroSmokeInput {
 }
 '@
 
-function Wait-IslandValue([string]$Description, [scriptblock]$ReadValue) {
+function Wait-IslandValue([string]$Description, [scriptblock]$ReadValue, [int]$TimeoutSeconds = 15) {
     $timer = [Diagnostics.Stopwatch]::StartNew()
     do {
         $value = & $ReadValue
         if ($value) { return $value }
         Start-Sleep -Milliseconds 250
-    } while ($timer.Elapsed.TotalSeconds -lt 15)
+    } while ($timer.Elapsed.TotalSeconds -lt $TimeoutSeconds)
     throw "Timed out waiting for $Description"
 }
 
@@ -811,7 +823,7 @@ try {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
     }
-    if ($PackImportPath -or $PinnedPackImportPath -or $VerifyAgentPackageConsole) {
+    if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }
     if ($PackImportPath) {
@@ -819,6 +831,9 @@ try {
     }
     if ($PinnedPackImportPath) {
         Test-InstalledPinnedPackManifest $island $PinnedPackImportPath $PinnedPackExportPath
+    }
+    if ($PackManifestLink) {
+        Test-InstalledPackManifestLink $island $PackManifestLink
     }
     if ($VerifyAgentPackageConsole) {
         . (Join-Path $PSScriptRoot 'test-windows-agent-package.ps1')
@@ -840,7 +855,7 @@ try {
                     Write-Host "$($_.Name) ($($_.ProcessId)) parent: $($parent.ProcessName) ($($_.ParentProcessId))."
                 }
         }
-        if ($PackImportPath -or $PinnedPackImportPath -or $VerifyAgentPackageConsole) {
+        if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole) {
             foreach ($window in Get-IslandWindows) {
                 Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"
                 $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |

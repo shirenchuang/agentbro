@@ -5,6 +5,7 @@ param(
     [switch]$VerifyQwenWork,
     [switch]$VerifyPackManifest,
     [switch]$VerifyPinnedPackManifest,
+    [string]$PackManifestLink,
     [switch]$TracePermissionUi,
     [string]$SymbolsDirectory,
     [switch]$VerifyDrag,
@@ -173,6 +174,26 @@ $packImportPath = $null
 $packExportPath = $null
 $pinnedPackPath = $null
 $pinnedPackExportPath = $null
+if ($PackManifestLink) {
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+        throw 'The GitHub Skill Pack link fixture requires an isolated GitHub-hosted runner'
+    }
+    $fixturePath = Join-Path $PSScriptRoot 'fixtures\github-skill-pack.agentbro-pack.json'
+    $manifest = Get-Content -LiteralPath $fixturePath -Raw -Encoding utf8 | ConvertFrom-Json
+    $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+    foreach ($skillId in $manifest.skillIds) {
+        $skillDirectory = Join-Path $profileDirectory ".agentbro\skills\$skillId"
+        $null = New-Item -ItemType Directory -Path $skillDirectory
+        $packFixtures += $skillDirectory
+        @"
+---
+name: $skillId
+description: Public GitHub Skill Pack link fixture
+---
+Windows native Skill Pack link fixture.
+"@ | Set-Content -LiteralPath (Join-Path $skillDirectory 'SKILL.md') -Encoding utf8
+    }
+}
 if ($VerifyPinnedPackManifest) {
     if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
         throw 'The pinned Git checkout fixture requires an isolated GitHub-hosted runner'
@@ -414,6 +435,11 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
             $start.ArgumentList.Add($argument)
         }
     }
+    if ($PackManifestLink) {
+        $start.ArgumentList.Add('-PackManifestLink')
+        $start.ArgumentList.Add($PackManifestLink)
+        Set-Clipboard -Value $PackManifestLink
+    }
     if ($VerifyQwenWork) { $start.ArgumentList.Add('-VerifyQwenWork') }
     if ($VerifyAgentPackageConsole) { $start.ArgumentList.Add('-VerifyAgentPackageConsole') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
@@ -428,7 +454,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     try {
         $output = $tester.StandardOutput.ReadToEndAsync()
         $errors = $tester.StandardError.ReadToEndAsync()
-        $desktopTimeout = if ($VerifyPackManifest -or $VerifyPinnedPackManifest -or $VerifyAgentPackageConsole) { 180000 } else { 120000 }
+        $desktopTimeout = if ($VerifyPackManifest -or $VerifyPinnedPackManifest -or $PackManifestLink -or $VerifyAgentPackageConsole) { 180000 } else { 120000 }
         if (-not $tester.WaitForExit($desktopTimeout)) {
             throw 'The installed desktop interaction check timed out'
         }
@@ -501,7 +527,7 @@ try {
 
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
-    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyPinnedPackManifest -or $VerifyDrag -or $VerifyQwenWork -or $VerifyAgentPackageConsole) {
+    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyPinnedPackManifest -or $PackManifestLink -or $VerifyDrag -or $VerifyQwenWork -or $VerifyAgentPackageConsole) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
         $event.session_id = $restoredSession
