@@ -20,6 +20,7 @@ import { PreviewDialog } from './PreviewDialog'
 import { McpManagementTab } from './McpManagementTab'
 import { PluginManagementTab } from './PluginManagementTab'
 import { RemoteAgentHooksTab } from './RemoteAgentHooksTab'
+import { RemoteSourcePicker } from './RemoteSourcePicker'
 import { SkillDetailSlider, type SkillDetailFallback } from './SkillDetailSlider'
 import { distributionBlockerReason, isAdoptOptionUnavailableError, skillErrorMessage, skillModeLabel, skillSourceTypeLabel, skillStatusLabel, targetClaimLabel, unmanagedReasonLabel } from './skillLabels'
 import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries } from '../../utils/agentOrdering'
@@ -617,7 +618,7 @@ export function AgentManagementPage() {
       }
       if (!isCurrent()) return
       setCustomDialogRuntime(null)
-      setNotice(config.category === 'claude-compatible'
+      setNotice(added.hooksInstalled
         ? 'Claude Code 实例已添加，Hook 已安装'
         : '自定义 Agent 已添加')
     } catch (e) {
@@ -791,6 +792,8 @@ export function AgentManagementPage() {
       {customDialogRuntime && isAgentRuntimeSelection(customDialogRuntime) && (
         <CustomAgentDialog
           busy={busy}
+          environmentId={customDialogRuntime.environmentId}
+          environmentName={remoteHost?.name ?? customDialogRuntime.environmentId}
           onClose={() => setCustomDialogRuntime(null)}
           onSubmit={(config) => addCustomAgent(config, customDialogRuntime)}
         />
@@ -869,20 +872,26 @@ export function AgentManagementPage() {
 
 function CustomAgentDialog({
   busy,
+  environmentId,
+  environmentName,
   onClose,
   onSubmit,
 }: {
   busy: boolean
+  environmentId: string
+  environmentName: string
   onClose: () => void
   onSubmit: (config: CustomAgentConfig) => Promise<void>
 }) {
   const { t } = useTranslation()
+  const isLocal = environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
   const [displayName, setDisplayName] = useState('')
   const [configRoot, setConfigRoot] = useState('')
   const [skillsDir, setSkillsDir] = useState('')
   const [settingsFile, setSettingsFile] = useState('')
   const [mcpConfig, setMcpConfig] = useState('')
   const [pluginDir, setPluginDir] = useState('')
+  const [remotePickerOpen, setRemotePickerOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const applyRoot = (root: string) => {
@@ -895,6 +904,10 @@ function CustomAgentDialog({
   }
 
   const chooseRoot = async () => {
+    if (!isLocal) {
+      setRemotePickerOpen(true)
+      return
+    }
     try {
       const selected = await open({ directory: true, multiple: false })
       if (typeof selected === 'string') applyRoot(selected)
@@ -933,6 +946,21 @@ function CustomAgentDialog({
     })
   }
 
+  if (remotePickerOpen) {
+    return (
+      <RemoteSourcePicker
+        kind="directory"
+        environmentId={environmentId}
+        environmentName={environmentName}
+        onCancel={() => setRemotePickerOpen(false)}
+        onSelect={(path) => {
+          applyRoot(path)
+          setRemotePickerOpen(false)
+        }}
+      />
+    )
+  }
+
   return (
     <div className="skills-dialog-overlay sm2-custom-agent-overlay" onClick={onClose}>
       <div
@@ -945,18 +973,22 @@ function CustomAgentDialog({
         <div className="skills-dialog__header">
           <div>
             <div className="skills-dialog__title" id="custom-agent-dialog-title">{t('settings.addEngineBranch')}</div>
-            <p className="custom-agent-dialog__subtitle">让企业封装版 Claude Code 使用自己的配置目录，同时复用 AgentBro 的 Hook、会话和 Skills 管理。</p>
+            <p className="custom-agent-dialog__subtitle">{isLocal
+              ? '让企业封装版 Claude Code 使用自己的配置目录，同时复用 AgentBro 的 Hook、会话和 Skills 管理。'
+              : `在 ${environmentName} 上添加 Claude Code 实例，管理它的配置与 Skills。`}</p>
           </div>
         </div>
         <div className="skills-dialog__body">
-          <div className="custom-agent-compatibility" role="note">
-            <AgentIconBadge iconKey="claude-code" size={28} />
-            <div>
-              <strong>沿用 Claude Code 能力</strong>
-              <span>保存后自动写入该目录的 settings.json，并监听独立的 projects 与 Skills 目录。</span>
+          {isLocal && (
+            <div className="custom-agent-compatibility" role="note">
+              <AgentIconBadge iconKey="claude-code" size={28} />
+              <div>
+                <strong>沿用 Claude Code 能力</strong>
+                <span>保存后自动写入该目录的 settings.json，并监听独立的 projects 与 Skills 目录。</span>
+              </div>
+              <em>自动安装 Hook</em>
             </div>
-            <em>自动安装 Hook</em>
-          </div>
+          )}
           <div className="install-form-row">
             <label className="install-form-label" htmlFor="custom-agent-name">显示名称</label>
             <input

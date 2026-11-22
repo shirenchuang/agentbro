@@ -242,6 +242,147 @@ json.dump = fail_snapshot_write
     }
 
     #[test]
+    fn remote_custom_agent_uses_registered_paths_in_management_inventory() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let path = home.path();
+        write_remote_skill(
+            &path.join("branch/managed/custom-skill"),
+            "Custom",
+            "Branch Skill",
+        );
+        std::fs::write(
+            path.join("branch/engine.json"),
+            r#"{"enabledPlugins":{"demo@fixture":true}}"#,
+        )
+        .expect("settings");
+        let plugin = path.join("branch/extensions/fixture/demo/1/.claude-plugin");
+        std::fs::create_dir_all(&plugin).expect("plugin directory");
+        std::fs::write(
+            plugin.join("plugin.json"),
+            r#"{"name":"demo","version":"1"}"#,
+        )
+        .expect("plugin manifest");
+        std::fs::write(
+            path.join("branch/servers.json"),
+            r#"{"mcpServers":{"custom-server":{"command":"example"}}}"#,
+        )
+        .expect("MCP settings");
+        let config = serde_json::json!({
+            "displayName": "Company Claude",
+            "category": "claude-compatible",
+            "iconName": "claude-code",
+            "configDir": "~/branch",
+            "globalSkillsDir": "~/branch/managed",
+            "settingsFile": "~/branch/engine.json",
+            "mcpConfig": "~/branch/servers.json",
+            "pluginDir": "~/branch/extensions"
+        });
+        let added = run_script(
+            path,
+            "add_custom_agent",
+            serde_json::json!({ "config": config }),
+        );
+        let id = added["id"].as_str().expect("custom Agent identity");
+        let agents = run_script(path, "list_managed_agents_v2", serde_json::json!({}));
+        let agent = agents
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|agent| agent["id"] == id)
+            .expect("custom Agent listed alongside built-in Agents");
+        assert_eq!(agent["installed"], true);
+        assert_eq!(agent["unmanagedSkillCount"], 1);
+
+        let detail = run_script(
+            path,
+            "get_agent_detail_v2",
+            serde_json::json!({ "agentId": id }),
+        );
+        let remote_home = path.canonicalize().unwrap();
+        for (field, suffix) in [
+            ("configPath", "branch/engine.json"),
+            ("mcpConfigPath", "branch/servers.json"),
+            ("pluginDir", "branch/extensions"),
+            ("skillsDir", "branch/managed"),
+        ] {
+            assert_eq!(detail[field], remote_home.join(suffix).to_str().unwrap());
+        }
+        let mcp = run_script(
+            path,
+            "list_mcp_inventory_cmd",
+            serde_json::json!({ "agent": id }),
+        );
+        assert_eq!(mcp["servers"][0]["name"], "custom-server");
+
+        let plugins = run_script(
+            path,
+            "list_plugin_inventory_v2",
+            serde_json::json!({ "agentId": id }),
+        );
+        assert_eq!(plugins["plugins"][0]["id"], "demo@fixture");
+        assert_eq!(plugins["plugins"][0]["version"], "1");
+        assert_eq!(plugins["capabilities"]["editable"], true);
+
+        for reserved in ["codex", "agents", id] {
+            let mut duplicate = config.clone();
+            duplicate["id"] = serde_json::json!(reserved);
+            let error = run_script_error(
+                path,
+                "add_custom_agent",
+                serde_json::json!({ "config": duplicate }),
+            );
+            assert!(error.contains("Agent already exists"));
+        }
+
+        run_script(
+            path,
+            "remove_custom_agent",
+            serde_json::json!({ "agentId": id }),
+        );
+        let agents = run_script(path, "list_managed_agents_v2", serde_json::json!({}));
+        assert!(agents
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|agent| agent["id"] != id));
+        assert!(path.join("branch/managed/custom-skill/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn remote_custom_agent_legacy_records_use_existing_defaults() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let path = home.path();
+        std::fs::create_dir_all(path.join(".agentbro")).expect("state directory");
+        std::fs::create_dir_all(path.join("legacy/skills")).expect("custom Agent directory");
+        std::fs::write(
+            path.join(".agentbro/skill-manager-remote.json"),
+            r#"{"customAgents":{"custom-legacy":{
+                "id":"custom-legacy","displayName":"Legacy","icon":"claude-code",
+                "configDir":"~/legacy","skillsDir":"~/legacy/skills","isCustom":true
+            }}}"#,
+        )
+        .expect("legacy state");
+        let detail = run_script(
+            path,
+            "get_agent_detail_v2",
+            serde_json::json!({ "agentId": "custom-legacy" }),
+        );
+        let root = path.canonicalize().unwrap().join("legacy");
+        assert_eq!(
+            detail["configPath"],
+            root.join("settings.json").to_str().unwrap()
+        );
+        assert_eq!(detail["mcpConfigPath"], detail["configPath"]);
+        assert_eq!(
+            detail["pluginDir"],
+            root.join("plugins/cache").to_str().unwrap()
+        );
+        assert_eq!(detail["agentDir"], root.to_str().unwrap());
+    }
+
+    #[test]
     fn remote_script_preserves_overview_and_distribution_shapes() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-skill-manager-test-{}",
