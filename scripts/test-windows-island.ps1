@@ -488,6 +488,7 @@ function Test-KeyboardPermissionDenial(
     [int]$Attempt
 ) {
     $connection = [System.Net.Sockets.TcpClient]::new()
+    $keyboardReplyTimedOut = $false
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
         $stream = $connection.GetStream()
@@ -611,6 +612,7 @@ function Test-KeyboardPermissionDenial(
         }
         Write-Output 'Sent native Space to the focused Deny button in the session detail.'
         if (-not $reply.Wait(8000)) {
+            $keyboardReplyTimedOut = $true
             if ($TracePermissionUi) {
                 Write-Host "After the Hook timed out: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
                 Save-PermissionFrame $clock $Attempt 'hook-timeout'
@@ -653,7 +655,28 @@ function Test-KeyboardPermissionDenial(
         Write-Output "Windows Island accepted Space on the detail Deny button and the waiting Hook received deny. Detail verified at $($clock.ElapsedMilliseconds) ms."
     } catch {
         if ($TracePermissionUi) {
+            try {
+                Save-FailedRunnerDesktop
+            } catch {
+                Write-Host "Could not capture the keyboard failure desktop: $_"
+            }
             Write-IslandAccessibilityComparison $WindowHandle "approval-$Attempt-failure"
+            if ($AutomationFocusPermission -and $keyboardReplyTimedOut -and -not $reply.IsCompleted) {
+                try {
+                    $visibleDeny = Find-IslandButton $Island { param($Name) $Name -eq 'Deny' }
+                    if ($visibleDeny) {
+                        Click-IslandElement $visibleDeny 'Deny after the keyboard timeout' -CenterAfterLayout
+                        if ($reply.Wait(3000)) {
+                            $recovered = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
+                            Write-Host "Pointer recovery on the original Hook socket: '$($recovered.decision)'."
+                        } else {
+                            Write-Host 'Pointer recovery on the original Hook socket: no reply.'
+                        }
+                    }
+                } catch {
+                    Write-Host "Could not check pointer recovery after the keyboard timeout: $_"
+                }
+            }
         }
         throw
     } finally {
