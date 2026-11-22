@@ -25,11 +25,11 @@
     $null = Wait-IslandValue 'the completed fixture package update' {
         (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT) -and (Find-PackControl $settings 'Agent 更新完成')
     }
+    $report = Get-Content -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT -Raw -Encoding utf8 | ConvertFrom-Json
+    Write-Output "Installed package console probe: $($report | ConvertTo-Json -Compress)"
     $null = Wait-IslandValue 'stdout and stderr in Agent Management' {
         (Find-PackControl $settings '> agentbro-package-fixture-stdout') -and
             (Find-PackControl $settings '! agentbro-package-fixture-stderr')
     }
-    $report = Get-Content -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT -Raw -Encoding utf8 | ConvertFrom-Json
     Write-Output 'The installed Agent Management ran the fixture update and displayed both output streams.'
-    Write-Output "Installed package console probe: $($report | ConvertTo-Json -Compress)"
 }

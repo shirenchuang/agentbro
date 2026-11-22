@@ -46,7 +46,7 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
     "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "%AGENTBRO_PACKAGE_CONSOLE_PROBE%"
     if errorlevel 1 exit /b 1
     echo agentbro-package-fixture-stdout
-    echo agentbro-package-fixture-stderr 1>&2
+    >&2 echo agentbro-package-fixture-stderr
     exit /b 0
 )
 exit /b 1
