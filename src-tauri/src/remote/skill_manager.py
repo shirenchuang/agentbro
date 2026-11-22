@@ -2323,11 +2323,16 @@ def install_to_project(project_id, agent_id, skill_ids, mode):
     project = STATE["projects"].get(project_id)
     if not project:
         raise ValueError("Project not found: " + project_id)
-    root = project_root_path(project["rootPath"])
-    spec = agent_spec(agent_id)
+    registered_root = pathlib.Path(project["rootPath"])
+    root = project_root_path(registered_root)
+    if root != registered_root:
+        raise ValueError("The registered project path now points to a different location")
+    spec = next((item for item in AGENTS if item["id"] == agent_id), None)
     if not spec:
-        raise ValueError("Unknown Agent: " + agent_id)
-    target_root = root / spec["skills"]
+        raise ValueError("Project-level Skills are not supported for " + agent_id)
+    target_root = (root / spec["skills"]).resolve(strict=False)
+    if root not in target_root.parents:
+        raise ValueError("The Skill directory is outside the registered project")
     for skill_id in skill_ids:
         skill_id = safe_id(skill_id)
         source = center_path() / skill_id
