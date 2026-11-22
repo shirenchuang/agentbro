@@ -610,14 +610,18 @@ async fn app_installed_version(_app_path: &str) -> Option<String> {
 }
 
 async fn npm_installed_version(mut npm: Command, package: &str) -> Option<String> {
-    let output = timeout(
+    let output = npm_probe_output(
+        npm.args([
+            "list",
+            "-g",
+            package,
+            "--depth=0",
+            "--json",
+            "--no-update-notifier",
+        ]),
         Duration::from_secs(4),
-        npm.args(["list", "-g", package, "--depth=0", "--json"])
-            .output(),
     )
-    .await
-    .ok()?
-    .ok()?;
+    .await?;
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     json.get("dependencies")?
@@ -628,13 +632,19 @@ async fn npm_installed_version(mut npm: Command, package: &str) -> Option<String
 }
 
 async fn npm_latest_version(mut npm: Command, package: &str) -> Option<String> {
-    let output = timeout(
+    let output = npm_probe_output(
+        npm.args([
+            "view",
+            package,
+            "version",
+            "--silent",
+            "--no-update-notifier",
+            "--fetch-retries=0",
+            "--fetch-timeout=4000",
+        ]),
         Duration::from_secs(5),
-        npm.args(["view", package, "version", "--silent"]).output(),
     )
-    .await
-    .ok()?
-    .ok()?;
+    .await?;
 
     if !output.status.success() {
         return None;
@@ -644,6 +654,13 @@ async fn npm_latest_version(mut npm: Command, package: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+async fn npm_probe_output(npm: &mut Command, deadline: Duration) -> Option<std::process::Output> {
+    timeout(deadline, npm.kill_on_drop(true).output())
+        .await
+        .ok()?
+        .ok()
 }
 
 fn versions_indicate_update(installed: Option<&str>, latest: Option<&str>) -> bool {
@@ -2132,8 +2149,14 @@ mod tests {
                 toolchain.join("agentbro-npm-test-node"),
                 r#"#!/bin/sh
 case "$2" in
-  list) printf '%s\n' '{"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}' ;;
-  view) printf '%s\n' '3.0.0' ;;
+  list)
+    [ "$7" = "--no-update-notifier" ] || exit 1
+    printf '%s\n' '{"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}'
+    ;;
+  view)
+    [ "$6 $7 $8" = "--no-update-notifier --fetch-retries=0 --fetch-timeout=4000" ] || exit 1
+    printf '%s\n' '3.0.0'
+    ;;
   install|uninstall) shift; printf 'selected npm %s\n' "$*" ;;
   *) exit 1 ;;
 esac
@@ -2167,6 +2190,40 @@ esac
             "{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_npm_probe_stops_its_process() {
+        let pid_file =
+            std::env::temp_dir().join(format!("agentbro-npm-pid-{}", uuid::Uuid::new_v4()));
+        let mut npm = tokio::process::Command::new("/bin/sh");
+        npm.args(["-c", r#"printf '%s' "$$" > "$1"; exec /bin/sleep 3"#, "npm"])
+            .arg(&pid_file);
+
+        assert!(
+            super::npm_probe_output(&mut npm, tokio::time::Duration::from_millis(500))
+                .await
+                .is_none()
+        );
+        let pid = std::fs::read_to_string(&pid_file).expect("npm probe process started");
+        std::fs::remove_file(&pid_file).unwrap();
+        let stopped = tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+            loop {
+                let status = tokio::process::Command::new("/bin/kill")
+                    .args(["-0", &pid])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await
+                    .unwrap();
+                if !status.success() {
+                    return;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(stopped.is_ok(), "the timed-out npm probe was still running");
     }
 
     #[cfg(target_os = "macos")]
