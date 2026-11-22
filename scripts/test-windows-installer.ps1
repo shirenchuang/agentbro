@@ -44,6 +44,7 @@ if ($VerifyAgentPackageConsole) {
 @echo off
 if /i "%~1"=="list" (
     if "%~3"=="@anthropic-ai/claude-code" (
+        if not "%~6"=="--no-update-notifier" exit /b 1
         if exist "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%" (
             echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"999.0.0"}}}
         ) else (
@@ -54,6 +55,7 @@ if /i "%~1"=="list" (
 )
 if /i "%~1"=="view" (
     if "%~2"=="@anthropic-ai/claude-code" (
+        if not "%~5 %~6 %~7"=="--no-update-notifier --fetch-retries=0 --fetch-timeout=4000" exit /b 1
         if exist "%AGENTBRO_PACKAGE_FIXTURE_NEW_TAG%" (
             echo 999.0.0
         ) else (
