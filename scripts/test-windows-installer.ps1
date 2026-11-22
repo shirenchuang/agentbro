@@ -29,13 +29,20 @@ if ($VerifyAgentPackageConsole) {
     }
     $env:AGENTBRO_PACKAGE_CONSOLE_RESULT = Join-Path $stage 'package-console.json'
     $env:AGENTBRO_PACKAGE_CONSOLE_PROBE = Join-Path $PSScriptRoot 'probe-windows-package-console.ps1'
+    $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED = Join-Path $stage 'package-updated'
     $env:npm_config_offline = 'true'
     $env:npm_config_cache = Join-Path $stage 'isolated npm cache'
     $env:npm_config_prefix = Join-Path $stage 'isolated npm prefix'
     $fixtureNpm = @'
 @echo off
 if /i "%~1"=="list" (
-    if "%~3"=="@anthropic-ai/claude-code" echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}
+    if "%~3"=="@anthropic-ai/claude-code" (
+        if exist "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%" (
+            echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"999.0.0"}}}
+        ) else (
+            echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}
+        )
+    )
     exit /b 0
 )
 if /i "%~1"=="view" (
@@ -43,8 +50,11 @@ if /i "%~1"=="view" (
     exit /b 0
 )
 if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
+    set "agentbro_retry="
+    if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%" set "agentbro_retry=1"
     "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "%AGENTBRO_PACKAGE_CONSOLE_PROBE%"
     if errorlevel 1 exit /b 1
+    if defined agentbro_retry type nul > "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%"
     echo agentbro-package-fixture-stdout
     >&2 echo agentbro-package-fixture-stderr
     exit /b 0
