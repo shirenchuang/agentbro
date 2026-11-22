@@ -59,6 +59,15 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
     >&2 echo agentbro-package-fixture-stderr
     exit /b 0
 )
+if "%~1 %~2 %~3"=="uninstall -g @anthropic-ai/claude-code" (
+    if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall" (
+        del /q "%~dp0claude.cmd"
+        if exist "%~dp0claude.cmd" exit /b 1
+    ) else (
+        type nul > "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall"
+    )
+    exit /b 0
+)
 exit /b 1
 '@
     Set-Content -LiteralPath (Join-Path $fixtureBin 'npm.cmd') -Value ($fixtureNpm -replace '\r?\n', "`r`n") -Encoding ascii
