@@ -663,7 +663,25 @@ function Test-KeyboardPermissionDenial(
             Write-IslandAccessibilityComparison $WindowHandle "approval-$Attempt-failure"
             if ($AutomationFocusPermission -and $keyboardReplyTimedOut -and -not $reply.IsCompleted) {
                 try {
-                    $visibleDeny = Find-IslandButton $Island { param($Name) $Name -eq 'Deny' }
+                    if ($RendererTracePort -and $rendererDiscovery -and $rendererDiscovery.State -eq 'Completed') {
+                        $endpoint = Receive-Job -Job $rendererDiscovery -Keep
+                        if ($endpoint) {
+                            $focus = Request-IslandRendererFocus $endpoint
+                            Write-Host "Island focus command result: $($focus | ConvertTo-Json -Compress)."
+                            if ($focus.after -and $focus.deny -and -not $reply.IsCompleted -and
+                                [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x20) -and $reply.Wait(1000)) {
+                                $recovered = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
+                                Write-Host "Keyboard recovery on the original Hook socket: '$($recovered.decision)'."
+                            }
+                        }
+                    }
+                } catch {
+                    Write-Host "Could not check keyboard recovery after the keyboard timeout: $_"
+                }
+                try {
+                    $visibleDeny = if (-not $reply.IsCompleted) {
+                        Find-IslandButton $Island { param($Name) $Name -eq 'Deny' }
+                    }
                     if ($visibleDeny) {
                         Click-IslandElement $visibleDeny 'Deny after the keyboard timeout' -CenterAfterLayout
                         if ($reply.Wait(3000)) {

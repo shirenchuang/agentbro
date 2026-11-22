@@ -74,6 +74,38 @@ function Find-IslandRendererEndpoint([int]$Port) {
     }
 }
 
+function Request-IslandRendererFocus([uri]$Endpoint) {
+    $expression = @'
+(async () => {
+    const native = window.__TAURI_INTERNALS__;
+    const isDenyFocused = () => {
+        const button = document.activeElement?.closest('button');
+        return (button?.getAttribute('aria-label') || button?.textContent?.trim()) === 'Deny';
+    };
+    if (native?.metadata?.currentWindow?.label !== 'notch' || !isDenyFocused()) return null;
+    const before = document.hasFocus();
+    await native.invoke('set_notch_focusable', { focusable: true });
+    await new Promise(resolve => setTimeout(resolve, 120));
+    return { before, after: document.hasFocus(), deny: isDenyFocused() };
+})()
+'@
+    $socket = [Net.WebSockets.ClientWebSocket]::new()
+    $timeout = [Threading.CancellationTokenSource]::new(3000)
+    try {
+        $null = $socket.ConnectAsync($Endpoint, $timeout.Token).GetAwaiter().GetResult()
+        $response = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' @{
+            expression = $expression
+            returnByValue = $true
+            awaitPromise = $true
+        }
+        if ($response.exceptionDetails) { throw 'The Island focus command did not complete in WebView2.' }
+        $response.result.value
+    } finally {
+        $timeout.Dispose()
+        $socket.Dispose()
+    }
+}
+
 function Write-IslandPointAccessibility($State, [IntPtr]$WindowHandle) {
     if ($State.zoomed) {
         Write-Host 'Skipping UI Automation hit tests for a panned or scaled visual viewport.'
