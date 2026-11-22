@@ -1278,7 +1278,6 @@ function AgentDetailView({
   const canOpenDownload = Boolean(program?.downloadUrl)
   const canDeleteCustom = program?.isCustom === true
   const installedVersion = program?.installedVersion ?? detail.version
-  const latestVersion = program?.latestVersion ?? detail.latestVersion
   const logicalSkillCount = countLogicalAgentSkills(
     detail.skills,
     unmanaged,
@@ -1286,18 +1285,20 @@ function AgentDetailView({
     inheritedUnmanagedSkills,
     readOnlySkills,
   )
-  const hasUpdate = installed && Boolean(latestVersion && latestVersion !== installedVersion)
+  const updateAvailable = program?.status === 'updateAvailable' && Boolean(program.latestVersion && program.updateCommand)
   const versionLabel = installed ? installedVersion || '未知' : '未安装'
   const updateLabel = !installed
     ? canInstall ? '可一键安装' : canOpenDownload ? '可打开安装页' : '未提供安装方式'
-    : latestVersion
-      ? hasUpdate ? `可更新到 ${latestVersion}` : '已是最新版本'
-      : programLoading ? '正在获取最新版本' : '未检测到最新版本'
+    : updateAvailable
+      ? `可更新到 ${program.latestVersion}`
+      : program?.latestVersion
+        ? program.latestVersion === installedVersion ? '已是最新版本' : null
+        : programLoading ? '正在获取最新版本' : '未检测到最新版本'
   const primaryAction = !installed
     ? canInstall
       ? { label: installing ? '正在安装' : '安装此 Agent', disabled: busy || installing, onClick: () => onInstall(detail.id), busy: installing }
       : { label: opening ? '正在打开' : '打开安装页', disabled: busy || !canOpenDownload, onClick: () => onOpenDownload(detail.id), busy: opening }
-    : { label: updating ? '正在更新' : hasUpdate ? '更新此 Agent' : '无需更新', disabled: busy || scanning || updating || !hasUpdate, onClick: () => onUpdate(detail.id), busy: updating }
+    : { label: updating ? '正在更新' : updateAvailable ? '更新此 Agent' : '无需更新', disabled: busy || scanning || updating || !updateAvailable, onClick: () => onUpdate(detail.id), busy: updating }
   const tabs: Array<{ id: DetailTab; label: string }> = [
     { id: 'overview', label: '概览' },
     { id: 'skills', label: `Skills (${logicalSkillCount})` },
@@ -1315,9 +1316,11 @@ function AgentDetailView({
           <div className="sm2__agent-hero-title">{detail.displayName}</div>
           <div className="sm2__agent-version-row">
             <span className="sm2__agent-version-pill">当前版本 {versionLabel}</span>
-            <span className={`sm2__agent-update-state${hasUpdate ? ' sm2__agent-update-state--available' : ''}`}>
-              {updateLabel}
-            </span>
+            {updateLabel && (
+              <span className={`sm2__agent-update-state${updateAvailable ? ' sm2__agent-update-state--available' : ''}`}>
+                {updateLabel}
+              </span>
+            )}
           </div>
         </div>
         <div className="sm2__agent-summary-strip" aria-label="Agent 摘要">

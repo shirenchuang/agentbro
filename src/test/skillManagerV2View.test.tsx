@@ -3561,6 +3561,23 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it.each([
+    { installedVersion: '2.0.0-beta.1', latestVersion: '1.9.9', status: 'installed' },
+    { installedVersion: '1.2.3+local.1', latestVersion: '1.2.3+upstream.2', status: 'installed' },
+    { installedVersion: '1.2.3', latestVersion: '1.2.4', status: 'updateAvailable', updateCommand: null },
+    { installedVersion: null, latestVersion: '1.2.4', status: 'installed' },
+  ] as const)('does not offer an unverified or unsupported update from $installedVersion to $latestVersion', async (versions) => {
+    useSkillStoreV2.setState({ selectedAgentDetail: { ...agentDetail, version: null, latestVersion: null } })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram(versions)])
+    const update = vi.spyOn(agentApi, 'update').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    await act(async () => { render(<AgentManagementPage />) })
+
+    expect(screen.getByRole('button', { name: '无需更新' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: '更新此 Agent' })).not.toBeInTheDocument()
+    expect(update).not.toHaveBeenCalled()
+  })
+
   it('refreshes the installed version after a failed update and preserves the command error', async () => {
     vi.spyOn(agentApi, 'refresh')
       .mockResolvedValueOnce([makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })])

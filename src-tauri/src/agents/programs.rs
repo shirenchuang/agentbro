@@ -648,51 +648,17 @@ async fn npm_latest_version(package: &str) -> Option<String> {
 
 fn versions_indicate_update(installed: Option<&str>, latest: Option<&str>) -> bool {
     match (
-        installed.map(normalize_version),
-        latest.map(normalize_version),
+        installed.and_then(parse_npm_version),
+        latest.and_then(parse_npm_version),
     ) {
-        (Some(installed), Some(latest)) => version_is_newer(&latest, &installed),
+        (Some(installed), Some(latest)) => latest.cmp_precedence(&installed).is_gt(),
         _ => false,
     }
 }
 
-fn normalize_version(version: &str) -> String {
-    version
-        .trim()
-        .trim_start_matches('v')
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string()
-}
-
-fn version_is_newer(latest: &str, installed: &str) -> bool {
-    let latest_parts = numeric_version_parts(latest);
-    let installed_parts = numeric_version_parts(installed);
-    if latest_parts.is_empty() || installed_parts.is_empty() {
-        return latest != installed;
-    }
-
-    let max_len = latest_parts.len().max(installed_parts.len());
-    for index in 0..max_len {
-        let latest_part = *latest_parts.get(index).unwrap_or(&0);
-        let installed_part = *installed_parts.get(index).unwrap_or(&0);
-        if latest_part > installed_part {
-            return true;
-        }
-        if latest_part < installed_part {
-            return false;
-        }
-    }
-    false
-}
-
-fn numeric_version_parts(version: &str) -> Vec<u64> {
-    version
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|part| !part.is_empty())
-        .filter_map(|part| part.parse::<u64>().ok())
-        .collect()
+fn parse_npm_version(version: &str) -> Option<semver::Version> {
+    let version = version.trim();
+    semver::Version::parse(version.strip_prefix('v').unwrap_or(version)).ok()
 }
 
 fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo {
@@ -1867,6 +1833,28 @@ fn app_no_uninstall(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn npm_updates_require_a_higher_semver_precedence() {
+        for (installed, latest, expected) in [
+            (Some("1.2.3-rc.9"), Some("1.2.3"), true),
+            (Some("1.2.3"), Some("1.2.3-rc.9"), false),
+            (Some("1.2.3-beta.9"), Some("1.2.3-beta.10"), true),
+            (Some("2.0.0-beta.1"), Some("1.9.9"), false),
+            (Some("1.2.3+build.1"), Some("1.2.3+build.2"), false),
+            (Some("v1.2.3"), Some("1.2.4"), true),
+            (Some("1.2.3"), Some("1.2.3"), false),
+            (Some("unknown"), Some("1.2.3"), false),
+            (Some("1.2.3"), Some("latest"), false),
+            (None, Some("1.2.3"), false),
+        ] {
+            assert_eq!(
+                super::versions_indicate_update(installed, latest),
+                expected,
+                "{installed:?} vs. {latest:?}",
+            );
+        }
+    }
 
     #[test]
     fn windows_app_version_prefers_product_and_falls_back_to_file() {
