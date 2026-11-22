@@ -1283,8 +1283,8 @@ function PackBuilderPanel({
         {
           id: mode === 'edit' ? existing?.id || '' : '',
           name: name.trim(),
-          description: '',
-          tags: [],
+          description: existing?.description ?? '',
+          tags: existing?.tags ?? [],
           skillIds,
         },
         { deferSync: true, environmentId: runtime.selectedEnvironmentId },
