@@ -202,6 +202,16 @@ public static class AgentBroSmokeInput {
         });
     }
 
+    public static void ScrollWheel(int delta) {
+        const uint MouseWheel = 0x0800;
+        InjectInputs(new[] {
+            new Input {
+                Type = InputMouse,
+                Data = new InputData { Mouse = new MouseInput { Flags = MouseWheel, Data = unchecked((uint)delta) } }
+            }
+        });
+    }
+
     private static Input KeyboardEvent(ushort virtualKey, ushort scanCode, uint flags) {
         return new Input {
             Type = InputKeyboard,

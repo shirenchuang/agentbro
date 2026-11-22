@@ -22,15 +22,42 @@
         }
         [AgentBroSmokeInput]::AppendCharacter($character)
     }
-    $agent = Wait-IslandValue "$AgentName in Agent Management" {
+    Click-IslandElement $null "$AgentName in Agent Management" -FindElement {
         Find-IslandButton $settings { param($Name) $Name -eq $AgentName }
-    }
-    Invoke-PackControl $agent | Out-Host
+    } | Out-Host
     $settings
 }
 
 function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {
     $settings = Open-ManagedAgent $Island 'Claude Code'
+    $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
+    $fixtureLauncher = Join-Path $fixtureStage 'bin\claude.cmd'
+    $fallbackLauncher = Join-Path $fixtureStage 'fallback bin\claude.exe'
+    Click-IslandElement $null 'Paths & settings tab' -FindElement {
+        Find-PackControl $settings 'Paths & settings' ([Windows.Automation.ControlType]::Button)
+    }
+    $heading = Wait-IslandValue 'the Paths & settings panel' { Find-PackControl $settings 'Local resources and configuration' }
+    $bounds = $heading.Current.BoundingRectangle
+    if (-not [AgentBroSmokeInput]::SetCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2)) -or
+        [AgentBroSmokeInput]::ProcessAtCursor() -ne $AppProcessId) {
+        throw 'AgentBro does not own the Paths & settings scroll point'
+    }
+    [AgentBroSmokeInput]::ScrollWheel(-240)
+    $detectedLauncher = Wait-IslandValue 'the Claude launcher in Paths & settings' {
+        foreach ($candidate in @($fixtureLauncher, $fallbackLauncher)) {
+            if (Test-PackVisibleText $settings $candidate) { return $candidate }
+        }
+    }
+    if ($detectedLauncher -ne $fixtureLauncher) {
+        throw "Agent Management selected the later executable: $detectedLauncher"
+    }
+    Write-Output 'Agent Management displayed the earlier Claude command shim while the later executable was present.'
+    [AgentBroSmokeInput]::ScrollWheel(240)
+    Remove-Item -LiteralPath $fallbackLauncher
+    Click-IslandElement $null 'Agent overview tab' -FindElement {
+        Find-PackControl $settings '概览' ([Windows.Automation.ControlType]::Button)
+    }
+
     $null = Wait-IslandValue 'the installed fixture version' {
         Test-PackVisibleText $settings '当前版本 2.0.0'
     }
@@ -102,7 +129,6 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     $null = Wait-IslandValue 'the Agent still detected after the first uninstall' {
         Test-PackVisibleText $settings 'The uninstall command completed. AgentBro still detects Claude Code.'
     }
-    $fixtureLauncher = Join-Path (Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT) 'bin\claude.cmd'
     if (-not (Test-Path -LiteralPath $fixtureLauncher -PathType Leaf)) {
         throw 'The first package uninstall unexpectedly removed the fixture launcher'
     }

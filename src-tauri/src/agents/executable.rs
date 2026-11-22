@@ -124,13 +124,26 @@ pub fn codex_desktop_app_candidates() -> Vec<PathBuf> {
     Vec::new()
 }
 
+#[cfg(target_os = "windows")]
 fn find_binary_generic(binary: &str) -> Option<PathBuf> {
-    binary_candidates(binary)
-        .into_iter()
-        .find_map(|candidate| find_binary_exact(&candidate))
+    let path = Path::new(binary);
+    if path.components().count() > 1 || path.is_absolute() {
+        return path.is_file().then(|| path.to_path_buf());
+    }
+    let inherited = std::env::var_os("PATH");
+    let directories = std::iter::once(PathBuf::new())
+        .chain(
+            inherited
+                .as_deref()
+                .into_iter()
+                .flat_map(std::env::split_paths),
+        )
+        .chain(std::iter::once_with(|| candidate_dirs_with_path(None)).flatten());
+    find_windows_binary_in_dirs(directories, binary, &windows_binary_candidates(binary))
 }
 
-fn find_binary_exact(binary: &str) -> Option<PathBuf> {
+#[cfg(not(target_os = "windows"))]
+fn find_binary_generic(binary: &str) -> Option<PathBuf> {
     let path = Path::new(binary);
     if path.is_file() {
         return Some(path.to_path_buf());
@@ -144,16 +157,36 @@ fn find_binary_exact(binary: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn binary_candidates(binary: &str) -> Vec<String> {
-    #[cfg(target_os = "windows")]
-    {
-        windows_binary_candidates(binary)
+#[cfg(any(target_os = "windows", test))]
+fn find_windows_binary_in_dirs(
+    directories: impl IntoIterator<Item = PathBuf>,
+    binary: &str,
+    candidates: &[String],
+) -> Option<PathBuf> {
+    if candidates.len() == 1 {
+        return directories
+            .into_iter()
+            .map(|dir| dir.join(binary))
+            .find(|path| path.is_file());
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        vec![binary.to_string()]
+    let mut extensionless = None;
+    for directory in directories {
+        if let Some(path) = candidates
+            .iter()
+            .filter(|candidate| candidate.as_str() != binary)
+            .map(|candidate| directory.join(candidate))
+            .find(|path| path.is_file())
+        {
+            return Some(path);
+        }
+        // npm also installs extensionless shims for POSIX shells.
+        if extensionless.is_none() {
+            let path = directory.join(binary);
+            extensionless = path.is_file().then_some(path);
+        }
     }
+    extensionless
 }
 
 #[cfg(target_os = "windows")]
@@ -287,19 +320,6 @@ fn is_windows_app_execution_path(path: &Path) -> bool {
         .replace('/', "\\")
         .to_ascii_lowercase();
     normalized.contains("\\microsoft\\windowsapps\\") || normalized.contains("\\windowsapps\\")
-}
-
-#[cfg(target_os = "windows")]
-fn which(binary: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    find_on_windows_path(binary, &path)
-}
-
-#[cfg(target_os = "windows")]
-fn find_on_windows_path(binary: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
-    std::env::split_paths(path)
-        .map(|dir| dir.join(binary))
-        .find(|candidate| candidate.is_file())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -667,25 +687,70 @@ mod tests {
         assert_eq!(node[0], "node.exe");
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn windows_finds_path_shims_in_environment_order() {
+    fn windows_resolves_launchers_by_directory_before_extension() {
         let root =
             crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
-        let first = root.path().join("z first");
-        let second = root.path().join("a second");
+        let first = root.path().join("z 优先");
+        let second = root.path().join("a later");
         std::fs::create_dir(&first).unwrap();
         std::fs::create_dir(&second).unwrap();
-        let filename = "agentbro-fixture.cmd";
-        std::fs::write(first.join(filename), "@echo first").unwrap();
-        std::fs::write(second.join(filename), "@echo second").unwrap();
+        let shim = first.join("agentbro-fixture.cmd");
+        let fallback = second.join("agentbro-fixture.exe");
+        std::fs::write(&shim, "@echo preferred\r\n").unwrap();
+        let extensionless = first.join("agentbro-fixture");
+        std::fs::write(&extensionless, "#!/bin/sh\n").unwrap();
+        #[cfg(target_os = "windows")]
+        {
+            let system32 =
+                std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+            std::fs::copy(system32.join("whoami.exe"), &fallback).unwrap();
+            let shell = std::process::Command::new(system32.join("cmd.exe"))
+                .args(["/D", "/C", "agentbro-fixture"])
+                .current_dir(root.path())
+                .env("PATH", std::env::join_paths([&first, &second]).unwrap())
+                .env("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+                .output()
+                .unwrap();
+            assert!(shell.status.success());
+            assert_eq!(String::from_utf8_lossy(&shell.stdout).trim(), "preferred");
+            assert_eq!(
+                super::find_binary_generic(shim.to_str().unwrap()),
+                Some(shim.clone())
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        std::fs::write(&fallback, []).unwrap();
 
-        let path = std::env::join_paths([&first, &second]).unwrap();
+        let directories = [first, second];
+        let binary = "agentbro-fixture";
+        #[cfg(target_os = "windows")]
+        let candidates = super::windows_binary_candidates(binary);
+        #[cfg(not(target_os = "windows"))]
+        let candidates = ["agentbro-fixture.exe", "agentbro-fixture.cmd", binary].map(String::from);
         assert_eq!(
-            super::find_on_windows_path(filename, &path),
-            Some(first.join(filename))
+            super::find_windows_binary_in_dirs(directories.clone(), binary, &candidates),
+            Some(shim.clone())
         );
-        assert!(super::find_on_windows_path("missing.exe", &path).is_none());
+        let explicit_name = "agentbro-fixture.exe";
+        assert_eq!(
+            super::find_windows_binary_in_dirs(
+                directories.clone(),
+                explicit_name,
+                &[explicit_name.to_string()]
+            ),
+            Some(fallback.clone())
+        );
+        std::fs::remove_file(shim).unwrap();
+        assert_eq!(
+            super::find_windows_binary_in_dirs(directories.clone(), binary, &candidates),
+            Some(fallback.clone())
+        );
+        std::fs::remove_file(fallback).unwrap();
+        assert_eq!(
+            super::find_windows_binary_in_dirs(directories, binary, &candidates),
+            Some(extensionless)
+        );
     }
 
     #[cfg(target_os = "windows")]
