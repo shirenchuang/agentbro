@@ -1093,6 +1093,7 @@
       "packNamed": "Paket: {{name}}"
     },
     "agentManagement": {
+      "programOperationInProgress": "Başka bir Agent paket işlemi devam ediyor. Tamamlandıktan sonra yeniden deneyin.",
       "programResultUnverified": "Komut tamamlandı. AgentBro, {{agent}} kurulumunu veya sürümünü doğrulayamadı.",
       "programStillUndetected": "Komut tamamlandı. AgentBro hâlâ {{agent}} aracını algılayamıyor.",
       "programVersionUnchanged": "Güncelleme komutu tamamlandı. {{agent}} hâlâ {{version}} sürümünde.",

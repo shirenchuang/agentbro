@@ -12,6 +12,10 @@ const remoteHookCommands = new Map([
   ['get_remote_agent_hook_status', 'get_remote_agent_hook_status'],
 ])
 
+export function isAgentPackageOperationBusy(error: unknown) {
+  return (error instanceof Error ? error.message : error) === 'agent_package_operation_in_progress'
+}
+
 async function invoke<T = void>(
   command: string,
   args?: Record<string, unknown>,
