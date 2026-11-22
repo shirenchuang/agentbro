@@ -350,6 +350,68 @@ json.dump = fail_snapshot_write
     }
 
     #[test]
+    fn remote_project_skill_install_keeps_writes_inside_the_registered_project() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let path = home.path();
+        let project = path.join("project");
+        std::fs::create_dir(&project).expect("project directory");
+        let registered = run_script(
+            path,
+            "add_skill_project_v2",
+            serde_json::json!({ "rootPath": &project }),
+        );
+        let install_args = |agent: &Value| {
+            serde_json::json!({
+                "projectId": registered["id"],
+                "agentId": agent,
+                "skillIds": ["demo"],
+                "requestedMode": "copy"
+            })
+        };
+        let center = path.join(".agentbro/skills/demo");
+        write_remote_skill(&center, "Demo", "Center version");
+        let global = path.join("custom/skills/demo");
+        write_remote_skill(&global, "Demo", "Global version");
+        let original = std::fs::read(global.join("SKILL.md")).expect("global fixture");
+        let custom = run_script(
+            path,
+            "add_custom_agent",
+            serde_json::json!({ "config": {
+                "displayName": "Custom Test Agent",
+                "configDir": "~/custom",
+                "globalSkillsDir": "~/custom/skills"
+            } }),
+        );
+        let command = "install_center_skills_to_project_v2";
+        let error = run_script_error(path, command, install_args(&custom["id"]));
+        assert!(error.contains("Project-level Skills are not supported"));
+        assert_eq!(std::fs::read(global.join("SKILL.md")).unwrap(), original);
+
+        let skills = project.join(".claude/skills");
+        std::fs::create_dir_all(skills.parent().unwrap()).expect("project settings directory");
+        std::os::unix::fs::symlink(path.join("custom/skills"), &skills).expect("external link");
+        let built_in = install_args(&serde_json::json!("claude-code"));
+        let error = run_script_error(path, command, built_in.clone());
+        assert!(error.contains("outside the registered project"));
+        assert_eq!(std::fs::read(global.join("SKILL.md")).unwrap(), original);
+
+        std::fs::remove_file(&skills).expect("remove test link");
+        let result = run_script(path, command, built_in.clone());
+        assert_eq!(result["id"], registered["id"]);
+        assert_eq!(
+            std::fs::read(skills.join("demo/SKILL.md")).unwrap(),
+            std::fs::read(center.join("SKILL.md")).unwrap()
+        );
+
+        let replacement = path.join("replacement");
+        std::fs::rename(&project, &replacement).expect("move original project");
+        std::os::unix::fs::symlink(&replacement, &project).expect("redirect project");
+        let error = run_script_error(path, command, built_in);
+        assert!(error.contains("registered project path now points to a different location"));
+    }
+
+    #[test]
     fn remote_custom_agent_legacy_records_use_existing_defaults() {
         let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
             .expect("temporary remote home");
