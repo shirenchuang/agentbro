@@ -42,9 +42,14 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
         $button = Find-PackControl $Settings '获取版本' ([Windows.Automation.ControlType]::Button)
         if ($button -and $button.Current.IsEnabled) { $button }
     }
-    Click-IslandElement $null 'select the restored Claude Code fixture' -FindElement {
-        Find-IslandButton $Settings { param($Name) $Name -eq 'Claude Code' }
+    $restored = Wait-IslandValue 'the restored Claude Code fixture in Installed Agents' {
+        $agent = Find-IslandButton $Settings { param($Name) $Name -eq 'Claude Code' }
+        if ($agent) {
+            $classes = $agent.Current.ClassName -split '\s+'
+            if ($classes -contains 'sm2-sidebar__subitem' -and $classes -notcontains 'sm2-sidebar__subitem--muted') { $agent }
+        }
     }
+    Click-IslandElement $restored 'select the restored Claude Code fixture' -CenterAfterLayout
     Click-IslandElement $null 'start a package update before closing Settings' -FindElement {
         $button = Find-PackControl $Settings '更新此 Agent' ([Windows.Automation.ControlType]::Button)
         if ($button -and $button.Current.IsEnabled) { $button }
