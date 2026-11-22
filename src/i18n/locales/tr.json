@@ -1081,6 +1081,10 @@
       "packNamed": "Paket: {{name}}"
     },
     "agentManagement": {
+      "remoteHooks": {
+        "unsupported": "Bu aracı için SSH üzerinden Hook yönetimi kullanılamıyor.",
+        "confirmUninstall": "{{host}} üzerindeki {{agent}} Hook’u kaldırılsın mı?"
+      },
       "sidebarSearch": "Agent ara",
       "sidebarSearchEmpty": "Eşleşen Agent yok",
       "scanComplete": "Tarama tamamlandı: {{managed}} yönetilen, {{unmanaged}} yönetilmeyen",

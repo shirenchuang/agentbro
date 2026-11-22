@@ -1253,6 +1253,21 @@ async fn uninstall_remote_agent_hooks(
 }
 
 #[tauri::command]
+async fn get_remote_agent_hook_status(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+    agent_id: String,
+) -> Result<remote::installer::RemoteAgentHookStatus, String> {
+    let host = state
+        .remote_manager
+        .hosts()
+        .into_iter()
+        .find(|host| host.id == id)
+        .ok_or_else(|| format!("Host {id} not found"))?;
+    remote::installer::RemoteInstaller::check_agent_hook(&host, &agent_id).await
+}
+
+#[tauri::command]
 async fn check_remote_hooks(
     state: tauri::State<'_, commands::AppState>,
     id: String,
@@ -6401,6 +6416,7 @@ pub fn run() {
             uninstall_remote_hooks,
             install_remote_agent_hooks,
             uninstall_remote_agent_hooks,
+            get_remote_agent_hook_status,
             check_remote_hooks,
             probe_remote_host,
             remote_skill_manager_invoke,

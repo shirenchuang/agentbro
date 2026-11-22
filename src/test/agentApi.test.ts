@@ -114,6 +114,27 @@ describe('agentApi seedAgentPrograms', () => {
     }
   })
 
+  it('checks, installs, and removes Hooks on the requested SSH host', async () => {
+    const { agentApi } = await import('../services/agentApi')
+    const { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } = await import('../stores/runtimeEnvironmentStore')
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    try {
+      selectEnvironment('another-host')
+      await agentApi.remoteHookStatus('cursor', 'target-host')
+      await agentApi.installHook('cursor', 'target-host')
+      await agentApi.uninstallHook('cursor', 'target-host')
+
+      expect(vi.mocked(invoke).mock.calls).toEqual([
+        ['get_remote_agent_hook_status', { id: 'target-host', agentId: 'cursor-cli' }],
+        ['install_remote_agent_hooks', { id: 'target-host', agentId: 'cursor-cli' }],
+        ['uninstall_remote_agent_hooks', { id: 'target-host', agentId: 'cursor-cli' }],
+      ])
+    } finally {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    }
+  })
+
   it('routes batch adoption and pack sync IPC to the confirmed runtime', async () => {
     const { skillApiV2 } = await import('../services/skillApiV2')
     const { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } = await import('../stores/runtimeEnvironmentStore')

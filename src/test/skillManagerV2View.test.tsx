@@ -6680,6 +6680,91 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(openPath).toHaveBeenCalledWith('/Users/me/Library/Application Support/com.vibetunnel.agentbro/agentbro-bridge')
   })
 
+  it('does not read the local Hook settings from Agent Management on an SSH host', async () => {
+    const localStatus = vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([{
+      toolId: 'claude-code',
+      name: 'claude-code',
+      displayName: 'Local Claude',
+      installed: true,
+      status: 'Installed',
+      configPath: '/local-machine/claude/settings.json',
+    }])
+    useRuntimeEnvironmentStore.getState().selectEnvironment('build-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'build-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    await act(async () => {})
+
+    expect(localStatus).not.toHaveBeenCalled()
+    expect(screen.queryByText('/local-machine/claude/settings.json')).not.toBeInTheDocument()
+  })
+
+  it('installs and removes a Hook on the SSH host shown in Agent Management', async () => {
+    const remoteStatus = vi.spyOn(agentApi, 'remoteHookStatus')
+      .mockResolvedValueOnce('notInstalled')
+      .mockResolvedValueOnce('installed')
+      .mockResolvedValueOnce('notInstalled')
+    const install = vi.spyOn(agentApi, 'installHook').mockResolvedValue()
+    const uninstall = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    useRuntimeEnvironmentStore.getState().selectEnvironment('build-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'build-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    expect(await screen.findByText(i18n.t('skills.runtimeEnvironment.currentLabel', { name: 'build-host' }))).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.installHooks') }))
+    expect(install).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
+    fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.uninstallHooks') }))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('build-host'))
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
+    expect(await screen.findByRole('button', { name: i18n.t('settings.installHooks') })).toBeEnabled()
+    expect(remoteStatus.mock.calls).toEqual(Array.from({ length: 3 }, () => ['claude-code', 'build-host']))
+  })
+
+  it('does not reload Hook status for an abandoned SSH host after install finishes', async () => {
+    const remoteStatus = vi.spyOn(agentApi, 'remoteHookStatus')
+      .mockResolvedValueOnce('needsReinstall')
+      .mockResolvedValueOnce('settingsCorrupted')
+    let finishInstall!: () => void
+    const install = vi.spyOn(agentApi, 'installHook').mockReturnValue(new Promise((resolve) => { finishInstall = resolve }))
+    useRuntimeEnvironmentStore.getState().selectEnvironment('build-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'build-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.reinstall') }))
+    expect(install).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('gpu-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'gpu-host' })
+    })
+    expect(await screen.findByText(i18n.t('settings.hookSettingsCorrupted'))).toBeInTheDocument()
+    await act(async () => finishInstall())
+
+    expect(remoteStatus.mock.calls).toEqual([['claude-code', 'build-host'], ['claude-code', 'gpu-host']])
+    expect(screen.getByText(i18n.t('settings.hookSettingsCorrupted'))).toBeInTheDocument()
+  })
+
+  it('shows SSH connection errors without marking the remote Hook uninstalled', async () => {
+    vi.spyOn(agentApi, 'remoteHookStatus').mockRejectedValue(new Error('SSH connection refused'))
+    useRuntimeEnvironmentStore.getState().selectEnvironment('offline-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'offline-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('SSH connection refused')
+    expect(screen.queryByRole('button', { name: i18n.t('settings.installHooks') })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: i18n.t('settings.detectNow') })).toBeEnabled()
+  })
+
   it('routes custom Claude Code hook actions through its engine instance', async () => {
     const customDetail: AgentDetail = {
       ...agentDetail,

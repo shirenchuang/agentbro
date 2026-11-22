@@ -19,6 +19,7 @@ import { AdoptDialog } from './AdoptDialog'
 import { PreviewDialog } from './PreviewDialog'
 import { McpManagementTab } from './McpManagementTab'
 import { PluginManagementTab } from './PluginManagementTab'
+import { RemoteAgentHooksTab } from './RemoteAgentHooksTab'
 import { SkillDetailSlider, type SkillDetailFallback } from './SkillDetailSlider'
 import { distributionBlockerReason, isAdoptOptionUnavailableError, skillErrorMessage, skillModeLabel, skillSourceTypeLabel, skillStatusLabel, targetClaimLabel, unmanagedReasonLabel } from './skillLabels'
 import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries } from '../../utils/agentOrdering'
@@ -1340,7 +1341,7 @@ function AgentDetailView({
         )}
         {tab === 'mcp' && <McpTab detail={detail} />}
         {tab === 'plugins' && <PluginManagementTab detail={detail} />}
-        {tab === 'hooks' && <HooksTab key={detail.id} detail={detail} />}
+        {tab === 'hooks' && <HooksTab detail={detail} />}
         {tab === 'config' && <ConfigTab detail={detail} program={program} />}
       </div>
     </div>
@@ -4117,6 +4118,25 @@ function McpTab({ detail }: { detail: AgentDetail }) {
 }
 
 function HooksTab({ detail }: { detail: AgentDetail }) {
+  const { selectedEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
+  const runtimeRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
+  const agentRevision = useSkillStoreV2((state) => state.agentSelectionRevision)
+  const key = `${selectedEnvironmentId}:${runtimeRevision}:${agentRevision}:${detail.id}`
+  if (isLocal) return <LocalHooksTab key={key} detail={detail} />
+  return (
+    <RemoteAgentHooksTab
+      key={key}
+      agentId={detail.id}
+      agentName={detail.displayName}
+      agentRevision={agentRevision}
+      environmentId={selectedEnvironmentId}
+      runtimeRevision={runtimeRevision}
+      hostName={remoteHost?.name || selectedEnvironmentId}
+    />
+  )
+}
+
+function LocalHooksTab({ detail }: { detail: AgentDetail }) {
   const agentId = detail.id
   const [hook, setHook] = useState<HookStatus | null>(null)
   const [loading, setLoading] = useState(true)
