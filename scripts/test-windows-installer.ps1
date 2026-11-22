@@ -21,7 +21,7 @@ $stage = Join-Path $env:RUNNER_TEMP "AgentBro smoke $([Guid]::NewGuid().ToString
 $installDir = Join-Path $stage 'installed app'
 $fixtureBin = Join-Path $stage 'bin'
 $env:CLAUDE_CONFIG_DIR = Join-Path $stage 'Claude config'
-$env:Path = "$fixtureBin;$env:Path"
+$fixtureSearchPath = @($fixtureBin)
 New-Item -ItemType Directory -Path $fixtureBin, $env:CLAUDE_CONFIG_DIR | Out-Null
 Set-Content -LiteralPath (Join-Path $fixtureBin 'claude.cmd') -Value '@echo 2.0.0' -Encoding ascii
 if ($VerifyAgentPackageConsole) {
@@ -34,6 +34,10 @@ if ($VerifyAgentPackageConsole) {
     $env:npm_config_offline = 'true'
     $env:npm_config_cache = Join-Path $stage 'isolated npm cache'
     $env:npm_config_prefix = Join-Path $stage 'isolated npm prefix'
+    $fallbackBin = Join-Path $stage 'fallback bin'
+    $null = New-Item -ItemType Directory -Path $fallbackBin
+    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\whoami.exe') -Destination (Join-Path $fallbackBin 'claude.exe')
+    $fixtureSearchPath += $fallbackBin
     $fixtureNpm = @'
 @echo off
 if /i "%~1"=="list" (
@@ -73,6 +77,7 @@ exit /b 1
 '@
     Set-Content -LiteralPath (Join-Path $fixtureBin 'npm.cmd') -Value ($fixtureNpm -replace '\r?\n', "`r`n") -Encoding ascii
 }
+$env:Path = ($fixtureSearchPath + @($env:Path)) -join ';'
 
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
 $listener.Start()

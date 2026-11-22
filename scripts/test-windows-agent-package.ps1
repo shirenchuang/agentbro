@@ -31,6 +31,24 @@
 
 function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {
     $settings = Open-ManagedAgent $Island 'Claude Code'
+    $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
+    $fixtureLauncher = Join-Path $fixtureStage 'bin\claude.cmd'
+    $fallbackLauncher = Join-Path $fixtureStage 'fallback bin\claude.exe'
+    $paths = Wait-IslandValue 'the Paths & settings tab' { Find-PackControl $settings 'Paths & settings' }
+    Invoke-PackControl $paths
+    $detectedLauncher = Wait-IslandValue 'the Claude launcher in Paths & settings' {
+        foreach ($candidate in @($fixtureLauncher, $fallbackLauncher)) {
+            if (Test-PackVisibleText $settings $candidate) { return $candidate }
+        }
+    }
+    if ($detectedLauncher -ne $fixtureLauncher) {
+        throw "Agent Management selected the later executable: $detectedLauncher"
+    }
+    Write-Output 'Agent Management displayed the earlier Claude command shim while the later executable was present.'
+    Remove-Item -LiteralPath $fallbackLauncher
+    $overview = Wait-IslandValue 'the Agent overview tab' { Find-PackControl $settings '概览' }
+    Invoke-PackControl $overview
+
     $null = Wait-IslandValue 'the fixture Claude Code version' {
         Find-PackControl $settings '可更新到 999.0.0'
     }
@@ -77,7 +95,6 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     $null = Wait-IslandValue 'the Agent still detected after the first uninstall' {
         Test-PackVisibleText $settings 'The uninstall command completed. AgentBro still detects Claude Code.'
     }
-    $fixtureLauncher = Join-Path (Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT) 'bin\claude.cmd'
     if (-not (Test-Path -LiteralPath $fixtureLauncher -PathType Leaf)) {
         throw 'The first package uninstall unexpectedly removed the fixture launcher'
     }
