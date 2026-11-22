@@ -1249,6 +1249,8 @@
       "programResultUnverified": "コマンドは完了しました。{{agent}} のインストール状態またはバージョンを確認できませんでした。",
       "programStillUndetected": "コマンドは完了しました。{{agent}} はまだ検出されていません。",
       "programVersionUnchanged": "更新コマンドは完了しました。{{agent}} のバージョンは {{version}} のままです。",
+      "nativeCheckAndUpdate": "確認して更新",
+      "nativeUpdateChecked": "更新の確認が完了しました。{{agent}} の現在のバージョンは {{version}} です。",
       "remoteHooks": {
         "unsupported": "このエージェントのフックは SSH 経由で管理できません。",
         "confirmUninstall": "{{host}} の {{agent}} フックをアンインストールしますか？"
