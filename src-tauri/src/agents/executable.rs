@@ -413,11 +413,11 @@ fn login_shell_path() -> Option<Vec<PathBuf>> {
 }
 
 fn candidate_dirs() -> Vec<PathBuf> {
-    let mut dirs = BTreeSet::new();
+    candidate_dirs_with_path(std::env::var_os("PATH"))
+}
 
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
-    }
+fn candidate_dirs_with_path(inherited: Option<OsString>) -> Vec<PathBuf> {
+    let mut dirs = BTreeSet::new();
 
     if let Some(shell_paths) = login_shell_path() {
         dirs.extend(shell_paths);
@@ -492,7 +492,14 @@ fn candidate_dirs() -> Vec<PathBuf> {
         }
     }
 
-    dirs.into_iter().collect()
+    let mut seen = BTreeSet::new();
+    inherited
+        .as_deref()
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .chain(dirs)
+        .filter(|dir| seen.insert(dir.clone()))
+        .collect()
 }
 
 fn nvm_node_bins(home: &Path) -> Vec<PathBuf> {
@@ -564,6 +571,50 @@ fn dedupe_strings(values: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn agent_package_shell_respects_inherited_path_precedence() {
+        use std::{fs, process::Command};
+
+        let fixture =
+            std::env::temp_dir().join(format!("agentbro-package-path-{}", uuid::Uuid::new_v4()));
+        let preferred = fixture.join("z preferred tool");
+        let fallback = fixture.join("a system tool");
+        for (directory, marker) in [(&preferred, "preferred"), (&fallback, "fallback")] {
+            fs::create_dir_all(directory).unwrap();
+            #[cfg(target_os = "windows")]
+            fs::write(directory.join("npm.cmd"), format!("@echo {marker}\r\n")).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let command = directory.join("npm");
+                fs::write(&command, format!("#!/bin/sh\nprintf '%s\\n' {marker}\n")).unwrap();
+                fs::set_permissions(command, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let inherited = std::env::join_paths([&preferred, &fallback, &preferred]).unwrap();
+        let dirs = super::candidate_dirs_with_path(Some(inherited));
+        let path = std::env::join_paths(&dirs).unwrap();
+        #[cfg(target_os = "windows")]
+        let (program, arguments) = (super::command_path("cmd"), vec!["/D", "/C", "npm"]);
+        #[cfg(unix)]
+        let (program, arguments) = (std::path::PathBuf::from("/bin/sh"), vec!["-c", "npm"]);
+        let output = Command::new(program)
+            .args(arguments)
+            .current_dir(&fixture)
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        fs::remove_dir_all(&fixture).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "preferred");
+        assert_eq!(dirs.iter().filter(|dir| *dir == &preferred).count(), 1);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn finds_executable_codex_inside_chatgpt_app() {
