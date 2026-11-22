@@ -12,7 +12,8 @@ param(
     [switch]$CloseStartupSettings,
     [switch]$AutomationFocusPermission,
     [switch]$VerifyStartupStackSampler,
-    [switch]$VerifyAgentPackageConsole
+    [switch]$VerifyAgentPackageConsole,
+    [switch]$VerifyRegisteredAgentApp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -461,6 +462,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     }
     if ($VerifyQwenWork) { $start.ArgumentList.Add('-VerifyQwenWork') }
     if ($VerifyAgentPackageConsole) { $start.ArgumentList.Add('-VerifyAgentPackageConsole') }
+    if ($VerifyRegisteredAgentApp) { $start.ArgumentList.Add('-VerifyRegisteredAgentApp') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
     if ($CloseStartupSettings) { $start.ArgumentList.Add('-CloseStartupSettings') }
@@ -473,7 +475,8 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     try {
         $output = $tester.StandardOutput.ReadToEndAsync()
         $errors = $tester.StandardError.ReadToEndAsync()
-        $desktopTimeout = if ($VerifyPackManifest -or $VerifyPinnedPackManifest -or $PackManifestLink -or $VerifyAgentPackageConsole) { 180000 } else { 120000 }
+        $desktopTimeout = if ($VerifyPackManifest -or $VerifyPinnedPackManifest -or $PackManifestLink -or
+            $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) { 180000 } else { 120000 }
         if (-not $tester.WaitForExit($desktopTimeout)) {
             throw 'The installed desktop interaction check timed out'
         }
@@ -546,7 +549,8 @@ try {
 
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
-    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyPinnedPackManifest -or $PackManifestLink -or $VerifyDrag -or $VerifyQwenWork -or $VerifyAgentPackageConsole) {
+    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyPinnedPackManifest -or $PackManifestLink -or
+        $VerifyDrag -or $VerifyQwenWork -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
         $event.session_id = $restoredSession

@@ -38,6 +38,10 @@ on:
         description: Observe the Windows console used by a package update from installed Agent Management
         type: boolean
         default: false
+      windows_verify_registered_agent_app:
+        description: Detect a desktop Agent registered with Windows App Paths
+        type: boolean
+        default: false
       windows_trace_permission_ui:
         description: Repeat approval and record Hook timing, screenshots and accessibility state
         type: boolean
@@ -271,6 +275,12 @@ jobs:
           & $testExecutable --exact agents::programs::tests::windows_qwenwork_candidates_include_the_packaged_launcher
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable --exact agents::programs::tests::windows_registration_names_match_only_the_desktop_agent
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact agents::programs::tests::desktop_trash_uninstall_is_available_only_on_macos
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           $qwenworkTests = 'hooks::qwenwork_watcher::tests'
           if (-not (& $testExecutable --list $qwenworkTests | Select-String -SimpleMatch "${qwenworkTests}::" -Quiet)) {
             throw 'The QwenWork watcher tests were not compiled for Windows'
@@ -364,6 +374,7 @@ jobs:
           VERIFY_PINNED_PACK_MANIFEST: ${{ inputs.windows_verify_pinned_pack_manifest }}
           PACK_MANIFEST_LINK: ${{ inputs.windows_verify_pack_manifest_link && format('https://github.com/{0}/blob/{1}/scripts/fixtures/github-skill-pack.agentbro-pack.json', github.repository, github.sha) || '' }}
           VERIFY_AGENT_PACKAGE_CONSOLE: ${{ inputs.windows_verify_agent_package_console }}
+          VERIFY_REGISTERED_AGENT_APP: ${{ inputs.windows_verify_registered_agent_app }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
@@ -384,6 +395,7 @@ jobs:
                   -VerifyPinnedPackManifest:($env:VERIFY_PINNED_PACK_MANIFEST -eq 'true') `
                   -PackManifestLink $env:PACK_MANIFEST_LINK `
                   -VerifyAgentPackageConsole:($env:VERIFY_AGENT_PACKAGE_CONSOLE -eq 'true') `
+                  -VerifyRegisteredAgentApp:($env:VERIFY_REGISTERED_AGENT_APP -eq 'true') `
                   -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
                   -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
                   -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `

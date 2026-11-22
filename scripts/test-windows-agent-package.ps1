@@ -1,20 +1,36 @@
-﻿function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {
+﻿function Open-ManagedAgent([Windows.Automation.AutomationElement]$Island, [string]$AgentName) {
     $settings = Open-InstalledAgentSkills $Island
     $agents = Wait-IslandValue 'the Agent Management navigation item' { Find-PackControl $settings 'Agent 管理' }
-    Invoke-PackControl $agents
-    $search = Wait-IslandValue 'the Agent search' { Find-PackControl $settings 'Search Agents' }
-    Click-IslandElement $search 'Agent search'
+    Invoke-PackControl $agents | Out-Host
+    $search = Wait-IslandValue 'the Agent search' {
+        Find-PackControl $settings 'Search Agents' ([Windows.Automation.ControlType]::Edit)
+    }
+    Click-IslandElement $search 'Agent search' | Out-Host
     $handle = [IntPtr]$settings.Current.NativeWindowHandle
-    foreach ($character in 'Claude Code'.ToCharArray()) {
+    $searchValue = $search.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
+    if ($searchValue.Current.Value.Length -gt 0) {
+        $keys = @(0x23) + @(0x08) * $searchValue.Current.Value.Length
+        foreach ($key in $keys) {
+            if (-not [AgentBroSmokeInput]::PressKeyInWindow($handle, $key)) {
+                throw 'Agent Management lost focus while clearing the Agent search'
+            }
+        }
+    }
+    foreach ($character in $AgentName.ToCharArray()) {
         if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $handle) {
             throw 'Agent Management lost focus before entering the Agent search'
         }
         [AgentBroSmokeInput]::AppendCharacter($character)
     }
-    $claude = Wait-IslandValue 'Claude Code in Agent Management' {
-        Find-IslandButton $settings { param($Name) $Name -eq 'Claude Code' }
+    $agent = Wait-IslandValue "$AgentName in Agent Management" {
+        Find-IslandButton $settings { param($Name) $Name -eq $AgentName }
     }
-    Invoke-PackControl $claude
+    Invoke-PackControl $agent | Out-Host
+    $settings
+}
+
+function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {
+    $settings = Open-ManagedAgent $Island 'Claude Code'
     $null = Wait-IslandValue 'the fixture Claude Code version' {
         Find-PackControl $settings '可更新到 999.0.0'
     }
@@ -79,4 +95,60 @@
             (Test-PackVisibleText $settings 'Agent「Claude Code」已卸载')
     }
     Write-Output 'Agent Management confirmed the uninstall after the fixture launcher was removed.'
+}
+
+function Test-InstalledRegisteredAgentApp([Windows.Automation.AutomationElement]$Island) {
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+        throw 'The App Paths fixture requires an isolated GitHub-hosted runner'
+    }
+    $registration = 'Software\Microsoft\Windows\CurrentVersion\App Paths\Cursor.exe'
+    $registry = [Microsoft.Win32.Registry]::CurrentUser
+    $existing = $registry.OpenSubKey($registration)
+    if ($existing) {
+        $existing.Dispose()
+        throw 'The runner already has a Cursor App Paths registration'
+    }
+    $folderName = "AgentBro 应用 $([Guid]::NewGuid().ToString('N'))"
+    $directory = Join-Path $env:TEMP $folderName
+    $executable = Join-Path $directory 'Cursor.exe'
+    try {
+        $null = New-Item -ItemType Directory -Path $directory
+        Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\where.exe') -Destination $executable
+        $key = $registry.CreateSubKey($registration)
+        try {
+            $key.SetValue('', ('"%TEMP%\' + $folderName + '\Cursor.exe"'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        } finally {
+            $key.Dispose()
+        }
+
+        $settings = Open-ManagedAgent $Island 'Cursor'
+        $refresh = Wait-IslandValue 'the enabled Agent version refresh' {
+            $button = Find-PackControl $settings '获取版本'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        }
+        Invoke-PackControl $refresh
+        $paths = Wait-IslandValue 'the Paths & settings tab' { Find-PackControl $settings 'Paths & settings' }
+        Invoke-PackControl $paths
+        $null = Wait-IslandValue 'the installed Agent and its registered application path' {
+            (Test-PackVisibleText $settings $executable) -and (Find-PackControl $settings '无需更新')
+        }
+        if (Find-PackControl $settings '卸载 Agent') {
+            throw 'The registered Windows desktop Agent offered automatic uninstall'
+        }
+        Write-Output 'Agent Management detected the registered Cursor fixture and displayed its custom executable path.'
+
+        Remove-Item -LiteralPath $executable
+        $refresh = Wait-IslandValue 'the Agent refresh after removing the registered executable' {
+            $button = Find-PackControl $settings '获取版本'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        }
+        Invoke-PackControl $refresh
+        $null = Wait-IslandValue 'the missing Agent after its registered executable was removed' {
+            (Find-PackControl $settings '打开安装页') -and -not (Test-PackVisibleText $settings $executable)
+        }
+        Write-Output 'Agent Management reported the fixture missing after removal of the registered executable.'
+    } finally {
+        $registry.DeleteSubKeyTree($registration, $false)
+        Remove-Item -LiteralPath $directory -Recurse -ErrorAction SilentlyContinue
+    }
 }
