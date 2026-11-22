@@ -975,7 +975,7 @@ fn emit_output(
 fn command_shell(command: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
-        let mut shell = Command::new(command_name("cmd"));
+        let mut shell = background_tokio_command(command_name("cmd"));
         shell.args(["/C", command]);
         if let Some(path) = executable::augmented_path_env() {
             shell.env("PATH", path);
