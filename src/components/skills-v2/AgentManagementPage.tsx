@@ -111,7 +111,7 @@ function isCurrentAgentSkillScope(scope: AgentSkillScope) {
 export function AgentManagementPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
-  const { setError } = state
+  const { setError, loadOverview, loadAgentDetail } = state
   const allSessions = useSessionStore((s) => s.sessionList)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const { selectedEnvironmentId: runtimeEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
@@ -167,7 +167,9 @@ export function AgentManagementPage() {
     if (!isAgentRuntimeSelection(runtime)) return
     const request = ++latestAgentProgramRequest
     programRequestRef.current = request
-    const isLatest = () => request === latestAgentProgramRequest && isAgentRuntimeSelection(runtime)
+    const isLatest = () => request === latestAgentProgramRequest
+      && request === programRequestRef.current
+      && isAgentRuntimeSelection(runtime)
     setSettledProgramRuntime(null)
     try {
       const next = await agentApi.refresh(runtime.environmentId)
@@ -176,7 +178,7 @@ export function AgentManagementPage() {
       if (isLatest()) useSkillStoreV2.setState({ agentProgramSnapshot: { ...runtime, programs } })
       return programs
     } catch (e) {
-      if (request === programRequestRef.current && isLatest()) setError(skillErrorMessage(t, e))
+      if (isLatest()) setError(skillErrorMessage(t, e))
     } finally {
       if (request === programRequestRef.current && isAgentRuntimeSelection(runtime)) setSettledProgramRuntime(runtime)
     }
@@ -188,9 +190,44 @@ export function AgentManagementPage() {
   }, [])
 
   useEffect(() => {
-    void loadPrograms({ environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision })
-    return () => { programRequestRef.current = 0 }
-  }, [loadPrograms, runtimeEnvironmentId, runtimeSelectionRevision])
+    const runtime = { environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision }
+    if (!isLocal) {
+      void loadPrograms(runtime)
+      return () => { programRequestRef.current = 0 }
+    }
+
+    let closed = false
+    let listening = false
+    let unlisten: (() => void) | null = null
+    const refreshCompletedPackage = async (agentId: string) => {
+      await Promise.all([loadPrograms(runtime), loadOverview(true)])
+      if (!closed && isAgentRuntimeSelection(runtime)) await loadAgentDetail(agentId, true)
+    }
+    void agentApi.onOutput((event) => {
+      if (closed || !listening || !event.done || !isAgentRuntimeSelection(runtime)) return
+      const { agentProgramOperation, error } = useSkillStoreV2.getState()
+      if (
+        agentProgramOperation?.environmentId === runtime.environmentId
+        && agentProgramOperation.agentId === event.agentId
+        && agentProgramOperation.operation === event.operation
+      ) return
+      if (error === t('skills.agentManagement.programOperationInProgress')) setError(null)
+      void refreshCompletedPackage(event.agentId)
+    }).catch(() => null).then((stop) => {
+      if (closed) {
+        stop?.()
+        return
+      }
+      unlisten = stop
+      listening = true
+      void loadPrograms(runtime)
+    })
+    return () => {
+      closed = true
+      unlisten?.()
+      programRequestRef.current = 0
+    }
+  }, [isLocal, loadAgentDetail, loadOverview, loadPrograms, runtimeEnvironmentId, runtimeSelectionRevision, setError, t])
 
   useEffect(() => {
     if (state.customAgentDialogRequest <= 0) return
