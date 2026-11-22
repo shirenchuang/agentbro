@@ -739,6 +739,12 @@
   "skills": {
     "projectsTab": "项目",
     "packManifest": {
+      "exportWithSources": "导出并包含 GitHub 来源",
+      "exportedWithoutSources": "技能包已导出，没有可包含的固定 GitHub 来源。",
+      "pinnedReview": "可按记录的 GitHub 来源恢复缺失技能，核对内容后再导入。",
+      "restore": "恢复",
+      "restoreMember": "恢复 {{name}}",
+      "restoring": "恢复中…",
       "match": "内容一致",
       "different": "内容不同",
       "unrecorded": "清单未记录指纹",

@@ -203,7 +203,7 @@ fn valid_component(name: &str) -> bool {
         )
 }
 
-fn valid_skill_name(name: &str) -> bool {
+pub(super) fn valid_skill_name(name: &str) -> bool {
     valid_component(name) && !name.starts_with(['.', ' '])
 }
 
@@ -256,7 +256,7 @@ fn restore_source(
     })
 }
 
-fn locked_skill_directory(value: &str) -> Result<PathBuf, ProjectLockedSkillStatus> {
+pub(super) fn locked_skill_directory(value: &str) -> Result<PathBuf, ProjectLockedSkillStatus> {
     let mut parts = value.split('/');
     if parts.next_back() != Some("SKILL.md") {
         return Err(ProjectLockedSkillStatus::Invalid);
@@ -608,7 +608,7 @@ fn find_node_module(root: &Path, from: &Path, package: &Path) -> Option<PathBuf>
         })
 }
 
-fn checked_source_skill(root: &Path, path: &Path) -> Result<PathBuf, String> {
+pub(super) fn checked_source_skill(root: &Path, path: &Path) -> Result<PathBuf, String> {
     let skill = path.canonicalize().map_err(|error| error.to_string())?;
     if !skill.starts_with(root)
         || !skill
@@ -628,8 +628,6 @@ fn install_verified_skill(
     skill: &Path,
     expected: &str,
 ) -> Result<(), String> {
-    let mut files = BTreeMap::new();
-    collect_skill_files(skill, skill, "", &mut Vec::new(), &mut files, true)?;
     let destination = checked_destination(root, false)?;
     let staging_parent = destination
         .ancestors()
@@ -637,22 +635,39 @@ fn install_verified_skill(
         .ok_or("The project Skill directory is unavailable")?;
     let temporary = TempInstallDir::create_in(staging_parent)?;
     let staged = temporary.path().join("skill");
-    fs::create_dir(&staged).map_err(|error| error.to_string())?;
-    let mut staged_hash = Sha256::new();
-    for (path, original) in files {
-        let target = staged.join(&path);
-        let parent = target.parent().ok_or("Invalid Skill file destination")?;
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        fs::copy(original, &target).map_err(|error| error.to_string())?;
-        add_file_to_hash(&mut staged_hash, &path, &target)?;
-    }
-    if !format!("{:x}", staged_hash.finalize()).eq_ignore_ascii_case(expected) {
+    if !stage_skill_copy(skill, &staged, true)?.eq_ignore_ascii_case(expected) {
         return Err("Skill content does not match the lock file".to_string());
     }
     lock_at_revision(root, revision)?;
     let destination = checked_destination(root, true)?;
     rename_path_if_absent(&staged, &destination.join(name))
         .map_err(|error| format!("Could not install the missing Skill: {error}"))
+}
+
+pub(super) fn stage_skill_copy(
+    skill: &Path,
+    staged: &Path,
+    skip_package_metadata: bool,
+) -> Result<String, String> {
+    let mut files = BTreeMap::new();
+    collect_skill_files(
+        skill,
+        skill,
+        "",
+        &mut Vec::new(),
+        &mut files,
+        skip_package_metadata,
+    )?;
+    fs::create_dir(staged).map_err(|error| error.to_string())?;
+    let mut hash = Sha256::new();
+    for (path, original) in files {
+        let target = staged.join(&path);
+        let parent = target.parent().ok_or("Invalid Skill file destination")?;
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        fs::copy(original, &target).map_err(|error| error.to_string())?;
+        add_file_to_hash(&mut hash, &path, &target)?;
+    }
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 fn collect_skill_files(

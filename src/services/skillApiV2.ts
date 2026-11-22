@@ -203,18 +203,26 @@ export interface SkillPackDetail {
 
 export interface SkillPackManifest {
   format: 'agentbro-skill-pack'
-  version: 1 | 2
+  version: 1 | 2 | 3
   name: string
   description: string
   tags: string[]
   skillIds: string[]
   skillFingerprints?: Record<string, string>
+  skillSources?: Record<string, SkillPackGitHubSource>
+}
+
+export interface SkillPackGitHubSource {
+  repository: string
+  commit: string
+  skillPath: string
 }
 
 export interface SkillPackFingerprint {
   skillId: string
   missing: boolean
   fingerprint: string | null
+  source?: SkillPackGitHubSource
 }
 
 export interface McpServerStatus {
@@ -1349,8 +1357,10 @@ export const skillApiV2 = {
   readPackManifest: (path: string) => tauriInvoke<SkillPackManifest>('read_skill_pack_manifest', { path }),
   writePackManifest: (path: string, manifest: SkillPackManifest) =>
     tauriInvoke<void>('write_skill_pack_manifest', { path, manifest }),
-  getPackFingerprints: (skillIds: string[], environmentId: string) =>
-    invoke<SkillPackFingerprint[]>('get_skill_pack_fingerprints', { skillIds }, environmentId),
+  getPackFingerprints: (skillIds: string[], environmentId: string, includeSources?: boolean) =>
+    invoke<SkillPackFingerprint[]>('get_skill_pack_fingerprints', { skillIds, includeSources }, environmentId),
+  restorePackMember: (manifest: SkillPackManifest, skillId: string, environmentId: string) =>
+    invoke<void>('restore_skill_pack_member', { manifest, skillId }, environmentId),
   importReviewedPack: (
     manifest: SkillPackManifest,
     reviewed: SkillPackFingerprint[],

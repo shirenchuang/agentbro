@@ -593,6 +593,12 @@
   "skills": {
     "projectsTab": "Projeler",
     "packManifest": {
+      "exportWithSources": "GitHub kaynaklarıyla dışa aktar",
+      "exportedWithoutSources": "Beceri paketi dışa aktarıldı. Sabitlenmiş GitHub kaynağı bulunamadı.",
+      "pinnedReview": "Eksik becerileri kayıtlı GitHub kaynaklarından geri yükleyin ve içe aktarmadan önce sonucu gözden geçirin.",
+      "restore": "Geri yükle",
+      "restoreMember": "{{name}} becerisini geri yükle",
+      "restoring": "Geri yükleniyor…",
       "match": "İçerik eşleşiyor",
       "different": "Farklı içerik",
       "unrecorded": "Bildirim dosyasında parmak izi yok",

@@ -9,6 +9,8 @@ param(
     [string]$Workspace,
     [string]$PackImportPath,
     [string]$PackExportPath,
+    [string]$PinnedPackImportPath,
+    [string]$PinnedPackExportPath,
     [switch]$TracePermissionUi,
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
@@ -809,11 +811,14 @@ try {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
     }
-    if ($PackImportPath -or $VerifyAgentPackageConsole) {
+    if ($PackImportPath -or $PinnedPackImportPath -or $VerifyAgentPackageConsole) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }
     if ($PackImportPath) {
         Test-InstalledPackManifest $island $PackImportPath $PackExportPath
+    }
+    if ($PinnedPackImportPath) {
+        Test-InstalledPinnedPackManifest $island $PinnedPackImportPath $PinnedPackExportPath
     }
     if ($VerifyAgentPackageConsole) {
         . (Join-Path $PSScriptRoot 'test-windows-agent-package.ps1')
@@ -835,7 +840,7 @@ try {
                     Write-Host "$($_.Name) ($($_.ProcessId)) parent: $($parent.ProcessName) ($($_.ParentProcessId))."
                 }
         }
-        if ($PackImportPath -or $VerifyAgentPackageConsole) {
+        if ($PackImportPath -or $PinnedPackImportPath -or $VerifyAgentPackageConsole) {
             foreach ($window in Get-IslandWindows) {
                 Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"
                 $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
