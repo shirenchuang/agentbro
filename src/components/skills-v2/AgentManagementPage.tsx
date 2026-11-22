@@ -139,7 +139,9 @@ export function AgentManagementPage() {
   const [openingAgentId, setOpeningAgentId] = useState<string | null>(null)
   const [pendingAdoption, setPendingAdoption] = useState<(AgentSkillScope & { unmanagedId: string }) | null>(null)
   const programs = useCurrentAgentPrograms()
-  const [programLoading, setProgramLoading] = useState(false)
+  const [settledProgramRuntime, setSettledProgramRuntime] = useState<AgentRuntimeSelection | null>(null)
+  const programLoading = settledProgramRuntime?.environmentId !== runtimeEnvironmentId
+    || settledProgramRuntime.selectionRevision !== runtimeSelectionRevision
   const [agentOutput, setAgentOutput] = useState<string[]>([])
   const [notice, setNotice] = useState<string | null>(null)
   const [packApplyConflict, setPackApplyConflict] = useState<PackApplyConflictDialogState | null>(null)
@@ -165,7 +167,7 @@ export function AgentManagementPage() {
     const request = ++latestAgentProgramRequest
     programRequestRef.current = request
     const isLatest = () => request === latestAgentProgramRequest && isAgentRuntimeSelection(runtime)
-    setProgramLoading(true)
+    setSettledProgramRuntime(null)
     try {
       const next = await agentApi.refresh(runtime.environmentId)
       if (!isAgentRuntimeSelection(runtime)) return
@@ -175,7 +177,7 @@ export function AgentManagementPage() {
     } catch (e) {
       if (request === programRequestRef.current && isLatest()) setError(skillErrorMessage(t, e))
     } finally {
-      if (request === programRequestRef.current && isAgentRuntimeSelection(runtime)) setProgramLoading(false)
+      if (request === programRequestRef.current && isAgentRuntimeSelection(runtime)) setSettledProgramRuntime(runtime)
     }
   }, [setError, t])
 
@@ -226,13 +228,14 @@ export function AgentManagementPage() {
       return
     }
     if (state.selectedAgentId && agents.some((agent) => agent.id === state.selectedAgentId)) return
+    if (programLoading) return
     const first = agents.find((agent) => {
       const program = programs[agent.id]
       return program ? isAgentProgramInstalled(program) : agent.installed
     }) || agents[0]
     if (first) state.selectAgent(first.id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agents, programs, state.selectedAgentId])
+  }, [agents, programLoading, programs, state.selectedAgentId])
 
   useEffect(() => {
     setTab('overview')
@@ -586,7 +589,11 @@ export function AgentManagementPage() {
           : item)
         useSkillStoreV2.setState({ agents: nextAgents })
         if (current.selectedAgentId === agent.id) {
-          const nextAgent = nextAgents.find((item) => item.installed && item.id !== SHARED_SKILLS_AGENT_ID)
+          const nextAgent = nextAgents.find((item) => {
+            if (item.id === SHARED_SKILLS_AGENT_ID) return false
+            const detected = refreshed?.[item.id]
+            return detected ? isAgentProgramInstalled(detected) : item.installed
+          })
           await state.selectAgent(nextAgent?.id ?? null)
         }
         const cleanup = removedSkills > 0 ? `，已清理 ${removedSkills} 个 Skills` : ''
@@ -761,7 +768,7 @@ export function AgentManagementPage() {
       <div className="sm2__main sm2__main--full settings-scroll">
         {!detail ? (
           <div className="sm2__empty">
-            {state.agentDetailLoading ? '加载 Agent 详情…' : '选择一个已安装 Agent 查看详情'}
+            {state.agentDetailLoading || programLoading ? '加载 Agent 详情…' : '选择一个已安装 Agent 查看详情'}
           </div>
         ) : (
           <AgentDetailView
