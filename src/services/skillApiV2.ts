@@ -1377,8 +1377,8 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<DeleteSkillPackPreview>('preview_delete_skill_pack', { packId }) : Promise.resolve({ packId, packName: packId, appliedAgents: [], affectedTargets: [], removable: true, warnings: [] }),
   deletePack: (packId: string) =>
     isTauriRuntime() ? invoke<void>('execute_delete_skill_pack', { packId }) : Promise.resolve(),
-  previewApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy') =>
-    isTauriRuntime() ? invoke<DistributionPreview>('preview_apply_skill_pack', { packId, targetAgents, requestedMode }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions: [] }),
+  previewApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy', environmentId?: string) =>
+    isTauriRuntime() ? invoke<DistributionPreview>('preview_apply_skill_pack', { packId, targetAgents, requestedMode }, environmentId) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions: [] }),
   executeApplyPack: (
     packId: string,
     targetAgents: string[],
@@ -1389,8 +1389,8 @@ export const skillApiV2 = {
   ) => isTauriRuntime()
     ? invoke<DistributionPreview>('execute_apply_skill_pack', { packId, targetAgents, requestedMode, blockerDecisions, reviewedPreview }, environmentId)
     : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions }),
-  syncPackToAgents: (packId: string, targetAgents: string[] = []) =>
-    isTauriRuntime() ? invoke<SkillPackSyncResult>('execute_sync_skill_pack_to_agents', { packId, targetAgents }) : Promise.resolve({ packId, packName: packId, revision: 1, status: 'synced', agents: [] }),
+  syncPackToAgents: (packId: string, targetAgents: string[] = [], environmentId?: string) =>
+    isTauriRuntime() ? invoke<SkillPackSyncResult>('execute_sync_skill_pack_to_agents', { packId, targetAgents }, environmentId) : Promise.resolve({ packId, packName: packId, revision: 1, status: 'synced', agents: [] }),
   previewRemovePackFromAgent: (packId: string, agentId: string) =>
     isTauriRuntime() ? invoke<RemovePackFromAgentPreview>('preview_remove_skill_pack_from_agent', { packId, agentId }) : Promise.resolve({ packId, packName: packId, agentId, displayName: agentId, affectedTargets: [], willRemoveTargets: 0, willPreserveTargets: 0 }),
   removePackFromAgent: (packId: string, agentId: string, environmentId?: string) =>

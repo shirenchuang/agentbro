@@ -39,7 +39,8 @@ type PackLink = {
 }
 type PackMemberStatus = 'missing' | 'unavailable' | 'unrecorded' | 'different' | 'match'
 type PackSyncConflictState = {
-  pack: SkillPackDetail
+  packId: string
+  runtime: PackRuntime
   targetAgents: string[]
   requestedMode: 'link' | 'copy'
   preview: DistributionPreview
@@ -123,20 +124,31 @@ export function SkillPackPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
   const [packQuery, setPackQuery] = useState('')
-  const [builderMode, setBuilderMode] = useState<BuilderMode | null>(null)
+  const [builderDraft, setBuilder] = useState<{ mode: BuilderMode; runtime: PackRuntime } | null>(null)
   const [applyFor, setApplyFor] = useState<SkillPackDetail | null>(null)
   const [deletePreview, setDeletePreview] = useState<DeleteSkillPackPreview | null>(null)
   const [removeSkillPreview, setRemoveSkillPreview] = useState<RemoveSkillFromPackPreview | null>(null)
   const [revokePreview, setRevokePreview] = useState<RemovePackFromAgentPreview | null>(null)
-  const [syncConflict, setSyncConflict] = useState<PackSyncConflictState | null>(null)
+  const [syncConflictDraft, setSyncConflict] = useState<PackSyncConflictState | null>(null)
   const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [syncNotice, setSyncNotice] = useState<string | null>(null)
+  const [actionBusy, setBusy] = useState(false)
+  const [foregroundSync, setForegroundSync] = useState<{ runtime: PackRuntime } | null>(null)
+  const [notice, setNotice] = useState<{ revision: number; packId?: string; message: string } | null>(null)
+  const syncRequest = useRef(0)
   const [packImportDraft, setPackImport] = useState<PackImport | null>(null)
   const [packLinkDraft, setPackLink] = useState<PackLink | null>(null)
   const [packImportError, setPackImportError] = useState<string | null>(null)
   const [restoringMember, setRestoringMember] = useState<{ runtime: PackRuntime; skillId: string } | null>(null)
   const runtimeRevision = useRuntimeEnvironmentStore((runtime) => runtime.selectionRevision)
+  const builder = builderDraft?.runtime.selectionRevision === runtimeRevision ? builderDraft : null
+  const builderMode = builder?.mode
+  const syncConflict = syncConflictDraft?.runtime.selectionRevision === runtimeRevision && syncConflictDraft.packId === state.selectedPackId
+    ? syncConflictDraft
+    : null
+  const busy = actionBusy || foregroundSync?.runtime.selectionRevision === runtimeRevision
+  const syncNotice = notice?.revision === runtimeRevision && (!notice.packId || notice.packId === state.selectedPackId)
+    ? notice.message
+    : null
   const packImport = packImportDraft?.runtime.selectionRevision === runtimeRevision ? packImportDraft : null
   const packLink = packLinkDraft?.runtime.selectionRevision === runtimeRevision ? packLinkDraft : null
   const activeRestore = restoringMember?.runtime.selectionRevision === runtimeRevision ? restoringMember : null
@@ -199,13 +211,16 @@ export function SkillPackPage() {
   const syncIssueCount = state.packs.reduce((sum, pack) => sum + (pack.pendingSyncCount || 0) + (pack.failedSyncCount || 0), 0)
   const issueCount = unhealthyPacks + missingCount + syncIssueCount
 
+  const setSyncNotice = (message: string | null, packId?: string) =>
+    setNotice(message === null ? null : { revision: runtimeRevision, packId, message })
+
   const startCreate = () => {
     state.selectPack(null)
-    setBuilderMode('create')
+    setBuilder({ mode: 'create', runtime: useRuntimeEnvironmentStore.getState() })
   }
 
-  const startEdit = () => setBuilderMode('edit')
-  const startDuplicate = () => setBuilderMode('duplicate')
+  const startEdit = () => setBuilder({ mode: 'edit', runtime: useRuntimeEnvironmentStore.getState() })
+  const startDuplicate = () => setBuilder({ mode: 'duplicate', runtime: useRuntimeEnvironmentStore.getState() })
 
   const preparePackReview = async (manifest: SkillPackManifest, runtime: PackRuntime, sourceUrl?: string) => {
     if (!isPackRuntimeCurrent(runtime)) return
@@ -411,27 +426,50 @@ export function SkillPackPage() {
     }
   }
 
-  const syncPack = async (packId: string, agentIds: string[] = [], options: SyncPackOptions = {}) => {
+  const refreshSelectedPack = async (packId: string, runtime: PackRuntime) => {
+    if (!isPackRuntimeCurrent(runtime)) return
+    await state.loadOverview(true)
+    if (isPackRuntimeCurrent(runtime) && useSkillStoreV2.getState().selectedPackId === packId) {
+      await state.selectPack(packId)
+    }
+  }
+
+  const syncPack = async (
+    packId: string,
+    agentIds: string[] = [],
+    options: SyncPackOptions = {},
+    runtime: PackRuntime = useRuntimeEnvironmentStore.getState(),
+  ) => {
+    if (!isPackRuntimeCurrent(runtime)) return
+    const request = { runtime }
+    const revision = ++syncRequest.current
+    const isLatest = () => revision === syncRequest.current && isPackRuntimeCurrent(runtime)
+    const isSelected = () => useSkillStoreV2.getState().selectedPackId === packId
     if (options.background) {
-      setSyncNotice(`“${options.packName || '技能包'}”已保存，正在后台同步到 Agent…`)
+      setSyncNotice(`“${options.packName || '技能包'}”已保存，正在后台同步到 Agent…`, packId)
     } else {
-      setBusy(true)
+      setForegroundSync(request)
       setSyncNotice(null)
     }
     try {
-      const result = await skillApiV2.syncPackToAgents(packId, agentIds)
+      const result = await skillApiV2.syncPackToAgents(packId, agentIds, runtime.selectedEnvironmentId)
+      if (!isLatest()) {
+        await refreshSelectedPack(packId, runtime)
+        return
+      }
       const failedAgents = result.agents.filter((agent) => agent.status === 'failed')
-      if (failedAgents.length > 0) {
+      if (failedAgents.length > 0 && isSelected()) {
         const targetAgents = failedAgents.map((agent) => agent.agentId)
         const requestedMode = state.settings?.defaultDistributeMode || 'link'
-        const preview = await skillApiV2.previewApplyPack(packId, targetAgents, requestedMode)
-        if (preview.blockers.length > 0) {
-          const currentPack = useSkillStoreV2.getState().selectedPackDetail
-          const pack = currentPack?.id === packId ? currentPack : await skillApiV2.getPackDetail(packId)
-          setSyncConflict({ pack, targetAgents, requestedMode, preview })
-          setSyncNotice('同步遇到需要处理的冲突，请选择处理方式。')
-          await state.loadOverview(true)
-          await state.selectPack(packId)
+        const preview = await skillApiV2.previewApplyPack(packId, targetAgents, requestedMode, runtime.selectedEnvironmentId)
+        if (!isLatest()) {
+          await refreshSelectedPack(packId, runtime)
+          return
+        }
+        if (preview.blockers.length > 0 && isSelected()) {
+          setSyncConflict({ packId, runtime, targetAgents, requestedMode, preview })
+          setSyncNotice('同步遇到需要处理的冲突，请选择处理方式。', packId)
+          await refreshSelectedPack(packId, runtime)
           return
         }
       }
@@ -441,14 +479,15 @@ export function SkillPackPage() {
           : options.background
             ? `“${options.packName || '技能包'}”已保存，并同步到 ${result.agents.length} 个 Agent。`
           : t('skills.packSyncDoneNotice', { count: result.agents.length, defaultValue: '已同步 {{count}} 个 Agent。' }),
+        packId,
       )
-      await state.loadOverview(true)
-      await state.selectPack(packId)
+      await refreshSelectedPack(packId, runtime)
     } catch (e) {
-      state.setError(String(e))
-      if (options.background) setSyncNotice(`“${options.packName || '技能包'}”已保存，但后台同步失败。`)
+      if (!isLatest()) return
+      if (isSelected()) state.setError(String(e))
+      if (options.background) setSyncNotice(`“${options.packName || '技能包'}”已保存，但后台同步失败。`, packId)
     } finally {
-      if (!options.background) setBusy(false)
+      if (!options.background) setForegroundSync((current) => current === request ? null : current)
     }
   }
 
@@ -516,7 +555,8 @@ export function SkillPackPage() {
                   pack={pack}
                   active={state.selectedPackId === pack.id && !builderMode}
                   onClick={() => {
-                    setBuilderMode(null)
+                    setBuilder(null)
+                    setSyncConflict(null)
                     state.selectPack(pack.id)
                   }}
                 />
@@ -658,28 +698,27 @@ export function SkillPackPage() {
         </PreviewDialog>
       )}
 
-      {builderMode && (
+      {builder && (
         <PackBuilderDialog
-          mode={builderMode}
-          existing={builderMode === 'create' ? null : detail}
+          mode={builder.mode}
+          runtime={builder.runtime}
+          existing={builder.mode === 'create' ? null : detail}
           membershipsBySkillId={packMemberships.membershipsBySkillId}
           membershipsLoading={packMemberships.loading}
-          onCancel={() => setBuilderMode(null)}
+          onCancel={() => setBuilder(null)}
           onSaved={(saved, options) => {
-            setBuilderMode(null)
+            if (!isPackRuntimeCurrent(builder.runtime)) return
+            setBuilder((current) => current === builder ? null : current)
             useSkillStoreV2.setState({
               selectedPackId: saved.id,
               selectedPackDetail: saved,
             })
             if ((options.forceSync || state.settings?.autoSyncSkillPacks !== false) && packNeedsSync(saved)) {
-              void syncPack(saved.id, [], { background: true, packName: saved.name })
+              void syncPack(saved.id, [], { background: true, packName: saved.name }, builder.runtime)
               return
             }
-            setSyncNotice(`“${saved.name}”已保存。`)
-            void (async () => {
-              await state.loadOverview(true)
-              await state.selectPack(saved.id)
-            })()
+            setSyncNotice(`“${saved.name}”已保存。`, saved.id)
+            void refreshSelectedPack(saved.id, builder.runtime)
           }}
         />
       )}
@@ -768,14 +807,13 @@ export function SkillPackPage() {
       )}
       {syncConflict && (
         <PackSyncConflictDialog
-          key={`${syncConflict.pack.id}:${syncConflict.targetAgents.join(',')}`}
+          key={`${syncConflict.packId}:${syncConflict.targetAgents.join(',')}`}
           conflict={syncConflict}
           onClose={() => setSyncConflict(null)}
           onDone={async () => {
-            const packId = syncConflict.pack.id
-            setSyncConflict(null)
-            await state.loadOverview(true)
-            await state.selectPack(packId)
+            setSyncConflict((current) => current === syncConflict ? null : current)
+            setSyncNotice(null)
+            await refreshSelectedPack(syncConflict.packId, syncConflict.runtime)
           }}
         />
       )}
@@ -785,6 +823,7 @@ export function SkillPackPage() {
 
 function PackBuilderDialog({
   mode,
+  runtime,
   existing,
   membershipsBySkillId,
   membershipsLoading,
@@ -792,6 +831,7 @@ function PackBuilderDialog({
   onSaved,
 }: {
   mode: BuilderMode
+  runtime: PackRuntime
   existing: SkillPackDetail | null
   membershipsBySkillId: SkillPackMembershipsBySkillId
   membershipsLoading: boolean
@@ -821,6 +861,7 @@ function PackBuilderDialog({
       >
         <PackBuilderPanel
           mode={mode}
+          runtime={runtime}
           existing={existing}
           membershipsBySkillId={membershipsBySkillId}
           membershipsLoading={membershipsLoading}
@@ -1156,6 +1197,7 @@ function packSyncStatusLabel(status: string) {
 
 function PackBuilderPanel({
   mode,
+  runtime,
   existing,
   membershipsBySkillId,
   membershipsLoading,
@@ -1163,6 +1205,7 @@ function PackBuilderPanel({
   onSaved,
 }: {
   mode: BuilderMode
+  runtime: PackRuntime
   existing: SkillPackDetail | null
   membershipsBySkillId: SkillPackMembershipsBySkillId
   membershipsLoading: boolean
@@ -1231,6 +1274,7 @@ function PackBuilderPanel({
   }
 
   const save = async () => {
+    if (!isPackRuntimeCurrent(runtime)) return
     if (!name.trim()) {
       setError('技能包名称必填。')
       return
@@ -1248,9 +1292,9 @@ function PackBuilderPanel({
           tags: [],
           skillIds,
         },
-        { deferSync: true },
+        { deferSync: true, environmentId: runtime.selectedEnvironmentId },
       )
-      onSaved(saved, { forceSync: removedExistingMember })
+      if (isPackRuntimeCurrent(runtime)) onSaved(saved, { forceSync: removedExistingMember })
     } catch (e) {
       setError(String(e))
     } finally {
@@ -1593,6 +1637,9 @@ function PackSyncConflictDialog({
   const unresolvedBlockers = preview.blockers.filter((blocker) => !blockerDecisions[blockerKey(blocker)]).length
 
   const execute = async () => {
+    const isCurrent = () => isPackRuntimeCurrent(conflict.runtime)
+      && useSkillStoreV2.getState().selectedPackId === conflict.packId
+    if (!isCurrent()) return
     setBusy(true)
     setError(null)
     try {
@@ -1603,12 +1650,14 @@ function PackSyncConflictDialog({
         })
         .filter((item): item is DistributionBlockerDecision => Boolean(item))
       const result = await skillApiV2.executeApplyPack(
-        conflict.pack.id,
+        conflict.packId,
         conflict.targetAgents,
         conflict.requestedMode,
         blockerDecisionsPayload,
         preview,
+        conflict.runtime.selectedEnvironmentId,
       )
+      if (!isCurrent()) return
       if (result.blockers.length > 0) {
         setPreview(result)
         setBlockerDecisions({})
