@@ -5,7 +5,7 @@ import { AgentIconBadge } from '../components/skills-v2/AgentIconBadge'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
 import { useSessionStore } from '../stores/sessionStore'
 import { skillApiV2 } from '../services/skillApiV2'
-import { agentApi, type AgentProgramInfo } from '../services/agentApi'
+import { agentApi, type AgentPackageOutput, type AgentProgramInfo } from '../services/agentApi'
 import * as tauriApi from '../services/tauriApi'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
@@ -3675,6 +3675,56 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     await act(async () => failLookup(new Error('Old Agent lookup failed')))
     expect(useSkillStoreV2.getState().error).toBeNull()
+  })
+
+  it('restores package output on return and ignores late snapshots and other runtimes', async () => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram()])
+    const output = (revision: number, lines: AgentPackageOutput['lines']): AgentPackageOutput => ({
+      agentId: 'claude-code',
+      revision,
+      lines,
+    })
+    const initial = output(1, [{ stream: 'info', line: 'Started package update' }])
+    const whileClosed = output(2, [...initial.lines, { stream: 'stdout', line: 'Downloaded while closed' }])
+    const finished = output(3, [...whileClosed.lines, { stream: 'stderr', line: 'Finished package output' }])
+    let emit: ((output: AgentPackageOutput) => void) | undefined
+    vi.spyOn(agentApi, 'onPackageOutput').mockImplementation(async (handler) => {
+      emit = handler
+      return () => { emit = undefined }
+    })
+    let finishReopenedLookup!: (output: AgentPackageOutput) => void
+    const readOutput = vi.spyOn(agentApi, 'packageOutput')
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(whileClosed)
+      .mockReturnValueOnce(new Promise((resolve) => { finishReopenedLookup = resolve }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+
+    const firstPage = render(<AgentManagementPage />)
+    expect(await screen.findByText('* Started package update')).toBeInTheDocument()
+    firstPage.unmount()
+    expect(emit).toBeUndefined()
+
+    const reopenedPage = render(<AgentManagementPage />)
+    expect(await screen.findByText('> Downloaded while closed')).toBeInTheDocument()
+    expect(screen.getAllByText('* Started package update')).toHaveLength(1)
+    reopenedPage.unmount()
+
+    render(<AgentManagementPage />)
+    await waitFor(() => expect(readOutput).toHaveBeenCalledTimes(3))
+    await act(async () => {
+      emit?.(finished)
+      emit?.({ ...finished, agentId: 'codex', revision: 4, lines: [{ stream: 'info', line: 'Codex output' }] })
+      finishReopenedLookup(whileClosed)
+    })
+    expect(screen.getByText('! Finished package output')).toBeInTheDocument()
+    expect(screen.queryByText('* Codex output')).not.toBeInTheDocument()
+
+    act(() => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-output-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'remote-output-host' })
+    })
+    expect(screen.queryByText('! Finished package output')).not.toBeInTheDocument()
+    expect(readOutput).toHaveBeenCalledTimes(3)
   })
 
   it.each([

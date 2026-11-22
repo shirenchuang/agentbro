@@ -3,6 +3,7 @@ use crate::commands::AppState;
 use crate::platform::process::background_tokio_command;
 use crate::skills::{agent_paths, registry};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -16,6 +17,10 @@ use tokio::time::{timeout, Duration};
 mod windows_app_paths;
 
 static AGENT_PACKAGE_OPERATION: Mutex<()> = Mutex::const_new(());
+static AGENT_PACKAGE_OUTPUT: std::sync::Mutex<BTreeMap<String, AgentPackageOutput>> =
+    std::sync::Mutex::new(BTreeMap::new());
+const PACKAGE_OUTPUT_LINES: usize = 10;
+const PACKAGE_OUTPUT_LINE_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +71,41 @@ pub struct AgentOutputEvent {
     pub line: String,
     pub done: bool,
     pub success: Option<bool>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPackageOutput {
+    agent_id: String,
+    revision: u64,
+    lines: VecDeque<AgentPackageOutputLine>,
+}
+
+#[derive(Clone, Serialize)]
+struct AgentPackageOutputLine {
+    stream: String,
+    line: String,
+}
+
+impl AgentPackageOutput {
+    fn record(&mut self, event: Option<&AgentOutputEvent>) {
+        self.revision += 1;
+        if let Some(event) = event {
+            if self.lines.len() == PACKAGE_OUTPUT_LINES {
+                self.lines.pop_front();
+            }
+            let mut end = event.line.len().min(PACKAGE_OUTPUT_LINE_BYTES);
+            while !event.line.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.lines.push_back(AgentPackageOutputLine {
+                stream: event.stream.clone(),
+                line: event.line[..end].to_string(),
+            });
+        } else {
+            self.lines.clear();
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +160,11 @@ pub async fn agent_list(state: State<'_, AppState>) -> Result<Vec<AgentProgramIn
 #[tauri::command]
 pub async fn agent_refresh(state: State<'_, AppState>) -> Result<Vec<AgentProgramInfo>, String> {
     Ok(build_agent_list(&state.adapters, true).await)
+}
+
+#[tauri::command]
+pub fn agent_package_output(agent_id: String) -> Option<AgentPackageOutput> {
+    AGENT_PACKAGE_OUTPUT.lock().ok()?.get(&agent_id).cloned()
 }
 
 #[tauri::command]
@@ -795,6 +840,7 @@ async fn run_agent_command(
     if desktop_codex_launcher(agent_id, installed_binary.as_deref()).is_some() {
         return Err("The selected Codex installation is managed by its desktop client".to_string());
     }
+    publish_package_output(&app, agent_id, None);
     if operation == "uninstall"
         && !program_is_installed_for_agent(
             agent_id,
@@ -1072,17 +1118,33 @@ fn emit_output(
     done: bool,
     success: Option<bool>,
 ) {
-    let _ = app.emit(
-        "agent-output",
-        AgentOutputEvent {
-            agent_id: agent_id.to_string(),
-            operation: operation.to_string(),
-            stream: stream.to_string(),
-            line: line.to_string(),
-            done,
-            success,
-        },
-    );
+    let event = AgentOutputEvent {
+        agent_id: agent_id.to_string(),
+        operation: operation.to_string(),
+        stream: stream.to_string(),
+        line: line.to_string(),
+        done,
+        success,
+    };
+    publish_package_output(app, agent_id, Some(&event));
+    let _ = app.emit("agent-output", event);
+}
+
+fn publish_package_output(app: &AppHandle, agent_id: &str, event: Option<&AgentOutputEvent>) {
+    let snapshot = AGENT_PACKAGE_OUTPUT.lock().ok().map(|mut history| {
+        let output = history
+            .entry(agent_id.to_string())
+            .or_insert_with(|| AgentPackageOutput {
+                agent_id: agent_id.to_string(),
+                revision: 0,
+                lines: VecDeque::new(),
+            });
+        output.record(event);
+        output.clone()
+    });
+    if let Some(snapshot) = snapshot {
+        let _ = app.emit("agent-package-output", snapshot);
+    }
 }
 
 fn package_command(program: impl AsRef<OsStr>, path: Option<&OsStr>) -> Command {
@@ -2025,6 +2087,42 @@ mod tests {
             received,
             ["开始", "", "legacy � line", "finished", "final line"]
         );
+    }
+
+    #[test]
+    fn package_output_keeps_recent_lines_and_resets_without_reusing_revisions() {
+        let mut output = super::AgentPackageOutput {
+            agent_id: "claude-code".into(),
+            revision: 0,
+            lines: Default::default(),
+        };
+        let mut event = super::AgentOutputEvent {
+            agent_id: "claude-code".into(),
+            operation: "update".into(),
+            stream: "stdout".into(),
+            line: String::new(),
+            done: false,
+            success: None,
+        };
+        for index in 0..=super::PACKAGE_OUTPUT_LINES {
+            event.line = index.to_string();
+            output.record(Some(&event));
+        }
+        assert_eq!(output.lines.len(), super::PACKAGE_OUTPUT_LINES);
+        assert_eq!(output.lines[0].line, "1");
+        assert_eq!(output.lines[0].stream, "stdout");
+
+        event.line = format!("{}界", "a".repeat(super::PACKAGE_OUTPUT_LINE_BYTES - 1));
+        event.stream = "stderr".into();
+        output.record(Some(&event));
+        let last = output.lines.back().unwrap();
+        assert_eq!(last.stream, "stderr");
+        assert_eq!(last.line.len(), super::PACKAGE_OUTPUT_LINE_BYTES - 1);
+
+        let revision = output.revision;
+        output.record(None);
+        assert!(output.lines.is_empty());
+        assert_eq!(output.revision, revision + 1);
     }
 
     #[test]
