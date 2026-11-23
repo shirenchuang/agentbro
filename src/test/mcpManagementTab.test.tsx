@@ -181,7 +181,7 @@ describe('McpManagementTab', () => {
     })
   })
 
-  it('edits without exposing a configured secret and preserves it on save', async () => {
+  it.each(['untouched', 'replacement cleared'])('preserves a redacted secret on save: %s', async (edit) => {
     vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory())
     vi.spyOn(skillApiV2, 'validateMcpServerDraft').mockResolvedValue({
       valid: true,
@@ -200,6 +200,10 @@ describe('McpManagementTab', () => {
     expect(secretInput).toHaveAttribute('type', 'password')
     expect(secretInput).toHaveValue('')
     expect(secretInput).toHaveAttribute('placeholder', '已配置，留空则保持不变')
+    if (edit === 'replacement cleared') {
+      fireEvent.change(secretInput, { target: { value: 'temporary-replacement' } })
+      fireEvent.change(secretInput, { target: { value: '' } })
+    }
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
     await waitFor(() => expect(save).toHaveBeenCalledWith(
@@ -217,6 +221,111 @@ describe('McpManagementTab', () => {
       LOCAL_RUNTIME_ENVIRONMENT_ID,
     ))
     expect(await screen.findByText('已保存 MCP「context7」')).toBeInTheDocument()
+  })
+
+  it.each([
+    { label: '环境变量', transport: 'stdio', field: 'env' },
+    { label: '请求头', transport: 'http', field: 'headers' },
+  ])('keeps $field input focus while typing and preserves rows when one is removed', async ({ label, transport, field }) => {
+    vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory([]))
+    const validate = vi.spyOn(skillApiV2, 'validateMcpServerDraft').mockResolvedValue({
+      valid: true,
+      message: 'ok',
+      warnings: [],
+    })
+    const save = vi.spyOn(skillApiV2, 'saveMcpServer').mockResolvedValue(inventory())
+
+    render(<McpManagementTab detail={detail} />)
+    fireEvent.click(await screen.findByRole('button', { name: '新增 MCP' }))
+    if (transport === 'http') {
+      fireEvent.click(screen.getByRole('button', { name: 'HTTP' }))
+      fireEvent.change(screen.getByLabelText('服务地址'), { target: { value: 'https://example.com/mcp' } })
+    } else {
+      fireEvent.change(screen.getByLabelText('命令'), { target: { value: 'npx' } })
+    }
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'example-server' } })
+    const addRow = screen.getByRole('button', { name: `添加${label}` })
+    fireEvent.click(addRow)
+    fireEvent.click(addRow)
+    const secondKey = screen.getByLabelText(`${label} 键 2`)
+    secondKey.focus()
+    fireEvent.change(secondKey, { target: { value: 'X' } })
+    expect(secondKey).toHaveFocus()
+    expect(screen.getByLabelText(`${label} 键 2`)).toBe(secondKey)
+    const key = transport === 'http' ? 'X-Example' : 'EXAMPLE_NAME'
+    fireEvent.change(secondKey, { target: { value: key } })
+    fireEvent.change(screen.getByLabelText(`${label} 值 2`), { target: { value: 'example' } })
+    fireEvent.click(screen.getAllByRole('button', { name: '删除' })[0])
+    expect(screen.getByLabelText(`${label} 键 1`)).toBe(secondKey)
+    expect(secondKey).toHaveValue(key)
+    expect(screen.getByLabelText(`${label} 值 1`)).toHaveValue('example')
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    const expected = expect.objectContaining({
+      transport,
+      [field]: [{ key, value: 'example', secret: false, configured: true }],
+    })
+    expect(validate).toHaveBeenCalledWith('codex', expected, null, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    await waitFor(() => expect(save).toHaveBeenCalledWith('codex', expected, 'sha256:one', null, LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
+  it('retains existing and newly added empty argument rows in order', async () => {
+    vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory([
+      server({ args: ['--label', '', '  two words  '] }),
+    ]))
+    vi.spyOn(skillApiV2, 'validateMcpServerDraft').mockResolvedValue({ valid: true, message: 'ok', warnings: [] })
+    const save = vi.spyOn(skillApiV2, 'saveMcpServer').mockResolvedValue(inventory())
+
+    render(<McpManagementTab detail={detail} />)
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加参数' }))
+    expect(screen.getByLabelText('参数 4')).toHaveValue('')
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(save).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({ args: ['--label', '', '  two words  ', ''] }),
+      'sha256:one',
+      'context7',
+      LOCAL_RUNTIME_ENVIRONMENT_ID,
+    ))
+  })
+
+  it('retains both transport drafts and saves only fields for the selected transport', async () => {
+    vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory([
+      server({ cwd: 'C:\\Workspace With Spaces' }),
+    ]))
+    vi.spyOn(skillApiV2, 'validateMcpServerDraft').mockResolvedValue({ valid: true, message: 'ok', warnings: [] })
+    const save = vi.spyOn(skillApiV2, 'saveMcpServer').mockResolvedValue(inventory())
+
+    render(<McpManagementTab detail={detail} />)
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    fireEvent.click(screen.getByRole('button', { name: 'HTTP' }))
+    fireEvent.change(screen.getByLabelText('服务地址'), { target: { value: 'https://example.com/mcp' } })
+    fireEvent.click(screen.getByRole('button', { name: '添加请求头' }))
+    fireEvent.change(screen.getByLabelText('请求头 键 1'), { target: { value: 'X-Example' } })
+    fireEvent.change(screen.getByLabelText('请求头 值 1'), { target: { value: 'example' } })
+    fireEvent.click(screen.getByRole('button', { name: '本地命令' }))
+    expect(screen.getByLabelText('命令')).toHaveValue('npx')
+    expect(screen.getByLabelText('参数 2')).toHaveValue('@upstash/context7-mcp')
+    expect(screen.getByLabelText('工作目录（可选）')).toHaveValue('C:\\Workspace With Spaces')
+    expect(screen.getByLabelText('环境变量 键 1')).toHaveValue('API_TOKEN')
+    fireEvent.click(screen.getByRole('button', { name: 'HTTP' }))
+    expect(screen.getByLabelText('服务地址')).toHaveValue('https://example.com/mcp')
+    expect(screen.getByLabelText('请求头 键 1')).toHaveValue('X-Example')
+    expect(screen.getByLabelText('请求头 值 1')).toHaveValue('example')
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith(
+      'codex',
+      {
+        name: 'context7', transport: 'http', command: null, args: [], env: [], cwd: null,
+        url: 'https://example.com/mcp',
+        headers: [{ key: 'X-Example', value: 'example', secret: false, configured: true }],
+      },
+      'sha256:one',
+      'context7',
+      LOCAL_RUNTIME_ENVIRONMENT_ID,
+    ))
   })
 
   it.each(['runtime', 'runtime and back', 'agent and back', 'runtime before validation'])(
