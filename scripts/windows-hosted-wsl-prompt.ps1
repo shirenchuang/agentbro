@@ -12,11 +12,12 @@ using System.Text;
 
 public static class AgentBroWslPrompt {
     private const int Minimize = 6;
-    private const int OkControlId = 1;
     private const uint GetTextMessage = 0x000D;
     private const uint CommandMessage = 0x0111;
     private const uint AbortIfHung = 0x0002;
     private const uint ErrorOnExit = 0x0020;
+    private static readonly HashSet<IntPtr> inspectedNotices = new HashSet<IntPtr>();
+    private delegate bool EnumWindowCallback(IntPtr window, IntPtr state);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
@@ -41,7 +42,13 @@ public static class AgentBroWslPrompt {
         StringBuilder text, uint flags, uint timeout, out IntPtr result);
 
     [DllImport("user32.dll")]
-    private static extern IntPtr GetDlgItem(IntPtr window, int controlId);
+    private static extern int GetDlgCtrlID(IntPtr window);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, StringBuilder className, int capacity);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr parent, EnumWindowCallback callback, IntPtr state);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool PostMessage(IntPtr window, uint message, IntPtr command, IntPtr control);
@@ -72,34 +79,48 @@ public static class AgentBroWslPrompt {
 
     public static string[] AcknowledgePagingFileNotices() {
         var requests = new List<string>();
-        foreach (var window in VisibleWindows("#32770", "System Properties")) {
+        foreach (var window in VisibleWindows(null, "System Properties")) {
             uint processId;
             GetWindowThreadProcessId(window, out processId);
             if (processId == 0) continue;
             try {
                 using (var owner = Process.GetProcessById((int)processId)) {
-                    if (owner.ProcessName != "SystemPropertiesPerformance") continue;
+                    if (!owner.ProcessName.Equals("SystemPropertiesPerformance", StringComparison.OrdinalIgnoreCase))
+                        continue;
                 }
             } catch (ArgumentException) {
                 continue;
             }
-            var ok = GetDlgItem(window, OkControlId);
-            if (!IsWindowVisible(ok)) continue;
-            for (var label = FindWindowEx(window, IntPtr.Zero, "Static", null);
-                 label != IntPtr.Zero;
-                 label = FindWindowEx(window, label, "Static", null)) {
+            var className = new StringBuilder(128);
+            GetClassName(window, className, className.Capacity);
+            if (className.ToString() != "#32770") continue;
+            bool hasPagingText = false;
+            IntPtr ok = IntPtr.Zero;
+            var controls = new List<string>();
+            EnumChildWindows(window, (control, _) => {
+                if (!IsWindowVisible(control)) return true;
+                className.Clear();
+                GetClassName(control, className, className.Capacity);
                 var text = new StringBuilder(512);
                 IntPtr result;
-                if (SendMessageTimeout(label, GetTextMessage, (IntPtr)text.Capacity, text,
-                    AbortIfHung | ErrorOnExit, 100, out result) == IntPtr.Zero ||
-                    !text.ToString().StartsWith("Windows created a temporary paging file on your computer", StringComparison.Ordinal))
-                    continue;
-                if (PostMessage(window, CommandMessage, (IntPtr)OkControlId, ok)) {
-                    requests.Add(string.Format(
-                        "Acknowledged the hosted paging-file notice HWND {0} (PID {1}) at {2:O}.",
-                        window, processId, DateTime.UtcNow));
+                if (SendMessageTimeout(control, GetTextMessage, (IntPtr)text.Capacity, text,
+                    AbortIfHung | ErrorOnExit, 100, out result) != IntPtr.Zero) {
+                    var label = text.ToString();
+                    if (label.StartsWith("Windows created a temporary paging file on your computer", StringComparison.Ordinal))
+                        hasPagingText = true;
+                    if (className.ToString() == "Button" && label == "OK") ok = control;
                 }
-                break;
+                controls.Add(className.ToString());
+                return true;
+            }, IntPtr.Zero);
+            if (hasPagingText && ok != IntPtr.Zero && PostMessage(window, CommandMessage, (IntPtr)GetDlgCtrlID(ok), ok)) {
+                requests.Add(string.Format(
+                    "Requested acknowledgement of the hosted paging-file notice HWND {0} (PID {1}) at {2:O}.",
+                    window, processId, DateTime.UtcNow));
+            } else if (inspectedNotices.Add(window)) {
+                requests.Add(string.Format(
+                    "Inspected System Properties HWND {0} (PID {1}). Paging text: {2}, OK button: {3}, controls: {4}.",
+                    window, processId, hasPagingText, ok != IntPtr.Zero, string.Join(", ", controls)));
             }
         }
         return requests.ToArray();

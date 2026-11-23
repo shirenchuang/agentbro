@@ -177,12 +177,26 @@ function Open-InstalledAgentSkills([Windows.Automation.AutomationElement]$Island
     if (-not $settings) {
         $islandWindow = Wait-IslandValue 'the visible native Island window before reopening Settings' { Find-VisibleIsland }
         Move-ToIslandHoverPoint $islandWindow.Handle $Island
-        $settingsButton = Wait-IslandValue 'the visible Island Settings button' {
-            if (Find-IslandButton $Island { param($Name) $Name -eq 'Quit AgentBro' }) {
-                Find-PackControl $Island 'Settings' ([Windows.Automation.ControlType]::Button)
+        $null = Wait-IslandValue 'a native click on the current Island Settings button' {
+            $button = Find-PackControl $Island 'Settings' ([Windows.Automation.ControlType]::Button)
+            if (-not $button) { return }
+            $rect = $button.Current.BoundingRectangle
+            if ($rect.IsEmpty) { return }
+            $point = [Windows.Point]::new([int]($rect.Left + $rect.Width / 2), [int]($rect.Top + $rect.Height / 2))
+            if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
+                throw 'Could not move the Windows cursor onto Island Settings'
+            }
+            Start-Sleep -Milliseconds 250
+            if ([AgentBroSmokeInput]::ProcessAtCursor() -ne $AppProcessId) { return }
+            $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+            for ($hit = [Windows.Automation.AutomationElement]::FromPoint($point); $hit; $hit = $walker.GetParent($hit)) {
+                if ([Windows.Automation.Automation]::Compare($button, $hit)) {
+                    [AgentBroSmokeInput]::Click()
+                    Write-Host "Clicked the current Island Settings button at ($($point.X), $($point.Y))."
+                    return $true
+                }
             }
         }
-        Click-IslandElement $settingsButton 'Island Settings' -CenterAfterLayout | Out-Host
         $settings = Wait-IslandValue 'the native Settings window' $findSettings
     }
     $welcome = Find-PackControl $settings 'Start AgentBro'
