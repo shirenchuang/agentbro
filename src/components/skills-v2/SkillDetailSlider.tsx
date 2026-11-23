@@ -131,7 +131,7 @@ export function SkillDetailSlider({
       const fallbackPath = /^(?:[a-z]:[\\/]|\\\\)/i.test(fallback.centerPath)
         ? `${fallback.centerPath.replace(/[\\/]+$/, '')}\\SKILL.md`
         : `${fallback.centerPath.replace(/\/+$/, '')}/SKILL.md`
-      await loadFile(findFile(files, 'SKILL.md') || fallbackPath, { document: true, fallbackPath })
+      await loadFile(findSkillDocument(files) || fallbackPath, { document: true, fallbackPath })
     }
     const loadDetail = async () => {
       if (readOnly && fallbackSkill) {
@@ -142,7 +142,7 @@ export function SkillDetailSlider({
         const d = await skillApiV2.getSkillDetail(skillId, environmentId)
         if (!isCurrentLoad()) return
         setDetail(d)
-        await loadFile(findFile(d.files, 'SKILL.md'), { document: true })
+        await loadFile(findSkillDocument(d.files), { document: true })
       } catch (e) {
         if (!isCurrentLoad()) return
         if (!fallbackSkill) {
@@ -209,7 +209,7 @@ export function SkillDetailSlider({
     if (isCurrentRuntime()) void useSkillStoreV2.getState().loadOverview(true)
     if (!isCurrentView() || skillId !== updated.id) return
     setDetail(updated)
-    await loadFile(findFile(updated.files, 'SKILL.md'), { document: true })
+    await loadFile(findSkillDocument(updated.files), { document: true })
   }
 
   const doSync = async (targetId: string, action: string) => {
@@ -1465,16 +1465,9 @@ function CompactInfo({
   )
 }
 
-function findFile(node: FileTreeNode | null, name: string): string | null {
-  if (!node) return null
-  if (node.name === name && node.nodeType === 'file') return node.path
-  if (node.children) {
-    for (const c of node.children) {
-      const f = findFile(c, name)
-      if (f) return f
-    }
-  }
-  return null
+function findSkillDocument(root: FileTreeNode | null): string | null {
+  const entries = root?.nodeType === 'file' ? [root] : root?.children
+  return entries?.find((entry) => entry.nodeType === 'file' && entry.name === 'SKILL.md')?.path ?? null
 }
 
 function countFiles(node: FileTreeNode | null): number {
@@ -1497,7 +1490,7 @@ function relativeFilePath(path: string, root: string): string {
 }
 
 function isSkillMarkdownPath(path: string | null): boolean {
-  return Boolean(path && /(^|\/)SKILL\.md$/i.test(path))
+  return path !== null && pathBasename(path).toLowerCase() === 'skill.md'
 }
 
 function formatMetaValue(value: string): string {

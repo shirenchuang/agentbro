@@ -3011,6 +3011,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '概览' }))
     expect(screen.getByText('Windows skill instructions.')).toBeInTheDocument()
     expect(read).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByRole('button', { name: '文件' }))
+    fireEvent.click(screen.getByRole('button', { name: /SKILL\.md/ }))
+    expect((await screen.findByText('Windows skill instructions.')).closest('.sm2__markdown'))
+      .toHaveClass('sm2__markdown--file-skill')
   })
 
   it('opens the Windows default document when the unmanaged file tree cannot be read', async () => {
@@ -3044,6 +3048,26 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '概览' }))
     expect(screen.queryByText('Reference-only text.')).not.toBeInTheDocument()
     expect(await screen.findByText('未找到说明文档')).toBeInTheDocument()
+  })
+
+  it.each([true, false])('recognizes only the root Skill document with nested directories first, root present=%s', async (hasRootDocument) => {
+    const root = '/center/release-checklist'
+    const files = previewFiles(root, hasRootDocument ? ['SKILL.md'] : [])
+    const nested = previewFiles(`${root}/examples`, ['SKILL.md'])
+    files.children = [{ ...nested, name: 'examples' }, ...(files.children ?? [])]
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue({
+      ...makeSkill(), frontmatter: {}, source: null, targets: [], files,
+    })
+    const read = vi.spyOn(skillApiV2, 'readFileContent').mockImplementation(async (path) => (
+      path === `${root}/SKILL.md` ? 'Main Skill instructions.' : 'Nested example instructions.'
+    ))
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+
+    expect(await screen.findByText(hasRootDocument ? 'Main Skill instructions.' : '未找到说明文档')).toBeInTheDocument()
+    expect(screen.queryByText('Nested example instructions.')).not.toBeInTheDocument()
+    if (hasRootDocument) expect(read).toHaveBeenCalledExactlyOnceWith(`${root}/SKILL.md`, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    else expect(read).not.toHaveBeenCalled()
   })
 
   it('closes an Agent file preview when its host changes instead of reading the old path remotely', async () => {
