@@ -412,6 +412,20 @@
   box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18);
 }
 
+.permission-reply-error {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  color: var(--island-warning-text);
+}
+
+.perm-card__btn[aria-disabled="true"],
+.hover-list__inline-btn[aria-disabled="true"],
+.approval-bar__btn[aria-disabled="true"] {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 /* Actions */
 .perm-card__actions {
   display: flex;

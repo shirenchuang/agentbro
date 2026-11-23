@@ -142,12 +142,12 @@ function OverlayRenderer({ overlay, onDismiss, onShowSessions, sessionCount, onD
         <PermissionCard
           overlay={overlay}
           session={session}
-          onAllow={() => { answerDisplayedPermission(session.id, permission, true) }}
-          onAllowAlways={() => { answerDisplayedPermission(session.id, permission, true, true) }}
-          onAutoApprove={() => { answerDisplayedPermission(session.id, permission, 'auto') }}
+          onAllow={() => { void answerDisplayedPermission(session.id, permission, true) }}
+          onAllowAlways={() => { void answerDisplayedPermission(session.id, permission, true, true) }}
+          onAutoApprove={() => { void answerDisplayedPermission(session.id, permission, 'auto') }}
           onShowSessions={onShowSessions}
-          onDeny={(message?: string) => {
-            if (answerDisplayedPermission(session.id, permission, false) && message) {
+          onDeny={async (message?: string) => {
+            if (await answerDisplayedPermission(session.id, permission, false) && message) {
               void sendMessage(session.id, message).catch((error) => console.warn('[notch] deny feedback:', error))
             }
           }}
@@ -1164,7 +1164,7 @@ export function NotchPanel() {
               void answerDisplayedPlan(active.id, active, approve ? 'acceptEdits' : 'manual')
             }
           } else {
-            answerDisplayedPermission(active.id, active.pendingPermission, Boolean(approve))
+            void answerDisplayedPermission(active.id, active.pendingPermission, Boolean(approve))
           }
           return
         }

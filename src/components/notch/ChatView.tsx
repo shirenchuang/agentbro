@@ -1,7 +1,7 @@
 /* ChatView — Conversation-style message list for active session */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion, planReplyError, questionReplyError, useSessionStore, selectActiveSession } from '../../stores/sessionStore'
+import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion, getPermissionReply, planReplyError, questionReplyError, useSessionStore, selectActiveSession } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { getChatHistoryTail, getSubagentChatHistory } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
@@ -117,9 +117,9 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   const hasPlan = Boolean(activeSession?.planTitle || activeSession?.planContent)
   const replyError = useSessionStore((state) => {
     if (!activeSession) return undefined
-    return hasPlan
-      ? planReplyError(state, activeSession.id, activeSession)
-      : questionReplyError(state, activeSession.id, activeSession.pendingQuestion)
+    if (hasPlan) return planReplyError(state, activeSession.id, activeSession)
+    if (activeSession.pendingQuestion) return questionReplyError(state, activeSession.id, activeSession.pendingQuestion)
+    return getPermissionReply(state, activeSession.id, activeSession.pendingPermission)?.error
   })
   const [subagentHistory, setSubagentHistory] = useState<{
     sessionId: string
@@ -203,7 +203,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       void answerDisplayedPlan(activeSession.id, activeSession, 'acceptEdits')
       return
     }
-    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, true, false)
+    void answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, true, false)
   }
 
   const handleAllowAlways = () => {
@@ -212,7 +212,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       void answerDisplayedPlan(activeSession.id, activeSession, 'bypassPermissions')
       return
     }
-    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, true, true)
+    void answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, true, true)
   }
 
   const handleDeny = () => {
@@ -221,7 +221,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       void answerDisplayedPlan(activeSession.id, activeSession, 'manual')
       return
     }
-    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, false)
+    void answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, false)
   }
 
   const handleAutoApprove = () => {
@@ -230,7 +230,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       void answerDisplayedPlan(activeSession.id, activeSession, 'bypassPermissions')
       return
     }
-    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, 'auto')
+    void answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, 'auto')
   }
 
   const handleSend = async (msg: string) => {
@@ -424,9 +424,9 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
         </button>
       )}
 
-      {!currentSubagentHistory && (sendError || replyError) && (
+      {!currentSubagentHistory && (sendError || replyError !== undefined) && (
         <div role="alert" className="chat-view__send-error">
-          <span>{sendError || replyError}</span>
+          <span>{sendError || replyError || t('notch.unexpectedError')}</span>
           {sendError && (
             <button type="button" onClick={() => setSendError(null)}>
               {t('notch.dismiss', '关闭')}
