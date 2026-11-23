@@ -3,15 +3,20 @@ if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'ARM64'
     throw 'Desktop prompt cleanup requires an isolated GitHub-hosted Windows ARM64 runner'
 }
 
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 
 public static class AgentBroWslPrompt {
     private const int Minimize = 6;
+    private const int OkControlId = 1;
+    private const uint GetTextMessage = 0x000D;
+    private const uint CommandMessage = 0x0111;
+    private const uint AbortIfHung = 0x0002;
+    private const uint ErrorOnExit = 0x0020;
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
@@ -31,7 +36,17 @@ public static class AgentBroWslPrompt {
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
 
-    public static IEnumerable<IntPtr> VisibleWindows(string className, string title) {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr length,
+        StringBuilder text, uint flags, uint timeout, out IntPtr result);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetDlgItem(IntPtr window, int controlId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool PostMessage(IntPtr window, uint message, IntPtr command, IntPtr control);
+
+    private static IEnumerable<IntPtr> VisibleWindows(string className, string title) {
         for (var window = FindWindowEx(IntPtr.Zero, IntPtr.Zero, className, title);
              window != IntPtr.Zero;
              window = FindWindowEx(IntPtr.Zero, window, className, title)) {
@@ -54,42 +69,48 @@ public static class AgentBroWslPrompt {
         }
         return requests.ToArray();
     }
+
+    public static string[] AcknowledgePagingFileNotices() {
+        var requests = new List<string>();
+        foreach (var window in VisibleWindows("#32770", "System Properties")) {
+            uint processId;
+            GetWindowThreadProcessId(window, out processId);
+            if (processId == 0) continue;
+            try {
+                using (var owner = Process.GetProcessById((int)processId)) {
+                    if (owner.ProcessName != "SystemPropertiesPerformance") continue;
+                }
+            } catch (ArgumentException) {
+                continue;
+            }
+            var ok = GetDlgItem(window, OkControlId);
+            if (!IsWindowVisible(ok)) continue;
+            for (var label = FindWindowEx(window, IntPtr.Zero, "Static", null);
+                 label != IntPtr.Zero;
+                 label = FindWindowEx(window, label, "Static", null)) {
+                var text = new StringBuilder(512);
+                IntPtr result;
+                if (SendMessageTimeout(label, GetTextMessage, (IntPtr)text.Capacity, text,
+                    AbortIfHung | ErrorOnExit, 100, out result) == IntPtr.Zero ||
+                    !text.ToString().StartsWith("Windows created a temporary paging file on your computer", StringComparison.Ordinal))
+                    continue;
+                if (PostMessage(window, CommandMessage, (IntPtr)OkControlId, ok)) {
+                    requests.Add(string.Format(
+                        "Acknowledged the hosted paging-file notice HWND {0} (PID {1}) at {2:O}.",
+                        window, processId, DateTime.UtcNow));
+                }
+                break;
+            }
+        }
+        return requests.ToArray();
+    }
 }
 '@
 
-function Acknowledge-PagingFileNotice {
-    foreach ($handle in [AgentBroWslPrompt]::VisibleWindows('#32770', 'System Properties')) {
-        try {
-            $window = [Windows.Automation.AutomationElement]::FromHandle($handle)
-            $owner = Get-Process -Id $window.Current.ProcessId -ErrorAction SilentlyContinue
-            if ($owner.ProcessName -ne 'SystemPropertiesPerformance') { continue }
-            $notice = $window.FindAll([Windows.Automation.TreeScope]::Descendants, $textControl) |
-                Where-Object { $_.Current.Name -like 'Windows created a temporary paging file on your computer*' } |
-                Select-Object -First 1
-            if (-not $notice) { continue }
-            $ok = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $okButton)
-            $invoke = $null
-            if ($ok -and $ok.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
-                $invoke.Invoke()
-                Write-Output "Acknowledged the hosted paging-file notice HWND $handle (PID $($owner.Id)) at $([DateTime]::UtcNow.ToString('O'))."
-            }
-        } catch {
-            if ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
-                $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]) { throw }
-        }
-    }
-}
-
-$textControl = [Windows.Automation.PropertyCondition]::new(
-    [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Text)
-$okButton = [Windows.Automation.AndCondition]::new(
-    [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button),
-    [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'OK'))
 $title = Join-Path $env:SystemRoot 'System32\wsl.exe'
 Write-Output 'Watching for the hosted Windows ARM64 WSL update prompt and paging-file notice.'
 while ($true) {
-    Acknowledge-PagingFileNotice
+    [AgentBroWslPrompt]::AcknowledgePagingFileNotices()
     foreach ($windowClass in 'CASCADIA_HOSTING_WINDOW_CLASS', 'ConsoleWindowClass') {
         [AgentBroWslPrompt]::MinimizeWindows($windowClass, $title)
     }

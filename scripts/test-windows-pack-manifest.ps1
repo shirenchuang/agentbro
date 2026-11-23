@@ -175,7 +175,8 @@ function Open-InstalledAgentSkills([Windows.Automation.AutomationElement]$Island
     }
     $settings = & $findSettings
     if (-not $settings) {
-        Move-ToIslandHoverPoint ([IntPtr]$Island.Current.NativeWindowHandle) $Island
+        $islandWindow = Wait-IslandValue 'the visible native Island window before reopening Settings' { Find-VisibleIsland }
+        Move-ToIslandHoverPoint $islandWindow.Handle $Island
         $settingsButton = Wait-IslandValue 'the visible Island Settings button' {
             if (Find-IslandButton $Island { param($Name) $Name -eq 'Quit AgentBro' }) {
                 Find-PackControl $Island 'Settings' ([Windows.Automation.ControlType]::Button)
