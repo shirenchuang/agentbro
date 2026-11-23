@@ -710,6 +710,7 @@
       "pinnedReview": "不足しているスキルを記録された GitHub ソースから復元し、結果を確認してからインポートします。",
       "restore": "復元",
       "restoreMember": "{{name}} を復元",
+      "restoreMissing": "不足しているスキルを {{count}} 件復元",
       "restoring": "復元中…",
       "match": "内容が一致",
       "different": "内容が異なります",

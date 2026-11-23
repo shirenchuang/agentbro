@@ -326,10 +326,8 @@ function Test-InstalledPinnedPackManifest(
     [string]$ExportPath
 ) {
     $manifest = Get-Content -LiteralPath $ImportPath -Encoding UTF8 -Raw | ConvertFrom-Json
-    $skillId = $manifest.skillIds[0]
-    $expected = $manifest.skillSources.PSObject.Properties[$skillId].Value
     $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
-    $destination = Join-Path $profileDirectory ".agentbro\skills\$skillId\SKILL.md"
+    $skillRoot = Join-Path $profileDirectory '.agentbro\skills'
     $settings = Open-InstalledAgentSkills $Island
     $packs = Wait-IslandValue 'the Skill Packs navigation item' { Find-PackControl $settings '技能包' }
     Invoke-PackControl $packs
@@ -339,22 +337,30 @@ function Test-InstalledPinnedPackManifest(
     }
     Invoke-PackControl $open
     Set-PackDialogFile 'Open' $ImportPath
-    $restore = Wait-IslandValue 'the Restore action for the missing pinned Skill' {
-        $button = Find-PackControl $settings "Restore $skillId"
+    $restore = Wait-IslandValue 'the batch Restore action for the missing pinned Skills' {
+        $button = Find-PackControl $settings "Restore $($manifest.skillIds.Count) missing Skills"
         if ($button -and $button.Current.IsEnabled) { $button }
     }
     $confirm = Find-PackControl $settings 'Create Skill Pack'
-    if (-not $confirm -or $confirm.Current.IsEnabled -or (Test-Path -LiteralPath $destination)) {
-        throw 'Import must wait until the missing Skill is explicitly restored.'
+    if (-not $confirm -or $confirm.Current.IsEnabled) {
+        throw 'Import must wait until the missing Skills are explicitly restored.'
+    }
+    foreach ($skillId in $manifest.skillIds) {
+        if (Test-Path -LiteralPath (Join-Path $skillRoot $skillId)) {
+            throw "The review unexpectedly installed $skillId."
+        }
     }
     Invoke-PackControl $restore
-    $confirm = Wait-IslandValue 'the enabled Create Skill Pack action after verifying the restored Skill' {
+    $confirm = Wait-IslandValue 'the enabled Create Skill Pack action after verifying the restored Skills' {
         $button = Find-PackControl $settings 'Create Skill Pack'
         if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings 'Content matches')) { $button }
     }
-    $content = Get-Content -LiteralPath $destination -Encoding UTF8 -Raw
-    if ($content -cnotmatch 'Pinned fixture commit\.' -or $content -cmatch 'Later branch content\.') {
-        throw 'The restored Skill did not come from the recorded commit.'
+    foreach ($skillId in $manifest.skillIds) {
+        $source = $manifest.skillSources.PSObject.Properties[$skillId].Value
+        $content = Get-Content -LiteralPath (Join-Path $skillRoot "$skillId\SKILL.md") -Encoding UTF8 -Raw
+        if (-not $content.Contains("Pinned fixture commit at $($source.skillPath).") -or $content -cmatch 'Later branch content') {
+            throw "The restored Skill $skillId did not come from the recorded commit and path."
+        }
     }
     Invoke-PackControl $confirm
     $null = Wait-IslandValue 'the imported pinned Skill Pack notice' {
@@ -369,11 +375,17 @@ function Test-InstalledPinnedPackManifest(
     Set-PackDialogFile 'Save' $ExportPath
     $null = Wait-IslandValue 'the exported pinned Skill Pack file' { Test-Path -LiteralPath $ExportPath -PathType Leaf }
     $saved = Get-Content -LiteralPath $ExportPath -Encoding UTF8 -Raw | ConvertFrom-Json
-    $pin = $saved.skillSources.PSObject.Properties[$skillId].Value
-    if ($saved.version -ne 3 -or $pin.repository -cne $expected.repository -or
-        $pin.commit -cne $expected.commit -or $pin.skillPath -cne $expected.skillPath -or
-        $saved.skillFingerprints.PSObject.Properties[$skillId].Value -cne $manifest.skillFingerprints.PSObject.Properties[$skillId].Value) {
-        throw 'The exported Pack did not retain the verified GitHub source and fingerprint.'
+    if ($saved.version -ne 3 -or ($saved.skillIds -join ',') -cne ($manifest.skillIds -join ',')) {
+        throw 'The exported Pack did not retain the version and member order.'
     }
-    Write-Output 'The installed app restored the recorded Git commit, matched its fingerprint, and exported the pinned source through native dialogs.'
+    foreach ($skillId in $manifest.skillIds) {
+        $expected = $manifest.skillSources.PSObject.Properties[$skillId].Value
+        $pin = $saved.skillSources.PSObject.Properties[$skillId].Value
+        if ($pin.repository -cne $expected.repository -or $pin.commit -cne $expected.commit -or
+            $pin.skillPath -cne $expected.skillPath -or
+            $saved.skillFingerprints.PSObject.Properties[$skillId].Value -cne $manifest.skillFingerprints.PSObject.Properties[$skillId].Value) {
+            throw "The exported Pack did not retain the verified GitHub source and fingerprint for $skillId."
+        }
+    }
+    Write-Output 'The installed app batch restored both Skills from the recorded Git commit, matched their fingerprints, and exported both pinned sources through native dialogs.'
 }
