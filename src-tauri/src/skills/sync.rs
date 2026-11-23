@@ -168,8 +168,9 @@ fn sync_failed(message: String) -> SyncResult {
 }
 
 pub fn push_to_github() -> Result<SyncResult, String> {
-    let meta = registry::load();
+    let meta = registry::read_metadata()?;
     let remote = GitHubSyncRemote::configured(&meta)?;
+    let repo = meta.sync.as_ref().and_then(|sync| sync.github_repo.clone());
     let temporary = installer::TempInstallDir::create_in(&std::env::temp_dir())?;
     let checkout = temporary.path().join("repo");
     if let Err(error) = remote.clone_checkout(&checkout) {
@@ -191,11 +192,12 @@ pub fn push_to_github() -> Result<SyncResult, String> {
         return Ok(sync_failed(format!("推送失败：{error}")));
     }
 
-    let mut meta = registry::load();
-    if let Some(ref mut sync) = meta.sync {
-        sync.last_sync_at = Some(chrono::Utc::now().to_rfc3339());
+    if let Ok(mut meta) = registry::edit() {
+        if let Some(sync) = meta.sync.as_mut().filter(|sync| sync.github_repo == repo) {
+            sync.last_sync_at = Some(chrono::Utc::now().to_rfc3339());
+            let _ = meta.save();
+        }
     }
-    let _ = registry::save(&meta);
     Ok(SyncResult {
         success: true,
         message: "推送成功".to_string(),
@@ -204,7 +206,7 @@ pub fn push_to_github() -> Result<SyncResult, String> {
 }
 
 pub fn pull_from_github() -> Result<SyncResult, String> {
-    let meta = registry::load();
+    let meta = registry::read_metadata()?;
     let remote = GitHubSyncRemote::configured(&meta)?;
     let temporary = installer::TempInstallDir::create_in(&std::env::temp_dir())?;
     let tmp_dir = temporary.path().join("repo");
@@ -219,7 +221,7 @@ pub fn pull_from_github() -> Result<SyncResult, String> {
         let remote_meta: registry::Metadata =
             serde_json::from_str(&content).map_err(|e| e.to_string())?;
 
-        let mut local_meta = registry::load();
+        let mut local_meta = registry::edit()?;
         for pack in remote_meta.packs {
             if let Some(local_pack) = local_meta.packs.iter().find(|p| p.id == pack.id) {
                 let local = serde_json::to_string(local_pack).map_err(|e| e.to_string())?;
@@ -252,7 +254,7 @@ pub fn pull_from_github() -> Result<SyncResult, String> {
             sync.last_sync_at = Some(chrono::Utc::now().to_rfc3339());
         }
         if conflicts.is_empty() {
-            registry::save(&local_meta)?;
+            local_meta.save()?;
         }
     }
 
@@ -298,7 +300,7 @@ pub fn resolve_conflicts(resolutions: Vec<ConflictResolution>) -> Result<(), Str
     }
 
     let remote_meta = load_pending_metadata(&pending)?;
-    let mut local_meta = registry::load();
+    let mut local_meta = registry::edit()?;
     let suffix = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
 
     for resolution in resolutions {
@@ -360,7 +362,7 @@ pub fn resolve_conflicts(resolutions: Vec<ConflictResolution>) -> Result<(), Str
         resolve_skill_file_conflict(&pending, &resolution.skill_id, &resolution.action, &suffix)?;
     }
 
-    registry::save(&local_meta)?;
+    local_meta.save()?;
     let _ = fs::remove_dir_all(pending);
     Ok(())
 }
@@ -424,7 +426,7 @@ pub fn execute_agent_sync(from: &str, to: &str) -> Result<(), String> {
 
 pub fn export_backup(path: &str) -> Result<(), String> {
     let dest = expand_user_path(path);
-    let meta_json = backup_metadata_json(registry::load())?;
+    let meta_json = backup_metadata_json(registry::read_metadata()?)?;
 
     let file = fs::File::create(&dest).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipWriter::new(file);
@@ -452,16 +454,16 @@ pub fn import_backup(path: &str) -> Result<(), String> {
     let file = fs::File::open(expand_user_path(path)).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
 
-    let extract_dir = std::env::temp_dir().join("agentbro-import");
-    let _ = fs::remove_dir_all(&extract_dir);
-    archive.extract(&extract_dir).map_err(|e| e.to_string())?;
+    let temporary = installer::TempInstallDir::create_in(&std::env::temp_dir())?;
+    let extract_dir = temporary.path();
+    archive.extract(extract_dir).map_err(|e| e.to_string())?;
 
     let meta_path = extract_dir.join("metadata.json");
     if meta_path.exists() {
         let content = fs::read_to_string(&meta_path).map_err(|e| e.to_string())?;
         let imported: registry::Metadata =
             serde_json::from_str(&content).map_err(|e| e.to_string())?;
-        let mut local = registry::load();
+        let mut local = registry::edit()?;
         for (k, v) in imported.sources {
             local.sources.entry(k).or_insert(v);
         }
@@ -470,7 +472,7 @@ pub fn import_backup(path: &str) -> Result<(), String> {
                 local.packs.push(pack);
             }
         }
-        registry::save(&local)?;
+        local.save()?;
     }
 
     let skills_dir = extract_dir.join("skills");
@@ -480,7 +482,6 @@ pub fn import_backup(path: &str) -> Result<(), String> {
         installer::copy_recursive_pub(&skills_dir, &dest)?;
     }
 
-    let _ = fs::remove_dir_all(&extract_dir);
     Ok(())
 }
 
