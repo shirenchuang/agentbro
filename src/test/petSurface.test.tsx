@@ -97,6 +97,7 @@ describe('PetSurface (companion)', () => {
       panelState: 'collapsed',
       overlayQueue: [],
       activeOverlay: null,
+      permissionReplies: new Map(),
       wakeSilencedUntil: 0,
     })
     useThemeStore.getState().loadThemes([])
@@ -518,8 +519,9 @@ describe('PetSurface (companion)', () => {
     expect(useSessionStore.getState().activeOverlay).toBeNull()
   })
 
-  it('renders blocking permission overlays as actionable pet prompts', () => {
-    const target = session({ phase: 'processing' })
+  it('renders blocking permission overlays as actionable pet prompts', async () => {
+    const permission = { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' }
+    const target = session({ phase: 'waiting_approval', pendingPermission: permission })
     useSessionStore.setState({
       sessions: { s1: target },
       sessionList: [target],
@@ -527,7 +529,7 @@ describe('PetSurface (companion)', () => {
         id: 'perm-s1',
         sessionId: 's1',
         type: 'permission',
-        data: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+        data: permission,
         createdAt: Date.now(),
       },
       overlayQueue: [],
@@ -540,7 +542,7 @@ describe('PetSurface (companion)', () => {
     expect(container.querySelector('.pet-surface__overlay')).toBeInTheDocument()
     expect(getByText('Bash')).toBeInTheDocument()
 
-    fireEvent.click(getByText('notch.allowOnce').closest('button') as HTMLElement)
+    await act(async () => { fireEvent.click(getByText('notch.allowOnce').closest('button') as HTMLElement) })
 
     expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, undefined)
   })
@@ -573,8 +575,9 @@ describe('PetSurface (companion)', () => {
     expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
   })
 
-  it('triggers pet permission approval on mouse down so desktop click-through cannot swallow it', () => {
-    const target = session({ phase: 'processing' })
+  it('triggers pet permission approval on mouse down so desktop click-through cannot swallow it', async () => {
+    const permission = { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' }
+    const target = session({ phase: 'waiting_approval', pendingPermission: permission })
     useSessionStore.setState({
       sessions: { s1: target },
       sessionList: [target],
@@ -582,7 +585,7 @@ describe('PetSurface (companion)', () => {
         id: 'perm-s1',
         sessionId: 's1',
         type: 'permission',
-        data: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+        data: permission,
         createdAt: Date.now(),
       },
       overlayQueue: [],
@@ -592,8 +595,11 @@ describe('PetSurface (companion)', () => {
       <PetSurface hidden={false} scale={72} sessions={[target]} />,
     )
 
-    fireEvent.mouseDown(getByText('notch.allowOnce').closest('button') as HTMLElement)
-    fireEvent.click(getByText('notch.allowOnce').closest('button') as HTMLElement)
+    const allow = getByText('notch.allowOnce').closest('button') as HTMLElement
+    await act(async () => {
+      fireEvent.mouseDown(allow)
+      fireEvent.click(allow)
+    })
 
     expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(1)
     expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, undefined)

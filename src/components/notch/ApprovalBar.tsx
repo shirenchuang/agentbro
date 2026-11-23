@@ -2,7 +2,7 @@
 import { useEffect, useRef, useCallback, useState, type FocusEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
-import { planKey, questionKey, useSessionStore } from '../../stores/sessionStore'
+import { getPermissionReply, planKey, questionKey, useSessionStore } from '../../stores/sessionStore'
 import { restoreNotchWebviewFocus, setNotchFocusable } from '../../services/tauriApi'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
 import { isWindowsPlatform } from '../../utils/platform'
@@ -27,6 +27,8 @@ interface ApprovalBarProps {
 export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePermissionFocus, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp }: ApprovalBarProps) {
   const { t } = useTranslation()
   const codexAppServerLive = useSessionStore((state) => state.codexAppServerLive)
+  const permissionReply = useSessionStore((state) => getPermissionReply(state, session.id, session.pendingPermission))
+  const sendingPermission = permissionReply !== undefined && permissionReply.error === undefined
   const inputRef = useRef<HTMLInputElement>(null)
   const permissionButtonsRef = useCallback((buttons: HTMLDivElement | null) => {
     if (!buttons) return
@@ -193,19 +195,19 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
 
         {/* 4 action buttons */}
         <div className="approval-bar__buttons" ref={permissionButtonsRef}>
-          <button className="approval-bar__btn approval-bar__btn--deny" {...islandActionProps(onDeny)}>
+          <button className="approval-bar__btn approval-bar__btn--deny" aria-disabled={sendingPermission || undefined} {...islandActionProps(onDeny)}>
             {t('notch.deny')}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--allow" {...islandActionProps(onAllow)}>
+          <button className="approval-bar__btn approval-bar__btn--allow" aria-disabled={sendingPermission || undefined} {...islandActionProps(onAllow)}>
             {t('notch.allowOnce')}
           </button>
           {supportsPersistentActions && (
-            <button className="approval-bar__btn approval-bar__btn--always" {...islandActionProps(onAllowAlways)}>
+            <button className="approval-bar__btn approval-bar__btn--always" aria-disabled={sendingPermission || undefined} {...islandActionProps(onAllowAlways)}>
               {t('notch.allowAlways')}
             </button>
           )}
           {supportsPersistentActions && onAutoApprove && (
-            <button className="approval-bar__btn approval-bar__btn--auto" {...islandActionProps(onAutoApprove)}>
+            <button className="approval-bar__btn approval-bar__btn--auto" aria-disabled={sendingPermission || undefined} {...islandActionProps(onAutoApprove)}>
               {t('notch.autoApprove')}
             </button>
           )}

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HoverList } from '../components/notch/HoverList'
@@ -66,7 +66,7 @@ function renderInlineQuestion(pendingQuestion: NonNullable<SessionState['pending
 describe('HoverList interactions', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    useSessionStore.setState({ activeOverlay: null })
+    useSessionStore.setState({ activeOverlay: null, permissionReplies: new Map() })
     useConfigStore.setState({ hoverSpeed: 'instant', maxVisibleSessions: 5, showCacheTTL: false })
   })
 
@@ -701,9 +701,12 @@ describe('HoverList interactions', () => {
     const onSessionClick = vi.fn()
     const onJumpToTerminal = vi.fn()
     const user = userEvent.setup()
-    render(
+    const denied = session({ phase: 'waiting_approval', pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' } })
+    const allowed = session({ phase: 'waiting_approval', pendingPermission: { toolName: 'Bash', toolInput: 'pnpm build' } })
+    useSessionStore.setState({ sessions: { s1: denied } })
+    const { rerender } = render(
       <HoverList
-        sessions={[session({ phase: 'waiting_approval', pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' } })]}
+        sessions={[denied]}
         onSessionClick={onSessionClick}
         onJumpToTerminal={onJumpToTerminal}
       />,
@@ -712,6 +715,8 @@ describe('HoverList interactions', () => {
 
     screen.getByRole('button', { name: '拒绝' }).focus()
     await user.keyboard('{Enter}')
+    act(() => useSessionStore.setState({ sessions: { s1: allowed } }))
+    rerender(<HoverList sessions={[allowed]} onSessionClick={onSessionClick} onJumpToTerminal={onJumpToTerminal} />)
     screen.getByRole('button', { name: '允许一次' }).focus()
     await user.keyboard(' ')
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', false, undefined, undefined)
@@ -721,29 +726,28 @@ describe('HoverList interactions', () => {
     expect(onJumpToTerminal).not.toHaveBeenCalled()
   })
 
-  it('routes inline permission actions without opening the row', () => {
+  it.each([
+    { button: '允许一次', allowed: true, always: undefined },
+    { button: /始终允许/, allowed: true, always: true },
+    { button: '自动批准', allowed: 'auto', always: undefined },
+    { button: '拒绝', allowed: false, always: undefined },
+  ])('routes inline permission action $button without opening the row', async ({ button, allowed, always }) => {
     const onSessionClick = vi.fn()
+    const pending = session({
+      agentType: 'claude-code',
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
+    })
+    useSessionStore.setState({ sessions: { s1: pending } })
     render(
-      <HoverList
-        sessions={[session({
-          agentType: 'claude-code',
-          phase: 'waiting_approval',
-          pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
-        })]}
-        onSessionClick={onSessionClick}
-      />,
+      <HoverList sessions={[pending]} onSessionClick={onSessionClick} />,
     )
 
     const permissionCard = document.querySelector('.hover-list__inline-perm') as HTMLElement
-    fireEvent.click(within(permissionCard).getByRole('button', { name: '允许一次' }))
-    fireEvent.click(within(permissionCard).getByRole('button', { name: /始终允许/ }))
-    fireEvent.click(within(permissionCard).getByRole('button', { name: '自动批准' }))
-    fireEvent.click(within(permissionCard).getByRole('button', { name: '拒绝' }))
+    await act(async () => { fireEvent.click(within(permissionCard).getByRole('button', { name: button })) })
 
-    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', true, undefined, undefined)
-    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, true, undefined)
-    expect(tauriMocks.respondAutoApprove).toHaveBeenCalledWith('s1', undefined)
-    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(3, 's1', false, undefined, undefined)
+    if (allowed === 'auto') expect(tauriMocks.respondAutoApprove).toHaveBeenCalledExactlyOnceWith('s1', undefined)
+    else expect(tauriMocks.respondPermission).toHaveBeenCalledExactlyOnceWith('s1', allowed, always, undefined)
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 

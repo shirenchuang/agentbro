@@ -952,11 +952,11 @@ function PetBlockingOverlay({
         <PermissionCard
           overlay={overlay}
           session={session}
-          onAllow={() => { answerDisplayedPermission(session.id, permission, true) }}
-          onAllowAlways={() => { answerDisplayedPermission(session.id, permission, true, true) }}
-          onAutoApprove={() => { answerDisplayedPermission(session.id, permission, 'auto') }}
-          onDeny={(message?: string) => {
-            if (answerDisplayedPermission(session.id, permission, false) && message) {
+          onAllow={() => { void answerDisplayedPermission(session.id, permission, true) }}
+          onAllowAlways={() => { void answerDisplayedPermission(session.id, permission, true, true) }}
+          onAutoApprove={() => { void answerDisplayedPermission(session.id, permission, 'auto') }}
+          onDeny={async (message?: string) => {
+            if (await answerDisplayedPermission(session.id, permission, false) && message) {
               void sendMessage(session.id, message).catch((error) => console.warn('[PetSurface] deny feedback:', error))
             }
           }}
