@@ -878,6 +878,219 @@ json.dump = fail_snapshot_write
     }
 
     #[test]
+    fn remote_reviewed_pack_requires_current_members_and_targets() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let home = home.path();
+        let center = home.join(".agentbro/skills");
+        let agent = home.join(".claude/skills");
+        write_remote_skill(&center.join("review"), "Review", "Review instructions");
+        write_remote_skill(&center.join("release"), "Release", "Release checklist");
+        let save = |ids: &[&str]| {
+            run_script(
+                home,
+                "execute_upsert_skill_pack",
+                serde_json::json!({
+                    "pack": {"id": "team", "name": "Team", "skillIds": ids},
+                }),
+            )
+        };
+        save(&["review"]);
+        let args = serde_json::json!({
+            "packId": "team", "targetAgents": ["claude-code"], "requestedMode": "copy",
+        });
+        let preview = run_script(home, "preview_apply_skill_pack", args.clone());
+        let mut reviewed = args.clone();
+        reviewed["reviewedPreview"] = preview;
+        for (key, changed) in [
+            ("targetAgents", serde_json::json!(["codex"])),
+            ("requestedMode", serde_json::json!("link")),
+        ] {
+            let mut mismatch = reviewed.clone();
+            mismatch[key] = changed;
+            let error = run_script_error(home, "execute_apply_skill_pack", mismatch);
+            assert!(error.contains("Preview distribution again"), "{error}");
+        }
+        assert!(!home.join(".codex/skills").exists());
+        save(&["review", "release"]);
+        let error = run_script_error(home, "execute_apply_skill_pack", reviewed);
+        assert!(error.contains("Preview distribution again"), "{error}");
+        assert!(!agent.exists());
+
+        let applied = run_script(home, "execute_apply_skill_pack", args);
+        assert_eq!(applied["changes"].as_array().unwrap().len(), 2);
+        assert!(agent.join("release/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn remote_reviewed_distribution_rejects_changed_sources_and_resolved_paths() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let home = home.path();
+        let source = home.join(".agentbro/skills/review");
+        write_remote_skill(&source, "Review", "Original instructions");
+        let first = home.join("first-profile");
+        let second = home.join("second-profile");
+        let skills = home.join(".claude/skills");
+        for dir in [first.as_path(), second.as_path(), skills.parent().unwrap()] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::os::unix::fs::symlink(&first, &skills).unwrap();
+        let args = serde_json::json!({
+            "skillIds": ["review"], "targetAgents": ["claude-code"], "requestedMode": "copy",
+        });
+        let preview = || run_script(home, "preview_distribute_skill", args.clone());
+        let stale_source = preview();
+        write_remote_skill(&source, "Review", "Updated instructions");
+        let execute = "execute_distribute_skill";
+        let error = run_script_error(home, execute, serde_json::json!({"preview": stale_source}));
+        assert!(error.contains("Preview distribution again"), "{error}");
+        assert!(!first.join("review").exists());
+
+        let stale_path = preview();
+        std::fs::remove_file(&skills).unwrap();
+        std::os::unix::fs::symlink(&second, &skills).unwrap();
+        let error = run_script_error(home, execute, serde_json::json!({"preview": stale_path}));
+        assert!(error.contains("Preview distribution again"), "{error}");
+        assert!(!second.join("review").exists());
+        run_script(home, execute, serde_json::json!({"preview": preview()}));
+        assert_eq!(
+            std::fs::read(second.join("review/SKILL.md")).unwrap(),
+            std::fs::read(source.join("SKILL.md")).unwrap(),
+        );
+    }
+
+    #[test]
+    fn remote_reviewed_pack_keeps_conflicts_until_all_choices_are_current() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let home = home.path();
+        let center = home.join(".agentbro/skills");
+        let agent = home.join(".claude/skills");
+        for id in ["review", "skip", "clean"] {
+            write_remote_skill(&center.join(id), id, "Center version");
+        }
+        write_remote_skill(&agent.join("review"), "Review", "Agent version");
+        write_remote_skill(&agent.join("skip"), "Skip", "Keep this version");
+        run_script(
+            home,
+            "execute_upsert_skill_pack",
+            serde_json::json!({
+                "pack": {"id": "team", "name": "Team", "skillIds": ["review", "skip", "clean"]},
+            }),
+        );
+        let args = serde_json::json!({
+            "packId": "team", "targetAgents": ["claude-code"], "requestedMode": "copy",
+        });
+        let execute = "execute_apply_skill_pack";
+        let initial = run_script(home, execute, args.clone());
+        assert_eq!(initial["blockers"].as_array().unwrap().len(), 2);
+        assert!(!agent.join("clean").exists());
+        let pack = || {
+            run_script(
+                home,
+                "get_skill_pack_detail",
+                serde_json::json!({"packId": "team"}),
+            )
+        };
+        assert_eq!(pack()["appliedAgents"], serde_json::json!([]));
+
+        let sync = run_script(
+            home,
+            "execute_sync_skill_pack_to_agents",
+            serde_json::json!({
+                "packId": "team", "targetAgents": ["claude-code", "codex"],
+            }),
+        );
+        assert_eq!(sync["status"], "partial");
+        assert_eq!(sync["agents"][0]["status"], "failed");
+        assert_eq!(sync["agents"][1]["status"], "synced");
+        assert!(!agent.join("clean").exists());
+
+        let mut reviewed = args.clone();
+        reviewed["reviewedPreview"] = initial;
+        reviewed["blockerDecisions"] = serde_json::json!([
+            {"skillId": "review", "agentId": "claude-code", "action": "overwrite"},
+            {"skillId": "skip", "agentId": "claude-code", "action": "skip"},
+        ]);
+        write_remote_skill(&agent.join("review"), "Review", "Latest Agent edit");
+        let error = run_script_error(home, execute, reviewed.clone());
+        assert!(error.contains("Preview distribution again"), "{error}");
+        assert!(!agent.join("clean").exists());
+        assert!(std::fs::read_to_string(agent.join("review/SKILL.md"))
+            .unwrap()
+            .contains("Latest Agent edit"));
+
+        reviewed["reviewedPreview"] = run_script(home, "preview_apply_skill_pack", args);
+        let error = run_script_error_with_prelude(
+            home,
+            execute,
+            reviewed.clone(),
+            r#"
+_copytree = shutil.copytree
+def copytree_with_concurrent_edit(source, destination, *args, **kwargs):
+    result = _copytree(source, destination, *args, **kwargs)
+    if pathlib.Path(destination).name == "staged":
+        (HOME / ".claude/skills/review/SKILL.md").write_text("Edited while the replacement was staged")
+    return result
+shutil.copytree = copytree_with_concurrent_edit
+"#,
+        );
+        assert!(error.contains("Preview distribution again"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(agent.join("review/SKILL.md")).unwrap(),
+            "Edited while the replacement was staged",
+        );
+        assert!(!agent.join("clean").exists());
+
+        reviewed["reviewedPreview"] =
+            run_script(home, "preview_apply_skill_pack", reviewed.clone());
+        let failure = run_script_error_with_prelude(
+            home,
+            execute,
+            reviewed.clone(),
+            r#"
+_replace = os.replace
+def fail_to_activate_staged_skill(source, destination):
+    if pathlib.Path(source).name == "staged":
+        raise OSError("Fixture could not activate the replacement")
+    return _replace(source, destination)
+os.replace = fail_to_activate_staged_skill
+"#,
+        );
+        assert!(failure.contains("Fixture could not activate the replacement"));
+        assert_eq!(
+            std::fs::read_to_string(agent.join("review/SKILL.md")).unwrap(),
+            "Edited while the replacement was staged",
+        );
+        assert!(!agent.join("clean").exists());
+
+        let result = run_script(home, execute, reviewed);
+        assert_eq!(result["blockers"], serde_json::json!([]));
+        assert_eq!(
+            std::fs::read(agent.join("review/SKILL.md")).unwrap(),
+            std::fs::read(center.join("review/SKILL.md")).unwrap(),
+        );
+        assert!(std::fs::read_to_string(agent.join("skip/SKILL.md"))
+            .unwrap()
+            .contains("Keep this version"));
+        let detail = run_script(
+            home,
+            "get_agent_detail_v2",
+            serde_json::json!({"agentId": "claude-code"}),
+        );
+        let skipped = detail["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["skillId"] == "skip")
+            .unwrap();
+        assert_eq!(skipped["claims"][0]["claimType"], "direct");
+        assert_eq!(detail["appliedPacks"][0]["memberCount"], 2);
+        assert_eq!(pack()["appliedAgents"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
     fn remote_one_click_takeover_preserves_center_and_links_matching_agent_copies() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-center-takeover-{}",

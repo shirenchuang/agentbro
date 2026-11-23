@@ -44,6 +44,7 @@ STATE_MUTATING_COMMANDS = {
     "import_github_repo_skills",
     "execute_delete_center_skill",
     "execute_delete_center_skills",
+    "execute_distribute_skill",
     "execute_adopt_agent_skill",
     "execute_adopt_agent_skills",
     "takeover_center_agent_skills",
@@ -997,7 +998,8 @@ def independent_center_skill_hash(path):
 
 
 def atomic_replace_skill_directory(
-    source, destination, after_replace=None, preserve_symlinks=False, link=False
+    source, destination, after_replace=None, preserve_symlinks=False, link=False,
+    before_replace=None,
 ):
     source = pathlib.Path(source)
     destination = pathlib.Path(destination)
@@ -1030,6 +1032,8 @@ def atomic_replace_skill_directory(
             or verified_skill_hash(source, "Source Skill") != expected_hash
         ):
             raise ValueError("Source Skill changed while its replacement was staged")
+        if before_replace is not None:
+            before_replace()
         if had_destination:
             os.replace(str(destination), str(backup))
         activated = False
@@ -1498,12 +1502,17 @@ def pack_detail(pack_id, skills=None, agents=None):
             "missing": skill is None,
         })
     applied = []
+    claimed_targets = STATE["packTargetClaims"].get(pack_id, {})
+    legacy_agents = set(data.get("appliedAgents", []))
     for agent_id in pack_applied_agent_ids(pack_id):
         agent = next((item for item in agents if item["id"] == agent_id), None)
+        member_count = len(members) if agent_id in legacy_agents else sum(
+            agent_id + "::" + item["skillId"] in claimed_targets for item in members
+        )
         applied.append({
             "packId": data["id"],
             "packName": data["name"],
-            "memberCount": len(members),
+            "memberCount": member_count,
             "agentId": agent_id,
             "displayName": agent["displayName"] if agent else agent_id,
             "iconKey": agent["iconKey"] if agent else agent_id,
@@ -1646,41 +1655,82 @@ def preview_delete(skill_ids):
     }
 
 
-def distribution_preview(skill_ids, target_agents, requested_mode):
-    skills, _, _, _ = inventory()
+def distribution_fingerprint(path):
+    digest = hashlib.sha256()
+
+    def record(*fields):
+        digest.update(json.dumps(fields, separators=(",", ":")).encode())
+
+    def add_tree(root):
+        pending = [root]
+        while pending:
+            item = pending.pop()
+            relative = item.relative_to(root).as_posix()
+            try:
+                mode = item.lstat().st_mode
+            except FileNotFoundError:
+                if item != root:
+                    raise
+                record(relative, "missing")
+                continue
+            if stat.S_ISLNK(mode):
+                record(relative, "link", readlink(item))
+            elif stat.S_ISREG(mode):
+                record(relative, "file", hash_file(item))
+            elif stat.S_ISDIR(mode):
+                record(relative, "directory")
+                pending.extend(sorted(item.iterdir(), reverse=True))
+            else:
+                raise ValueError(f"Unsupported Skill path type at '{item}'")
+
+    record("parent", str(path.parent.resolve(strict=False)))
+    add_tree(path)
+    if path.is_symlink():
+        resolved = path.resolve(strict=False)
+        record("resolved link", str(resolved))
+        add_tree(resolved)
+    return digest.hexdigest()
+
+
+def distribution_preview(skill_ids, target_agents, requested_mode, skills):
+    skill_ids = list(dict.fromkeys(safe_id(item) for item in skill_ids))
+    target_agents = list(dict.fromkeys(target_agents))
     mode = requested_mode if requested_mode in ("link", "copy") else "copy"
     changes = []
     blockers = []
     for skill_id in skill_ids:
-        skill_id = safe_id(skill_id)
         if skill_id not in skills:
             raise ValueError("Skill not found: " + skill_id)
         source = pathlib.Path(skills[skill_id]["centerPath"])
+        source_fingerprint = distribution_fingerprint(source)
+        source_hash = None
         for agent_id in target_agents:
             target = agent_skills_path(agent_id) / skill_id
+            target_fingerprint = distribution_fingerprint(target)
+            change = {
+                "skillId": skill_id,
+                "agentId": agent_id,
+                "actualMode": mode,
+                "reason": None,
+                "targetPath": str(target),
+                "sourceFingerprint": source_fingerprint,
+                "targetFingerprint": target_fingerprint,
+            }
             if not target.exists() and not target.is_symlink():
-                changes.append({
-                    "skillId": skill_id,
-                    "agentId": agent_id,
-                    "action": "create",
-                    "actualMode": mode,
-                    "reason": None,
-                    "targetPath": str(target),
-                })
+                changes.append({**change, "action": "create"})
                 continue
             same = False
             if target.is_symlink():
                 same = target.resolve(strict=False) == source.resolve(strict=False)
             elif target.is_dir():
-                same = hash_dir(target) == skills[skill_id]["currentHash"]
+                if source_hash is None:
+                    source_hash = hash_dir(source)
+                same = bool(source_hash) and hash_dir(target) == source_hash
             if same:
                 changes.append({
-                    "skillId": skill_id,
-                    "agentId": agent_id,
+                    **change,
                     "action": "reuse",
                     "actualMode": "link" if target.is_symlink() else "copy",
-                    "reason": None,
-                    "targetPath": str(target),
                 })
             else:
                 blockers.append({
@@ -1690,14 +1740,12 @@ def distribution_preview(skill_ids, target_agents, requested_mode):
                     "existingPath": str(target),
                     "existingPathKind": "symlink" if target.is_symlink() else "directory",
                     "resolvedExistingPath": str(target.resolve(strict=False)),
+                    "targetFingerprint": target_fingerprint,
                 })
                 changes.append({
-                    "skillId": skill_id,
-                    "agentId": agent_id,
+                    **change,
                     "action": "blocked",
-                    "actualMode": mode,
                     "reason": "The target already contains different content",
-                    "targetPath": str(target),
                 })
     return {
         "skillIds": skill_ids,
@@ -1748,48 +1796,68 @@ def copy_diff_files(center, target):
     return result
 
 
-def execute_distribution(preview):
-    decisions = {
-        (item["skillId"], item["agentId"]): item["action"]
-        for item in preview.get("blockerDecisions", [])
-    }
-    mode = preview.get("requestedMode", "copy")
-    skills, _, _, _ = inventory()
-    result = distribution_preview(
-        preview.get("skillIds", []),
-        preview.get("targetAgents", []),
-        mode,
-    )
+def validate_distribution_review(reviewed, current):
+    for key in ("skillIds", "targetAgents", "requestedMode", "changes", "blockers"):
+        if reviewed.get(key) != current[key]:
+            raise ValueError("The Skill distribution changed on the remote host. Preview distribution again.")
+
+
+def ensure_reviewed_distribution_path(path, fingerprint):
+    if distribution_fingerprint(path) != fingerprint:
+        raise ValueError(f"Skill path '{path}' changed. Preview distribution again.")
+
+
+def execute_distribution(preview, skills, confirmed_decisions):
+    conflicts = {(item["skillId"], item["agentId"]) for item in preview["blockers"]}
+    decisions = {}
+    for item in confirmed_decisions:
+        key = (item["skillId"], item["agentId"])
+        action = item["action"]
+        if key not in conflicts or key in decisions or action not in ("skip", "overwrite", "agent_over_center"):
+            raise ValueError("A distribution decision does not match the reviewed conflicts")
+        decisions[key] = action
+    if conflicts != decisions.keys():
+        raise ValueError("Every distribution conflict needs an explicit decision")
+
+    mode = preview["requestedMode"]
+    replaced_sources = {}
     completed = []
-    for change in result["changes"]:
+    for change in preview["changes"]:
         skill_id = change["skillId"]
         agent_id = change["agentId"]
         source = pathlib.Path(skills[skill_id]["centerPath"])
-        target = agent_skills_path(agent_id) / skill_id
+        target = pathlib.Path(change["targetPath"])
         action = change["action"]
         decision = decisions.get((skill_id, agent_id))
-        if action == "blocked":
-            if decision == "skip" or decision is None:
-                completed.append({**change, "action": "skip"})
-                continue
-            if decision == "agent_over_center":
-                remove_path(source)
-                shutil.copytree(target, source, symlinks=True)
-                completed.append({**change, "action": "reuse"})
-                continue
-            if decision != "overwrite":
-                completed.append({**change, "action": "skip"})
-                continue
-            remove_path(target)
-        if action != "reuse":
+        if decision == "skip":
+            completed.append({**change, "action": "skip", "actualMode": None})
+            continue
+
+        def verify_paths():
+            fingerprint = replaced_sources.get(skill_id, change["sourceFingerprint"])
+            ensure_reviewed_distribution_path(source, fingerprint)
+            ensure_reviewed_distribution_path(target, change["targetFingerprint"])
+
+        verify_paths()
+        if decision == "agent_over_center":
+            atomic_replace_skill_directory(target, source, preserve_symlinks=True, before_replace=verify_paths)
+            replaced_sources[skill_id] = distribution_fingerprint(source)
+            completed.append({**change, "action": "agent_over_center"})
+        elif decision == "overwrite":
+            atomic_replace_skill_directory(
+                source, target, preserve_symlinks=True, link=mode == "link", before_replace=verify_paths,
+            )
+            completed.append({**change, "action": "overwrite"})
+        elif action == "create":
             actual_mode = copy_or_link(source, target, mode)
             completed.append({**change, "action": "create", "actualMode": actual_mode})
         else:
             completed.append(change)
     return {
-        **result,
+        **preview,
         "changes": completed,
-        "blockerDecisions": preview.get("blockerDecisions", []),
+        "blockers": [],
+        "blockerDecisions": confirmed_decisions,
     }
 
 
@@ -2327,18 +2395,62 @@ def upsert_pack(pack):
     return pack_detail(pack_id)
 
 
-def apply_pack(pack_id, target_agents, requested_mode, decisions=None):
-    detail = pack_detail(pack_id)
-    skill_ids = [item["skillId"] for item in detail["members"] if not item["missing"]]
-    preview = distribution_preview(skill_ids, target_agents, requested_mode)
-    preview["blockerDecisions"] = decisions or []
-    result = execute_distribution(preview)
-    if pack_id != "default":
-        pack = STATE["packs"][pack_id]
-        pack["appliedAgents"] = sorted(set(pack.get("appliedAgents", []) + target_agents))
-        pack["updatedAt"] = now()
+def preview_pack_distribution(pack_id, target_agents, requested_mode, skills, agents):
+    detail = pack_detail(pack_id, skills, agents)
+    skill_ids = [item["skillId"] for item in detail["members"]]
+    return distribution_preview(skill_ids, target_agents, requested_mode, skills)
+
+
+def apply_pack(pack_id, target_agents, requested_mode, decisions=None, reviewed=None, snapshot=None):
+    skills, agents, _, _ = inventory() if snapshot is None else snapshot
+    preview = preview_pack_distribution(pack_id, target_agents, requested_mode, skills, agents)
+    if reviewed is not None:
+        validate_distribution_review(reviewed, preview)
+    if preview["blockers"] and not decisions:
+        return preview
+    result = execute_distribution(preview, skills, decisions or [])
+    applied_targets = [
+        item["agentId"] + "::" + item["skillId"]
+        for item in result["changes"] if item["action"] != "skip"
+    ]
+    if applied_targets:
+        add_pack_target_claims(pack_id, applied_targets)
+        if pack_id != "default":
+            STATE["packs"][pack_id]["updatedAt"] = now()
         save_state()
     return result
+
+
+def sync_pack_to_agents(pack_id, target_agents):
+    snapshot = inventory()
+    skills, agents, _, _ = snapshot
+    detail = pack_detail(pack_id, skills, agents)
+    target_agents = target_agents or [item["agentId"] for item in detail["appliedAgents"]]
+    mode = STATE["settings"]["defaultDistributeMode"]
+    results = []
+    for agent_id in dict.fromkeys(target_agents):
+        spec = agent_spec(agent_id)
+        error = None
+        try:
+            result = apply_pack(pack_id, [agent_id], mode, snapshot=snapshot)
+            if result["blockers"]:
+                error = f"{len(result['blockers'])} conflict(s) need review before syncing."
+        except (OSError, ValueError, RuntimeError) as failure:
+            error = str(failure)
+        results.append({
+            "agentId": agent_id,
+            "displayName": spec["displayName"] if spec else agent_id,
+            "status": "failed" if error else "synced",
+            "error": error,
+        })
+    failures = sum(item["status"] == "failed" for item in results)
+    return {
+        "packId": detail["id"],
+        "packName": detail["name"],
+        "revision": detail["revision"],
+        "status": ("failed" if failures == len(results) else "partial") if failures else "synced",
+        "agents": results,
+    }
 
 
 def agent_detail_from_inventory(
@@ -4004,7 +4116,7 @@ def move_direct_preview(target_id, pack_id):
         item["agentId"] for item in detail["appliedAgents"]
     ]
     remaining = [item for item in member_ids if item != target["skillId"]]
-    distribution = distribution_preview([], [target["agentId"]], target["actualMode"])
+    distribution = distribution_preview([], [target["agentId"]], target["actualMode"], skills)
     return {
         "targetId": target_id,
         "skillId": target["skillId"],
@@ -4321,13 +4433,19 @@ def dispatch():
         save_state()
         return None
     if command == "preview_distribute_skill":
+        skills, _, _, _ = inventory()
         return distribution_preview(
             args.get("skillIds", []),
             args.get("targetAgents", []),
             args.get("requestedMode", "copy"),
+            skills,
         )
     if command == "execute_distribute_skill":
-        return execute_distribution(args["preview"])
+        reviewed = args["preview"]
+        skills, _, _, _ = inventory()
+        preview = distribution_preview(reviewed["skillIds"], reviewed["targetAgents"], reviewed["requestedMode"], skills)
+        validate_distribution_review(reviewed, preview)
+        return execute_distribution(preview, skills, reviewed.get("blockerDecisions", []))
     if command == "scan_agent_inventory":
         agent_id = args["agentId"]
         data = next(item for item in unmanaged_inventory() if item["agentId"] == agent_id)
@@ -4524,11 +4642,13 @@ def dispatch():
         save_state()
         return None
     if command == "preview_apply_skill_pack":
-        detail = pack_detail(args["packId"])
-        return distribution_preview(
-            [item["skillId"] for item in detail["members"] if not item["missing"]],
+        skills, agents, _, _ = inventory()
+        return preview_pack_distribution(
+            args["packId"],
             args.get("targetAgents", []),
             args.get("requestedMode", "copy"),
+            skills,
+            agents,
         )
     if command == "execute_apply_skill_pack":
         return apply_pack(
@@ -4536,28 +4656,10 @@ def dispatch():
             args.get("targetAgents", []),
             args.get("requestedMode", "copy"),
             args.get("blockerDecisions", []),
+            reviewed=args.get("reviewedPreview"),
         )
     if command == "execute_sync_skill_pack_to_agents":
-        detail = pack_detail(args["packId"])
-        target_agents = args.get("targetAgents") or [
-            item["agentId"] for item in detail["appliedAgents"]
-        ]
-        apply_pack(args["packId"], target_agents, STATE["settings"]["defaultDistributeMode"])
-        return {
-            "packId": detail["id"],
-            "packName": detail["name"],
-            "revision": detail["revision"],
-            "status": "synced",
-            "agents": [
-                {
-                    "agentId": agent_id,
-                    "displayName": agent_spec(agent_id)["displayName"],
-                    "status": "synced",
-                    "error": None,
-                }
-                for agent_id in target_agents
-            ],
-        }
+        return sync_pack_to_agents(args["packId"], args.get("targetAgents", []))
     if command == "preview_remove_skill_pack_from_agent":
         pack_id = args["packId"]
         agent_id = args["agentId"]
