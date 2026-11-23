@@ -1,6 +1,6 @@
 import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
-import { useId } from 'react'
+import { useId, useLayoutEffect, useRef } from 'react'
 
 interface PreviewDialogProps {
   title: string
@@ -32,6 +32,17 @@ export function PreviewDialog({
   onCancel,
 }: PreviewDialogProps) {
   const titleId = useId()
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    dialog.showModal()
+    cancelRef.current?.focus({ preventScroll: true })
+    return () => dialog.close()
+  }, [])
+
   if (typeof document === 'undefined') return null
 
   const modalClass = [
@@ -40,9 +51,29 @@ export function PreviewDialog({
     modalClassName ?? '',
   ].filter(Boolean).join(' ')
 
+  const requestCancel = () => {
+    if (!busy) onCancel()
+  }
+
   return createPortal(
-    <div className="sm2__overlay" onClick={onCancel}>
-      <div className={modalClass} role="dialog" aria-modal="true" aria-labelledby={titleId} onClick={(e) => e.stopPropagation()}>
+    <dialog
+      ref={dialogRef}
+      className="sm2__overlay sm2__preview-dialog"
+      aria-labelledby={titleId}
+      onClick={(event) => {
+        event.stopPropagation()
+        if (event.target === event.currentTarget) requestCancel()
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') event.stopPropagation()
+      }}
+      onCancel={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        requestCancel()
+      }}
+    >
+      <div className={modalClass}>
         <div className="sm2__modal-head">
           <h3 id={titleId}>{title}</h3>
         </div>
@@ -52,10 +83,11 @@ export function PreviewDialog({
         <div className="sm2__modal-actions">
           {actions ?? (
             <>
-              <button className="sm2__btn" onClick={onCancel} disabled={busy}>
+              <button type="button" ref={destructive ? cancelRef : undefined} className="sm2__btn" onClick={requestCancel} disabled={busy}>
                 {cancelLabel}
               </button>
               <button
+                type="button"
                 className={`sm2__btn sm2__btn--primary${destructive ? ' sm2__btn--danger' : ''}`}
                 onClick={onConfirm}
                 disabled={busy || disabled}
@@ -69,7 +101,7 @@ export function PreviewDialog({
           )}
         </div>
       </div>
-    </div>,
+    </dialog>,
     document.body,
   )
 }

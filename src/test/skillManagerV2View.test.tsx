@@ -4503,11 +4503,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     fireEvent.click(within(inheritedCard!).getByRole('button', { name: '删除 shared-review' }))
     expect(document.body.querySelector('.sm2__slideover--skill-detail')).toBeNull()
-    const sharedDeleteDialog = screen.getByRole('heading', { name: '移除共享的已管理 Skill？' }).closest<HTMLElement>('[role="dialog"]')
-    expect(sharedDeleteDialog).not.toBeNull()
-    expect(within(sharedDeleteDialog!).getByText(/所有读取该共享目录的 Agent/)).toBeInTheDocument()
-    expect(within(sharedDeleteDialog!).getByText(/中心库中的 Skill 会保留/)).toBeInTheDocument()
-    fireEvent.click(within(sharedDeleteDialog!).getByRole('button', { name: '取消' }))
+    const sharedDeleteDialog = screen.getByRole('dialog', { name: '移除共享的已管理 Skill？' })
+    expect(within(sharedDeleteDialog).getByText(/所有读取该共享目录的 Agent/)).toBeInTheDocument()
+    expect(within(sharedDeleteDialog).getByText(/中心库中的 Skill 会保留/)).toBeInTheDocument()
+    fireEvent.click(within(sharedDeleteDialog).getByRole('button', { name: '取消' }))
 
     fireEvent.click(screen.getByText('列表'))
     const managedInheritedRow = screen.getByText('/Users/me/.agents/skills/shared-review').closest<HTMLElement>('.sm2__object-row')
@@ -4551,10 +4550,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       expect(previewAdopt).toHaveBeenCalledTimes(1)
       expect(previewAdopt).toHaveBeenCalledWith('agents', 'raw-shared-writing')
     })
-    const adoptHeading = await screen.findByRole('heading', { name: '接管 shared-writing' })
-    const adoptDialog = adoptHeading.closest<HTMLElement>('[role="dialog"]')
-    expect(adoptDialog).not.toBeNull()
-    fireEvent.click(within(adoptDialog!).getByRole('button', { name: '取消' }))
+    const adoptDialog = await screen.findByRole('dialog', { name: '接管 shared-writing' })
+    fireEvent.click(within(adoptDialog).getByRole('button', { name: '取消' }))
 
     fireEvent.click(screen.getByText('列表'))
     expect(container.querySelector('.sm2__agent-skill-list')).not.toBeNull()
@@ -6027,7 +6024,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除 bird' }))
 
     const dialog = screen.getByRole('dialog', { name: '删除 Skill「bird」？' })
-    expect(dialog).toHaveClass('sm2__modal--unmanaged-delete')
+    expect(dialog.querySelector('.sm2__modal--unmanaged-delete')).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: '直接删除' }))
 
     expect(screen.queryByRole('dialog', { name: '删除 Skill「bird」？' })).not.toBeInTheDocument()
@@ -7787,12 +7784,14 @@ describe('Skill detail slider + agent page render without crashing', () => {
     await waitFor(() => expect(update).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
-  it('uninstalls a supported agent from the page header after confirmation', async () => {
+  it('keeps the Agent uninstall confirmation open until the operation finishes', async () => {
     useSkillStoreV2.setState({ unmanaged: [] })
     vi.spyOn(agentApi, 'refresh')
       .mockResolvedValueOnce([makeProgram()])
       .mockResolvedValue([makeProgram({ status: 'notInstalled', binaryPath: null })])
-    const uninstall = vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
+    let finishUninstall!: () => void
+    const pendingUninstall = new Promise<void>((resolve) => { finishUninstall = resolve })
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockReturnValue(pendingUninstall)
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
     vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue(agentDetail)
@@ -7801,12 +7800,21 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<AgentManagementPage />)
 
     fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
-    expect(screen.getByRole('dialog', { name: '卸载 Agent「Claude Code」' })).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog', { name: '卸载 Agent「Claude Code」' })
     expect(screen.getByText('npm uninstall -g @anthropic-ai/claude-code')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
     await waitFor(() => expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
+    expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled()
+    fireEvent.click(dialog.closest('.sm2__overlay')!)
+    expect(dialog).toBeInTheDocument()
+    fireEvent(dialog, new Event('cancel', { cancelable: true }))
+    expect(dialog).toBeInTheDocument()
+
+    finishUninstall()
     expect(await screen.findByText('Agent「Claude Code」已卸载，已清理 1 个 Skills')).toBeInTheDocument()
+    expect(dialog).not.toBeInTheDocument()
+    expect(uninstall).toHaveBeenCalledTimes(1)
   })
 
   it('keeps an uninstall limited to the Skills shown before another Skill was discovered', async () => {

@@ -592,6 +592,19 @@
   font-family: inherit;
 }
 
+.sm2__preview-dialog {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+}
+
+.sm2__preview-dialog:not([open]) { display: none; }
+.sm2__preview-dialog::backdrop { background: transparent; }
+
 .sm2__modal {
   background: var(--sm2-modal-surface, #fff);
   color: var(--text-primary, #17191f);
