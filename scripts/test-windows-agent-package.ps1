@@ -230,7 +230,20 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         $button = Find-PackControl $settings '卸载 Agent'
         if ($button -and $button.Current.IsEnabled) { $button }
     }
-    Invoke-PackControl $uninstall
+    Click-IslandElement $uninstall 'open the Agent uninstall confirmation'
+    $handle = [IntPtr]$settings.Current.NativeWindowHandle
+    $null = Wait-IslandValue 'keyboard focus on Cancel in the uninstall confirmation' {
+        $focused = [Windows.Automation.AutomationElement]::FocusedElement
+        $focused -and $focused.Current.Name -eq '取消' -and $focused.Current.HasKeyboardFocus
+    }
+    [AgentBroSmokeInput]::PressKeyInWindow($handle, 0x1B)
+    $null = Wait-IslandValue 'focus restored to the uninstall button after Escape' {
+        $focused = [Windows.Automation.AutomationElement]::FocusedElement
+        $focused -and $focused.Current.Name -eq '卸载 Agent' -and $focused.Current.HasKeyboardFocus -and
+            -not (Find-PackControl $settings '确认卸载')
+    }
+    Write-Output 'The uninstall confirmation focused Cancel and restored focus after native Escape.'
+    [AgentBroSmokeInput]::PressKeyInWindow($handle, 0x20)
     $confirm = Wait-IslandValue 'the uninstall confirmation' { Find-PackControl $settings '确认卸载' }
     Invoke-PackControl $confirm
     $null = Wait-IslandValue 'the Agent still detected after the first uninstall' {

@@ -1,5 +1,19 @@
 import '@testing-library/jest-dom/vitest'
 
+// jsdom has the element but does not implement its native modal methods.
+if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.showModal) {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: {
+      configurable: true,
+      value(this: HTMLDialogElement) { this.open = true },
+    },
+    close: {
+      configurable: true,
+      value(this: HTMLDialogElement) { this.open = false },
+    },
+  })
+}
+
 const createMemoryStorage = (): Storage => {
   const store = new Map<string, string>()
   return {
