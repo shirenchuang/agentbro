@@ -2,15 +2,13 @@
 
 ## English
 
-AgentBro v{{VERSION}} improves Windows startup and Island approvals and makes MCP management more reliable.
+AgentBro v{{VERSION}} improves Island approval feedback and Windows Agent management.
 
 ### Highlights
 
-- **Windows skips duplicate launches early.** If AgentBro is already starting or running for the same user and Hook port, a second launch exits before loading WebView2. The first process keeps handling Hooks. [#514](https://github.com/shirenchuang/agentbro/pull/514)
-- **Windows Island approvals can recover keyboard focus more than once.** A pending approval button can regain focus after a separate loss, so you can still make your choice with the keyboard. [#511](https://github.com/shirenchuang/agentbro/pull/511)
-- **MCP changes stay on the Agent and host you reviewed.** Switching between Agents, the local machine, or SSH hosts clears outdated inventories and confirmations. Responses from the previously selected host no longer replace the current list. [#505](https://github.com/shirenchuang/agentbro/pull/505)
-- **The MCP editor preserves focus and draft values.** Renaming environment variables or HTTP headers keeps keyboard focus. Switching transports preserves each draft, and saving preserves argument order, intentional empty arguments, and existing credentials when you clear a replacement value. [#507](https://github.com/shirenchuang/agentbro/pull/507)
-- **Agent Management displays OpenCode's native MCP configuration.** View entries from user-level JSON and JSONC files on local and SSH hosts, with their configuration source and enabled state. This inventory is read-only. [#509](https://github.com/shirenchuang/agentbro/pull/509)
+- **Island approvals show delivery errors and allow retries.** The prompt stays open if the decision fails. While a decision is being sent, repeated clicks are ignored. If you decline with feedback, AgentBro sends the feedback after the denial succeeds. [#525](https://github.com/shirenchuang/agentbro/pull/525)
+- **Windows finds runnable Codex launchers.** AgentBro prefers the Codex bundled with the desktop app. For a standalone installation, it can find a Windows launcher such as `codex.cmd` even when a Git Bash shim appears earlier on your PATH. [#518](https://github.com/shirenchuang/agentbro/pull/518)
+- **Agent Management keeps package operation errors in the transcript.** If an install, update, or uninstall command fails before it starts or while AgentBro waits for it, the operation log retains the error for diagnosis. [#520](https://github.com/shirenchuang/agentbro/pull/520)
 
 ### Install and update
 
@@ -26,19 +24,18 @@ AgentBro v{{VERSION}} improves Windows startup and Island approvals and makes MC
 ### Notes
 
 - The Windows installers are x64 and may show a SmartScreen prompt. Intermittent startup and Island accessibility reports are tracked in [#194](https://github.com/shirenchuang/agentbro/issues/194) and [#351](https://github.com/shirenchuang/agentbro/issues/351).
-- [Full changes since v3.3.1](https://github.com/shirenchuang/agentbro/compare/v3.3.1...v{{VERSION}})
+- Windows installer tests handle hosted system prompts and exercise the Island when first-run Settings has been closed. [#522](https://github.com/shirenchuang/agentbro/pull/522)
+- [Full changes since v3.3.2](https://github.com/shirenchuang/agentbro/compare/v3.3.2...v{{VERSION}})
 
 ## 中文
 
-AgentBro v{{VERSION}} 改进了 Windows 启动与灵动岛审批，以及 MCP 管理的稳定性。
+AgentBro v{{VERSION}} 改进了灵动岛审批反馈和 Windows 上的 Agent 管理。
 
 ### 重点更新
 
-- **Windows 提前结束重复启动。** 同一用户下的 AgentBro 正在用同一个 Hook 端口启动或运行时，第二个进程会在加载 WebView2 前退出，第一个进程继续处理 Hook。[#514](https://github.com/shirenchuang/agentbro/pull/514)
-- **Windows 灵动岛审批可以多次恢复键盘焦点。** 同一个待审批按钮再次失去焦点后仍可恢复，方便继续用键盘作出选择。[#511](https://github.com/shirenchuang/agentbro/pull/511)
-- **MCP 修改固定在已确认的 Agent 和主机上。** 切换 Agent、本机或 SSH 主机时会清除旧列表和确认弹窗。上一个主机迟到的响应也不会覆盖当前列表。[#505](https://github.com/shirenchuang/agentbro/pull/505)
-- **MCP 编辑器保留焦点和草稿。** 重命名环境变量或 HTTP 请求头时会保留键盘焦点，切换传输方式时会保留各自的草稿。保存时会保留参数顺序和有意留空的参数，清空替换值也会保留原凭据。[#507](https://github.com/shirenchuang/agentbro/pull/507)
-- **Agent 管理可以查看 OpenCode 原生 MCP 配置。** 支持读取本机和 SSH 主机上的用户级 JSON 与 JSONC 文件，显示配置来源和启用状态。列表为只读。[#509](https://github.com/shirenchuang/agentbro/pull/509)
+- **灵动岛会显示审批发送失败的原因，并允许重试。** 发送失败时保留审批请求，发送过程中会忽略重复点击。带说明的拒绝会在拒绝成功后发送说明。[#525](https://github.com/shirenchuang/agentbro/pull/525)
+- **Windows 可以找到可运行的 Codex 启动器。** AgentBro 优先使用桌面客户端自带的 Codex。使用独立安装时，即使 PATH 前面有 Git Bash 的启动脚本，也可以找到 `codex.cmd` 等 Windows 启动器。[#518](https://github.com/shirenchuang/agentbro/pull/518)
+- **Agent 管理会在操作日志里保留包操作错误。** 安装、更新或卸载命令无法启动，或 AgentBro 等待命令结束时出错，都可以在操作日志里查看原因。[#520](https://github.com/shirenchuang/agentbro/pull/520)
 
 ### 安装与更新
 
@@ -54,4 +51,5 @@ AgentBro v{{VERSION}} 改进了 Windows 启动与灵动岛审批，以及 MCP �
 ### 说明
 
 - Windows 安装包为 x64，可能出现 SmartScreen 提示。偶发启动和灵动岛无障碍问题在 [#194](https://github.com/shirenchuang/agentbro/issues/194) 和 [#351](https://github.com/shirenchuang/agentbro/issues/351) 中跟踪。
-- [自 v3.3.1 以来的完整改动](https://github.com/shirenchuang/agentbro/compare/v3.3.1...v{{VERSION}})
+- Windows 安装包测试会处理托管环境的系统提示，并覆盖关闭首次启动设置窗口后的灵动岛操作。[#522](https://github.com/shirenchuang/agentbro/pull/522)
+- [自 v3.3.2 以来的完整改动](https://github.com/shirenchuang/agentbro/compare/v3.3.2...v{{VERSION}})
