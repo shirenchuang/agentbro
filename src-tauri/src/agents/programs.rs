@@ -505,7 +505,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         versions_indicate_update(installed_version.as_deref(), latest_version.as_deref());
     let config_dir = match id.as_str() {
         "kimi" => Some(agent_paths::kimi_code_home().display().to_string()),
-        "deepseek-harness" => skill_path
+        "claude-code" | "deepseek-harness" => skill_path
             .and_then(Path::parent)
             .map(|path| path.display().to_string()),
         _ => meta.config_dir.map(expand_home),

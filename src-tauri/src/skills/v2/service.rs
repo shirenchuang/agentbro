@@ -1251,6 +1251,7 @@ impl Service {
 
     fn agent_summaries_for_ids(&self, agent_ids: Vec<String>) -> Result<Vec<AgentSummary>, String> {
         let mut out = Vec::new();
+        let custom_agents = crate::skills::registry::list_custom_agents();
         for id in &agent_ids {
             let installed = self.ensure_agent_row(id)?;
             let (enabled, skills_dir, version, latest) = self.db.with_conn(|c| {
@@ -1275,6 +1276,7 @@ impl Service {
                 id: id.clone(),
                 display_name: agent_meta::display_name(id),
                 icon_key: agent_meta::icon_key(id),
+                is_custom: custom_agents.iter().any(|agent| &agent.id == id),
                 enabled,
                 skills_dir,
                 version,
@@ -5865,10 +5867,9 @@ impl Service {
         })?;
         let (version, latest_version, persisted_skills_dir) =
             persisted.unwrap_or((None, None, None));
-        let skills_dir = persisted_skills_dir.or_else(|| {
-            agent_meta::agent_skills_dir(&self.home, agent_id)
-                .map(|path| path.display().to_string())
-        });
+        let skills_dir = agent_meta::agent_skills_dir(&self.home, agent_id)
+            .map(|path| path.display().to_string())
+            .or(persisted_skills_dir);
 
         let skills = self.skill_targets_for_agent(agent_id)?;
         let (mut inherited_managed_skills, mut inherited_unmanaged_skills) =

@@ -702,12 +702,15 @@ pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
     }
 
     let (cache, marker_dir, source_label, config_path) = match agent_id {
-        "claude-code" => (
-            svc.home.join(".claude/plugins/cache"),
-            ".claude-plugin",
-            "claude-plugin",
-            Some(svc.home.join(".claude/settings.json")),
-        ),
+        "claude-code" => {
+            let root = crate::skills::agent_paths::claude_code_home_for(svc.home());
+            (
+                root.join("plugins/cache"),
+                ".claude-plugin",
+                "claude-plugin",
+                Some(root.join("settings.json")),
+            )
+        }
         "codex" => (
             svc.home.join(".codex/plugins/cache"),
             ".codex-plugin",
@@ -809,7 +812,7 @@ pub(crate) fn find_plugin_location(
 ) -> Option<PluginLocation> {
     match agent_id {
         "claude-code" => find_manifest_plugin_location(
-            &svc.home.join(".claude/plugins/cache"),
+            &crate::skills::agent_paths::claude_code_home_for(svc.home()).join("plugins/cache"),
             ".claude-plugin",
             plugin,
         ),
