@@ -128,9 +128,12 @@ function Test-InstalledCustomAgentForm([Windows.Automation.AutomationElement]$Se
         Click-IslandElement $null 'enter the custom configuration root' -FindElement {
             Find-PackControl $Settings '配置根目录' $editType
         }
-        Set-Clipboard -Value $root
-        if (-not [AgentBroSmokeInput]::PasteInWindow($handle)) {
-            throw 'The custom Agent form lost focus before pasting the configuration root'
+        foreach ($character in $root.ToCharArray()) {
+            if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $handle) {
+                throw 'The custom Agent form lost focus while entering the configuration root'
+            }
+            [AgentBroSmokeInput]::AppendCharacter($character)
+            Start-Sleep -Milliseconds 30
         }
         $null = Wait-IslandValue 'the full configuration root in the custom Agent form' {
             $configRoot = Find-PackControl $Settings '配置根目录' $editType
