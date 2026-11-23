@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { OverlayItem, SessionState } from '../../types/agent'
+import type { OverlayItem, PermissionRequest, SessionState } from '../../types/agent'
+import { getPermissionReply, useSessionStore } from '../../stores/sessionStore'
 import { OverlayCard } from './OverlayCard'
 import { DiffView } from '../notch/DiffView'
 import { setNotchFocusable, jumpToTerminal } from '../../services/tauriApi'
@@ -178,7 +179,9 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
 
 export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAutoApprove, onShowSessions, onDeny, onDismiss, onDraftStateChange, queueLength = 1, queueNext, sessionCount = 1 }: PermissionCardProps) {
   const { t } = useTranslation()
-  const data = overlay.data as { toolName: string; toolInput: string; diff?: import('../../types/agent').DiffContent; options?: string[] }
+  const data = overlay.data as PermissionRequest
+  const reply = useSessionStore((state) => getPermissionReply(state, session.id, data))
+  const sending = reply !== undefined && reply.error === undefined
   const [feedbackState, setFeedbackState] = useState({ overlayId: overlay.id, text: '', show: false })
   const feedbackRef = useRef<HTMLInputElement>(null)
   const ignoreNextClickRef = useRef(false)
@@ -209,9 +212,10 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   useEffect(() => () => onDraftStateChange?.(false), [onDraftStateChange])
 
   const handleReject = useCallback(() => {
+    if (sending) return
     const msg = feedbackText.trim()
     onDeny(msg || undefined)
-  }, [feedbackText, onDeny])
+  }, [feedbackText, onDeny, sending])
 
   const handleDeny = () => {
     if (session.agentType === 'deepseek-harness' || showFeedback) {
@@ -230,17 +234,17 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
     event.preventDefault()
     event.stopPropagation()
     ignoreNextClickRef.current = true
-    action()
-  }, [])
+    if (!sending) action()
+  }, [sending])
 
   const runActionOnKeyboardClick = useCallback((event: MouseEvent<HTMLButtonElement>, action: () => void) => {
     if (ignoreNextClickRef.current) {
       ignoreNextClickRef.current = false
       return
     }
-    if (event.detail !== 0) return
+    if (event.detail !== 0 || sending) return
     action()
-  }, [])
+  }, [sending])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -329,11 +333,16 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
         </div>
       )}
 
+      {reply?.error !== undefined && (
+        <div className="permission-reply-error" role="alert">{reply.error || t('notch.unexpectedError')}</div>
+      )}
+
       {/* Action buttons */}
       <div className={actionsClassName}>
         <button
           type="button"
           className="perm-card__btn perm-card__btn--deny"
+          aria-disabled={sending || undefined}
           onMouseDown={(event) => runActionOnMouseDown(event, handleDeny)}
           onClick={(event) => runActionOnKeyboardClick(event, handleDeny)}
         >
@@ -342,6 +351,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
         <button
           type="button"
           className="perm-card__btn perm-card__btn--allow"
+          aria-disabled={sending || undefined}
           onMouseDown={(event) => runActionOnMouseDown(event, onAllow)}
           onClick={(event) => runActionOnKeyboardClick(event, onAllow)}
         >
@@ -352,6 +362,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
             <button
               type="button"
               className="perm-card__btn perm-card__btn--always"
+              aria-disabled={sending || undefined}
               onMouseDown={(event) => runActionOnMouseDown(event, onAllowAlways)}
               onClick={(event) => runActionOnKeyboardClick(event, onAllowAlways)}
             >
@@ -360,6 +371,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
             <button
               type="button"
               className="perm-card__btn perm-card__btn--auto"
+              aria-disabled={sending || undefined}
               onMouseDown={(event) => runActionOnMouseDown(event, onAutoApprove)}
               onClick={(event) => runActionOnKeyboardClick(event, onAutoApprove)}
             >

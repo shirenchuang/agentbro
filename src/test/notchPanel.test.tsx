@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NotchPanel } from '../components/notch/NotchPanel'
 import { OverlayCard } from '../components/overlay/OverlayCard'
 import { useConfigStore } from '../stores/configStore'
-import { useSessionStore } from '../stores/sessionStore'
+import { answerDisplayedPermission, useSessionStore } from '../stores/sessionStore'
 import { useThemeStore } from '../stores/themeStore'
 import type { OverlayItem, SessionState } from '../types/agent'
 import { MATCH_NOTCH_HEIGHT } from '../utils/islandLayout'
@@ -100,6 +100,7 @@ function mountIsland(activeOverlay: OverlayItem | null = null, sessionOverrides:
     panelState: 'hover',
     activeOverlay,
     overlayQueue: activeOverlay ? [activeOverlay] : [],
+    permissionReplies: new Map(),
     questionReplies: new Map(),
     planReplies: new Map(),
     rateLimits: undefined,
@@ -1380,6 +1381,74 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => {
       expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
     })
+  })
+
+  it('retains denial feedback on delivery failure and sends it after the retry is confirmed', async () => {
+    const failure = deferred()
+    const retry = deferred()
+    tauriMocks.respondPermission.mockReturnValueOnce(failure.promise).mockReturnValueOnce(retry.promise)
+    const permission = { toolUseId: 'hook-permission', toolName: 'Bash', toolInput: 'pnpm test' }
+    mountIsland({
+      id: 'permission-s1-retry',
+      sessionId: 's1',
+      type: 'permission',
+      data: permission,
+      createdAt: Date.now(),
+    }, { phase: 'waiting_approval', pendingPermission: permission })
+
+    fireEvent.click(screen.getByRole('button', { name: 'notch.deny' }))
+    const feedback = screen.getByPlaceholderText('Tell Claude why (optional)...')
+    fireEvent.change(feedback, { target: { value: 'Use the targeted test instead' } })
+    fireEvent.keyDown(feedback, { key: 'Enter' })
+    fireEvent.keyDown(feedback, { key: 'Enter' })
+    expect(tauriMocks.respondPermission).toHaveBeenCalledExactlyOnceWith('s1', false, undefined, 'hook-permission')
+    expect(tauriMocks.sendMessage).not.toHaveBeenCalled()
+
+    await act(async () => failure.reject(new Error('Hook disconnected')))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Hook disconnected')
+    expect(feedback).toHaveValue('Use the targeted test instead')
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toEqual(permission)
+    expect(tauriMocks.sendMessage).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(feedback, { key: 'Enter' })
+    expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(2)
+    expect(tauriMocks.sendMessage).not.toHaveBeenCalled()
+    await act(async () => retry.resolve())
+    expect(tauriMocks.sendMessage).toHaveBeenCalledExactlyOnceWith('s1', 'Use the targeted test instead')
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
+  })
+
+  it.each([
+    ['hover', '.hover-list__inline-btn--deny'],
+    ['expanded', '.approval-bar__btn--deny'],
+  ] as const)('shows a failed permission decision in the %s view and permits a retry', async (panel, selector) => {
+    tauriMocks.respondPermission.mockRejectedValueOnce('Hook disconnected')
+    const permission = { toolUseId: 'hook-permission', toolName: 'Bash', toolInput: 'pnpm test' }
+    mountIsland(null, { phase: 'waiting_approval', pendingPermission: permission })
+    act(() => useSessionStore.getState().setPanelState(panel))
+
+    const deny = await waitFor(() => {
+      const button = document.querySelector(selector)
+      expect(button).toBeInTheDocument()
+      return button!
+    })
+    fireEvent.click(deny)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Hook disconnected')
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toEqual(permission)
+
+    fireEvent.click(deny)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined())
+  })
+
+  it('ignores a stale approval action for a different request without a tool-use ID', async () => {
+    const first = { toolName: 'Bash', toolInput: 'pnpm test' }
+    const next = { ...first, toolInput: 'pnpm build' }
+    mountIsland(null, { phase: 'waiting_approval', pendingPermission: next })
+
+    expect(await answerDisplayedPermission('s1', first, true)).toBe(false)
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toEqual(next)
   })
 
   it('keeps a second permission open when the first response arrives late', async () => {

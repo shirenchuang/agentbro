@@ -9,7 +9,7 @@ import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
 import { useConfigStore } from '../../stores/configStore'
-import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion, planKey, planReplyError, questionKey, questionReplyError, useSessionStore } from '../../stores/sessionStore'
+import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion, getPermissionReply, planKey, planReplyError, questionKey, questionReplyError, useSessionStore } from '../../stores/sessionStore'
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { setNotchFocusable } from '../../services/tauriApi'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
@@ -599,6 +599,8 @@ function getOverlayPermissionForSession(session: SessionState, activeOverlay: Ov
 
 function InlinePermissionPreview({ session, permission }: { session: SessionState; permission: InlinePermissionRequest }) {
   const { t } = useTranslation()
+  const reply = useSessionStore((state) => getPermissionReply(state, session.id, permission))
+  const sending = reply !== undefined && reply.error === undefined
   const perm = permission
 
   const parsedInput = parseToolInput(perm.toolInput)
@@ -659,13 +661,17 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
         </div>
       )}
 
+      {reply?.error !== undefined && (
+        <div className="permission-reply-error" role="alert">{reply.error || t('notch.unexpectedError')}</div>
+      )}
       <div className="hover-list__inline-perm-actions">
         <button
           type="button"
           className="hover-list__inline-btn hover-list__inline-btn--deny"
+          aria-disabled={sending || undefined}
           onClick={(e) => {
             e.stopPropagation()
-            answerDisplayedPermission(session.id, permission, false)
+            void answerDisplayedPermission(session.id, permission, false)
           }}
         >
           {t('notch.deny', { defaultValue: '拒绝' })}
@@ -673,9 +679,10 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
         <button
           type="button"
           className="hover-list__inline-btn hover-list__inline-btn--allow"
+          aria-disabled={sending || undefined}
           onClick={(e) => {
             e.stopPropagation()
-            answerDisplayedPermission(session.id, permission, true)
+            void answerDisplayedPermission(session.id, permission, true)
           }}
         >
           {t('notch.allowOnce', { defaultValue: '允许一次' })}
@@ -685,9 +692,10 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
             <button
               type="button"
               className="hover-list__inline-btn hover-list__inline-btn--always"
+              aria-disabled={sending || undefined}
               onClick={(e) => {
                 e.stopPropagation()
-                answerDisplayedPermission(session.id, permission, true, true)
+                void answerDisplayedPermission(session.id, permission, true, true)
               }}
             >
               <span>{t('notch.allowAlways', { defaultValue: '始终允许' })}</span>
@@ -695,9 +703,10 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
             <button
               type="button"
               className="hover-list__inline-btn hover-list__inline-btn--auto"
+              aria-disabled={sending || undefined}
               onClick={(e) => {
                 e.stopPropagation()
-                answerDisplayedPermission(session.id, permission, 'auto')
+                void answerDisplayedPermission(session.id, permission, 'auto')
               }}
             >
               {t('notch.autoApprove', { defaultValue: '自动批准' })}

@@ -25,6 +25,7 @@ const saveSessionsDebounced = debounce(() => {
 }, 1000)
 
 type PermissionIdentity = Pick<PermissionRequest, 'toolUseId' | 'toolName'> & { toolInput?: unknown }
+type PermissionReply = { permission: PermissionIdentity | undefined; error?: string }
 export type QuestionIdentity = Pick<AskQuestion, 'question' | 'toolUseId' | 'multiSelect' | 'questions'> & {
   options: Array<string | { label: string }>
 }
@@ -36,6 +37,7 @@ const MAX_ACKNOWLEDGED_PERMISSIONS_PER_SESSION = 16
 interface SessionStore {
   sessions: Record<string, SessionState>
   acknowledgedPermissionIds: ReadonlyMap<string, readonly string[]>
+  permissionReplies: ReadonlyMap<string, PermissionReply>
   questionReplies: ReadonlyMap<string, QuestionReply>
   planReplies: ReadonlyMap<string, PlanReply>
   sessionList: SessionState[]
@@ -93,21 +95,58 @@ function samePermission(first: PermissionIdentity | undefined, second: Permissio
   return first.toolName === second.toolName && first.toolInput === second.toolInput
 }
 
-export function answerDisplayedPermission(
+function isCurrentPermission(session: SessionState | undefined, permission: PermissionIdentity | undefined): boolean {
+  return Boolean(session && samePermission(session.pendingPermission, permission)
+    && (permission || (session.phase === 'waiting_approval' && !session.planRequestId && !session.planTitle && !session.planContent)))
+}
+
+function retainPermissionReplies(replies: SessionStore['permissionReplies'], sessions: SessionStore['sessions']) {
+  if (!replies.size) return replies
+  const remaining = [...replies].filter(([id, reply]) => isCurrentPermission(sessions[id], reply.permission))
+  return remaining.length === replies.size ? replies : new Map(remaining)
+}
+
+export function getPermissionReply(state: SessionStore, sessionId: string, permission: PermissionIdentity | undefined) {
+  const reply = state.permissionReplies.get(sessionId)
+  return reply && samePermission(reply.permission, permission) && isCurrentPermission(state.sessions[sessionId], permission)
+    ? reply
+    : undefined
+}
+
+export async function answerDisplayedPermission(
   sessionId: string,
   permission: PermissionIdentity | undefined,
   allowed: boolean | 'auto',
   always?: boolean,
-): boolean {
-  const pending = useSessionStore.getState().sessions[sessionId]?.pendingPermission
-  if ((permission?.toolUseId || pending?.toolUseId) && !samePermission(permission, pending)) return false
-  const reply = allowed === 'auto'
-    ? respondAutoApprove(sessionId, permission?.toolUseId)
-    : respondPermission(sessionId, allowed, always, permission?.toolUseId)
-  void reply
-    .then(() => useSessionStore.getState().clearPermission(sessionId, permission))
-    .catch((error) => console.warn('[approval] response failed:', error))
-  return true
+): Promise<boolean> {
+  const state = useSessionStore.getState()
+  if (!isCurrentPermission(state.sessions[sessionId], permission)) return false
+  const previous = getPermissionReply(state, sessionId, permission)
+  if (previous && previous.error === undefined) return false
+  const reply: PermissionReply = { permission }
+  useSessionStore.setState({ permissionReplies: new Map(state.permissionReplies).set(sessionId, reply) })
+  try {
+    if (allowed === 'auto') await respondAutoApprove(sessionId, permission?.toolUseId)
+    else await respondPermission(sessionId, allowed, always, permission?.toolUseId)
+    useSessionStore.getState().clearPermission(sessionId, permission)
+    return true
+  } catch (error) {
+    useSessionStore.setState((current) => {
+      if (current.permissionReplies.get(sessionId) !== reply || !isCurrentPermission(current.sessions[sessionId], permission)) return current
+      return { permissionReplies: new Map(current.permissionReplies).set(sessionId, {
+        permission,
+        error: error instanceof Error ? error.message : String(error),
+      }) }
+    })
+    return false
+  } finally {
+    useSessionStore.setState((current) => {
+      if (current.permissionReplies.get(sessionId) !== reply) return current
+      const permissionReplies = new Map(current.permissionReplies)
+      permissionReplies.delete(sessionId)
+      return { permissionReplies }
+    })
+  }
 }
 
 export function questionKey(question: QuestionIdentity): string {
@@ -520,6 +559,7 @@ export const selectOverlayQueue = (s: SessionStore) => s.overlayQueue
 export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<SessionStore>((set) => ({
   sessions: {},
   acknowledgedPermissionIds: new Map(),
+  permissionReplies: new Map(),
   questionReplies: new Map(),
   planReplies: new Map(),
   sessionList: [],
@@ -890,7 +930,8 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         }
       }
 
-      return { sessions, sessionList: toList(sessions), panelState, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null }
+      const permissionReplies = retainPermissionReplies(state.permissionReplies, sessions)
+      return { sessions, sessionList: toList(sessions), panelState, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null, permissionReplies }
     })
     // Trigger debounced save after update
     saveSessionsDebounced()
@@ -925,6 +966,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
       delete sessions[id]
       const acknowledgedPermissionIds = new Map(state.acknowledgedPermissionIds)
       acknowledgedPermissionIds.delete(id)
+      const permissionReplies = retainPermissionReplies(state.permissionReplies, sessions)
       const questionReplies = new Map(state.questionReplies)
       questionReplies.delete(id)
       const planReplies = new Map(state.planReplies)
@@ -934,7 +976,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         const ids = Object.keys(sessions)
         activeSessionId = ids[0] ?? null
       }
-      return { sessions, sessionList: toList(sessions), activeSessionId, acknowledgedPermissionIds, questionReplies, planReplies }
+      return { sessions, sessionList: toList(sessions), activeSessionId, acknowledgedPermissionIds, permissionReplies, questionReplies, planReplies }
     })
     saveSessionsDebounced()
   },
@@ -1157,13 +1199,14 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
       const acknowledgedPermissionIds = state.acknowledgedPermissionIds.size
         ? new Map([...state.acknowledgedPermissionIds].filter(([sessionId]) => Object.hasOwn(sessions, sessionId)))
         : state.acknowledgedPermissionIds
+      const permissionReplies = retainPermissionReplies(state.permissionReplies, sessions)
       const questionReplies = state.questionReplies.size
         ? new Map([...state.questionReplies].filter(([id, reply]) => sameQuestion(reply.question, sessions[id]?.pendingQuestion)))
         : state.questionReplies
       const planReplies = state.planReplies.size
         ? new Map([...state.planReplies].filter(([id, reply]) => samePlan(reply.plan, sessions[id])))
         : state.planReplies
-      return { sessions, sessionList, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedPermissionIds, questionReplies, planReplies }
+      return { sessions, sessionList, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedPermissionIds, permissionReplies, questionReplies, planReplies }
     })
     // Push new overlays after state update
     if (newOverlays.length > 0) {
