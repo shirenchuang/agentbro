@@ -3545,8 +3545,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('button', { name: '应用 Ready Pack' })).toBeInTheDocument()
   })
 
-  it('adds a custom Claude-compatible agent from manual paths', async () => {
-    const addCustom = vi.spyOn(agentApi, 'addCustom').mockResolvedValue(makeProgram({
+  it('keeps a custom Claude Code instance draft available until it saves successfully', async () => {
+    let rejectSave!: (error: Error) => void
+    const pendingSave = new Promise<AgentProgramInfo>((_, reject) => { rejectSave = reject })
+    const addCustom = vi.spyOn(agentApi, 'addCustom').mockReturnValueOnce(pendingSave).mockResolvedValue(makeProgram({
       id: 'custom-antcc',
       displayName: 'AntCC',
       icon: 'claude-code',
@@ -3571,7 +3573,23 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.change(screen.getByLabelText('配置根目录'), { target: { value: '~/.codefuse/engine/cc/' } })
     fireEvent.click(screen.getByRole('button', { name: '保存 Agent' }))
 
-    await waitFor(() => expect(addCustom).toHaveBeenCalledWith({
+    expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled()
+    fireEvent.click(dialog.closest('.sm2-custom-agent-overlay')!)
+    expect(dialog).toBeInTheDocument()
+    fireEvent(dialog, new Event('cancel', { cancelable: true }))
+    expect(dialog).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('配置根目录')).toHaveAttribute('readonly')
+    expect(addCustom).toHaveBeenCalledTimes(1)
+
+    rejectSave(new Error('The configuration directory is unavailable'))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('The configuration directory is unavailable')
+    expect(within(dialog).getByLabelText('显示名称')).toHaveValue('AntCC')
+    expect(within(dialog).getByLabelText('配置根目录')).toHaveValue('~/.codefuse/engine/cc/')
+    expect(within(dialog).getByLabelText('配置根目录')).not.toHaveAttribute('readonly')
+    fireEvent.change(within(dialog).getByLabelText('配置根目录'), { target: { value: '~/.codefuse/engine/recovered/' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存 Agent' }))
+
+    await waitFor(() => expect(addCustom).toHaveBeenNthCalledWith(1, {
       id: null,
       displayName: 'AntCC',
       category: 'claude-compatible',
@@ -3582,7 +3600,12 @@ describe('Skill detail slider + agent page render without crashing', () => {
       mcpConfig: '~/.codefuse/engine/cc/settings.json',
       pluginDir: '~/.codefuse/engine/cc/plugins/cache',
     }, LOCAL_RUNTIME_ENVIRONMENT_ID))
+    expect(addCustom).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      configDir: '~/.codefuse/engine/recovered/',
+      globalSkillsDir: '~/.codefuse/engine/recovered/skills',
+    }), LOCAL_RUNTIME_ENVIRONMENT_ID)
     await waitFor(() => expect(dialog).not.toBeInTheDocument())
+    expect(addCustom).toHaveBeenCalledTimes(2)
     expect(loadOverview).toHaveBeenCalledWith(true)
   })
 
@@ -3603,14 +3626,16 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
     act(() => useSkillStoreV2.getState().requestCustomAgentDialog())
-    fireEvent.change(await screen.findByLabelText('显示名称'), { target: { value: 'Remote branch' } })
+    const form = await screen.findByRole('dialog', { name: /添加 Claude Code 实例/ })
+    fireEvent.change(within(form).getByLabelText('显示名称'), { target: { value: 'Remote branch' } })
     fireEvent.click(screen.getByRole('button', { name: '选择目录' }))
     expect(await screen.findByRole('dialog', { name: `选择 ${hostId} 上的文件夹` })).toBeInTheDocument()
+    expect(form).toBeInTheDocument()
     await waitFor(() => expect(browse).toHaveBeenCalledExactlyOnceWith('~', hostId))
     await waitFor(() => expect(screen.getByRole('button', { name: '选择当前文件夹' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: '选择当前文件夹' }))
 
-    expect(screen.getByLabelText('配置根目录')).toHaveValue('/home/remote/branch')
+    expect(within(form).getByLabelText('配置根目录')).toHaveValue('/home/remote/branch')
     expect(openLocal).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '保存 Agent' }))
     expect(add).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({

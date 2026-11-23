@@ -112,6 +112,43 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
     Write-Output 'The recreated Settings window refreshed the installed version when the package command finished.'
 }
 
+function Test-InstalledCustomAgentSaveError([Windows.Automation.AutomationElement]$Settings) {
+    $title = 'Add Claude Code Instance...'
+    $buttonType = [Windows.Automation.ControlType]::Button
+    $editType = [Windows.Automation.ControlType]::Edit
+    Click-IslandElement $null 'open the custom Agent form' -FindElement {
+        Find-PackControl $Settings $title $buttonType
+    }
+    $null = Wait-IslandValue 'initial focus in the custom Agent display name' {
+        $focused = [Windows.Automation.AutomationElement]::FocusedElement
+        $focused -and $focused.Current.Name -eq '显示名称' -and $focused.Current.HasKeyboardFocus
+    }
+    [AgentBroSmokeInput]::AppendCharacter('!')
+    Click-IslandElement $null 'enter the custom configuration root' -FindElement {
+        Find-PackControl $Settings '配置根目录' $editType
+    }
+    $root = '~/.agentbro-smoke-invalid'
+    foreach ($character in $root.ToCharArray()) {
+        [AgentBroSmokeInput]::AppendCharacter($character)
+    }
+    $save = Wait-IslandValue 'the custom Agent save action' { Find-PackControl $Settings '保存 Agent' $buttonType }
+    Invoke-PackControl $save
+    $null = Wait-IslandValue 'the custom Agent rejection with the draft still in the form' {
+        $name = Find-PackControl $Settings '显示名称' $editType
+        $configRoot = Find-PackControl $Settings '配置根目录' $editType
+        $name -and $configRoot -and (Test-PackVisibleText $Settings 'Agent ID cannot be empty') -and
+            $name.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value -ceq '!' -and
+            $configRoot.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value -ceq $root
+    }
+    [AgentBroSmokeInput]::PressKeyInWindow([IntPtr]$Settings.Current.NativeWindowHandle, 0x1B)
+    $null = Wait-IslandValue 'focus restored to Add Claude Code Instance after Escape' {
+        $focused = [Windows.Automation.AutomationElement]::FocusedElement
+        $focused -and $focused.Current.Name -eq $title -and $focused.Current.HasKeyboardFocus -and
+            -not (Find-PackControl $Settings '保存 Agent' $buttonType)
+    }
+    Write-Output 'The installed custom Agent form displayed the save error, retained both fields and restored focus after Escape.'
+}
+
 function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {
     $settings = Open-ManagedAgent $Island 'Claude Code'
     $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
@@ -225,6 +262,8 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     if ($report.shellConsoleVisible -or $report.toolConsoleVisible) {
         throw 'The package update opened a visible Windows console'
     }
+
+    Test-InstalledCustomAgentSaveError $settings
 
     $uninstall = Wait-IslandValue 'the uninstall button for the installed Agent' {
         $button = Find-PackControl $settings '卸载 Agent'

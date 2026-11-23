@@ -1,6 +1,52 @@
 import { createPortal } from 'react-dom'
-import type { ReactNode } from 'react'
+import type { ReactNode, RefObject } from 'react'
 import { useId, useLayoutEffect, useRef } from 'react'
+
+interface ModalDialogProps {
+  children: ReactNode
+  titleId: string
+  overlayClassName: string
+  busy?: boolean
+  initialFocusRef?: RefObject<HTMLElement | null>
+  onCancel: () => void
+}
+
+export function ModalDialog({ children, titleId, overlayClassName, busy, initialFocusRef, onCancel }: ModalDialogProps) {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    dialog.showModal()
+    initialFocusRef?.current?.focus({ preventScroll: true })
+    return () => dialog.close()
+  }, [initialFocusRef])
+
+  if (typeof document === 'undefined') return null
+
+  return createPortal(
+    <dialog
+      ref={dialogRef}
+      className={`sm2__modal-overlay ${overlayClassName}`}
+      aria-labelledby={titleId}
+      onClick={(event) => {
+        event.stopPropagation()
+        if (event.target === event.currentTarget && !busy) onCancel()
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') event.stopPropagation()
+      }}
+      onCancel={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (!busy) onCancel()
+      }}
+    >
+      {children}
+    </dialog>,
+    document.body,
+  )
+}
 
 interface PreviewDialogProps {
   title: string
@@ -32,18 +78,7 @@ export function PreviewDialog({
   onCancel,
 }: PreviewDialogProps) {
   const titleId = useId()
-  const dialogRef = useRef<HTMLDialogElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
-
-  useLayoutEffect(() => {
-    const dialog = dialogRef.current
-    if (!dialog) return
-    dialog.showModal()
-    cancelRef.current?.focus({ preventScroll: true })
-    return () => dialog.close()
-  }, [])
-
-  if (typeof document === 'undefined') return null
 
   const modalClass = [
     'sm2__modal',
@@ -51,27 +86,13 @@ export function PreviewDialog({
     modalClassName ?? '',
   ].filter(Boolean).join(' ')
 
-  const requestCancel = () => {
-    if (!busy) onCancel()
-  }
-
-  return createPortal(
-    <dialog
-      ref={dialogRef}
-      className="sm2__overlay sm2__preview-dialog"
-      aria-labelledby={titleId}
-      onClick={(event) => {
-        event.stopPropagation()
-        if (event.target === event.currentTarget) requestCancel()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') event.stopPropagation()
-      }}
-      onCancel={(event) => {
-        event.preventDefault()
-        event.stopPropagation()
-        requestCancel()
-      }}
+  return (
+    <ModalDialog
+      titleId={titleId}
+      overlayClassName="sm2__overlay"
+      busy={busy}
+      initialFocusRef={cancelRef}
+      onCancel={onCancel}
     >
       <div className={modalClass}>
         <div className="sm2__modal-head">
@@ -83,7 +104,7 @@ export function PreviewDialog({
         <div className="sm2__modal-actions">
           {actions ?? (
             <>
-              <button type="button" ref={destructive ? cancelRef : undefined} className="sm2__btn" onClick={requestCancel} disabled={busy}>
+              <button type="button" ref={destructive ? cancelRef : undefined} className="sm2__btn" onClick={onCancel} disabled={busy}>
                 {cancelLabel}
               </button>
               <button
@@ -101,7 +122,6 @@ export function PreviewDialog({
           )}
         </div>
       </div>
-    </dialog>,
-    document.body,
+    </ModalDialog>
   )
 }
