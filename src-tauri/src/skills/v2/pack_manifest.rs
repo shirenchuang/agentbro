@@ -139,7 +139,7 @@ pub(super) fn validate(manifest: &SkillPackManifest) -> Result<(), String> {
     if manifest.format != FORMAT {
         return Err("This file does not describe an AgentBro Skill Pack.".to_string());
     }
-    if !matches!(manifest.version, 1..=3) {
+    if !matches!(manifest.version, 1..=4) {
         return Err(format!(
             "Unsupported Skill Pack version {}.",
             manifest.version
@@ -179,6 +179,24 @@ pub(super) fn validate(manifest: &SkillPackManifest) -> Result<(), String> {
             || source.validate().is_err()
         {
             return Err(format!("Invalid pinned GitHub source for '{id}'."));
+        }
+    }
+    if manifest.version < 4 && !manifest.suggested_agent_ids.is_empty() {
+        return Err("Suggested Agents require Skill Pack version 4.".to_string());
+    }
+    let mut suggested = HashSet::new();
+    for id in &manifest.suggested_agent_ids {
+        if id == "agents"
+            || id.len() > 64
+            || !id.split('-').all(|part| {
+                !part.is_empty()
+                    && part
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            })
+            || !suggested.insert(id)
+        {
+            return Err("Suggested Agent IDs must be unique lowercase identifiers.".to_string());
         }
     }
     Ok(())
@@ -393,6 +411,24 @@ mod tests {
             skill_ids: vec!["review".to_string(), "a-test".to_string()],
             skill_fingerprints: Default::default(),
             skill_sources: Default::default(),
+            suggested_agent_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn migration_pack_preserves_only_valid_suggested_agent_ids() {
+        let mut pack = manifest();
+        pack.suggested_agent_ids = vec!["claude-code".into(), "codex".into()];
+        assert!(validate(&pack).unwrap_err().contains("version 4"));
+
+        pack.version = 4;
+        let json = serde_json::to_vec(&pack).unwrap();
+        assert_eq!(decode(&json).unwrap(), pack);
+
+        for invalid in ["", "../codex", "Claude-Code", "-codex", "agents", "codex"] {
+            let mut invalid_pack = pack.clone();
+            invalid_pack.suggested_agent_ids.push(invalid.into());
+            assert!(validate(&invalid_pack).unwrap_err().contains("Agent IDs"));
         }
     }
 

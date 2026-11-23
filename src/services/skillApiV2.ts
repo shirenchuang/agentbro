@@ -135,6 +135,7 @@ export interface AgentSummary {
   id: string
   displayName: string
   iconKey: string
+  isCustom?: boolean
   enabled: boolean
   skillsDir: string | null
   version: string | null
@@ -203,13 +204,14 @@ export interface SkillPackDetail {
 
 export interface SkillPackManifest {
   format: 'agentbro-skill-pack'
-  version: 1 | 2 | 3
+  version: 1 | 2 | 3 | 4
   name: string
   description: string
   tags: string[]
   skillIds: string[]
   skillFingerprints?: Record<string, string>
   skillSources?: Record<string, SkillPackGitHubSource>
+  suggestedAgentIds?: string[]
 }
 
 export interface SkillPackGitHubSource {

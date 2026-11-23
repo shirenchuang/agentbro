@@ -1021,6 +1021,19 @@ os.replace = _agentbro_fail_link_activation
         assert_eq!(imported["members"][0]["skillId"], "review");
         assert_eq!(imported["appliedAgents"], serde_json::json!([]));
 
+        let mut migration = args(reviewed.clone(), false);
+        migration["manifest"]["version"] = serde_json::json!(4);
+        migration["manifest"]["suggestedAgentIds"] =
+            serde_json::json!(["claude-code", "future-agent"]);
+        let migrated = run_script(home.path(), command, migration.clone());
+        assert_eq!(migrated["members"][0]["skillId"], "review");
+        assert_eq!(migrated["appliedAgents"], serde_json::json!([]));
+        assert!(!home.path().join(".claude/skills/review").exists());
+
+        migration["manifest"]["suggestedAgentIds"] = serde_json::json!(["../claude-code"]);
+        let error = run_script_error(home.path(), command, migration);
+        assert!(error.contains("Suggested Agent IDs"));
+
         text[0] = b'y';
         std::fs::write(docs.join("notes.txt"), &text).unwrap();
         let error = run_script_error(home.path(), command, args(reviewed, true));

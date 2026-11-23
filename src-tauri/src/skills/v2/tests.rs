@@ -120,6 +120,7 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
         skill_ids: vec!["review".to_string()],
         skill_fingerprints: Default::default(),
         skill_sources: Default::default(),
+        suggested_agent_ids: Vec::new(),
     };
     let reviewed = svc
         .skill_pack_fingerprints(&manifest.skill_ids, false)
@@ -187,6 +188,7 @@ fn pack_recheck_discovers_a_manually_copied_skill_in_a_cold_library() {
         skill_ids,
         skill_fingerprints: [(String::from("manual-review"), fingerprint.clone())].into(),
         skill_sources: Default::default(),
+        suggested_agent_ids: Vec::new(),
     };
 
     let reviewed = svc
@@ -262,6 +264,7 @@ fn pack_restore_checks_the_pinned_git_content_before_installing() {
         skill_ids: vec![skill_id.clone()],
         skill_fingerprints: [(skill_id.clone(), "0".repeat(64))].into(),
         skill_sources: [(skill_id.clone(), pin.clone())].into(),
+        suggested_agent_ids: Vec::new(),
     };
     let fetch = |url: &str, revision: &str| {
         assert_eq!(url, "https://github.com/example/workflows.git");
