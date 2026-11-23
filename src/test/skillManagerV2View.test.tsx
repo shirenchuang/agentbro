@@ -8851,6 +8851,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const review = await screen.findByRole('dialog', { name: '确认应用预览' })
     expect(review).toHaveTextContent('Codex')
     expect(review).toHaveTextContent('复制')
+    expect(within(review).getByText(latest.changes[0].targetPath)).toBeInTheDocument()
     fireEvent.click(within(review).getByRole('button', { name: '执行应用' }))
     await waitFor(() => expect(execute).toHaveBeenCalledWith(pack.id, ['codex'], 'copy', [], latest, LOCAL_RUNTIME_ENVIRONMENT_ID))
   })

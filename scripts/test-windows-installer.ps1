@@ -278,9 +278,9 @@ if ($VerifyPinnedPackManifest) {
         $packFixtures += Join-Path $profileDirectory ".agentbro\skills\$id"
         if ($member -eq $members[0]) {
             $packFixtures += Join-Path $profileDirectory ".agentbro\skills\${id}-restored"
-            $packFixtures += Join-Path $profileDirectory ".claude\skills\${id}-restored"
+            $packFixtures += Join-Path $env:CLAUDE_CONFIG_DIR "skills\${id}-restored"
         } else {
-            $packFixtures += Join-Path $profileDirectory ".claude\skills\$id"
+            $packFixtures += Join-Path $env:CLAUDE_CONFIG_DIR "skills\$id"
         }
         $content = $recorded[$member]
         $bytes = [Text.Encoding]::UTF8.GetBytes("SKILL.md`0$([Text.Encoding]::UTF8.GetByteCount($content))`0$content")

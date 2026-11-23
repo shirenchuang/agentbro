@@ -328,7 +328,8 @@ function Test-InstalledPinnedPackManifest(
     $manifest = Get-Content -LiteralPath $ImportPath -Encoding UTF8 -Raw | ConvertFrom-Json
     $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
     $skillRoot = Join-Path $profileDirectory '.agentbro\skills'
-    $agentSkillRoot = Join-Path $profileDirectory '.claude\skills'
+    $agentSkillRoot = Join-Path $env:CLAUDE_CONFIG_DIR 'skills'
+    $defaultAgentSkillRoot = Join-Path $profileDirectory '.claude\skills'
     $createAction = 'Create and choose Agents'
     $batchAction = "Restore $($manifest.skillIds.Count - 1) missing Skills"
     $conflictingId = $manifest.skillIds[0]
@@ -419,6 +420,9 @@ function Test-InstalledPinnedPackManifest(
         if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings 'Claude Code')) { $button }
     }
     foreach ($id in $importedIds) {
+        if (-not (Test-PackVisibleText $settings (Join-Path $agentSkillRoot $id))) {
+            throw "The review did not display $id under the configured Claude profile."
+        }
         if (Test-Path -LiteralPath (Join-Path $agentSkillRoot $id)) {
             throw "The Skill $id was distributed before confirming the preview."
         }
@@ -434,6 +438,9 @@ function Test-InstalledPinnedPackManifest(
     }
     foreach ($id in $importedIds) {
         $target = Join-Path $agentSkillRoot $id
+        if (Test-Path -LiteralPath (Join-Path $defaultAgentSkillRoot $id)) {
+            throw "A copy of $id was written to the default Claude profile."
+        }
         if ((Get-Item -LiteralPath $target).Attributes -band [IO.FileAttributes]::ReparsePoint) {
             throw "The confirmed copy of $id is a link."
         }
@@ -485,5 +492,5 @@ function Test-InstalledPinnedPackManifest(
             throw "The exported Pack did not retain the verified GitHub source and fingerprint for $skillId."
         }
     }
-    Write-Output 'The installed app restored and verified the Skills, preselected Claude Code, wrote the reviewed copies only after confirmation, and re-exported the applied Agent and verified sources.'
+    Write-Output 'The installed app preselected Claude Code, previewed and wrote the copies under CLAUDE_CONFIG_DIR only after confirmation, and re-exported the applied Agent and verified sources.'
 }

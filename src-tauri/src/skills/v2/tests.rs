@@ -1227,6 +1227,109 @@ fn windows_skill_paths_distribution_preserves_reviewed_pack_members_and_target_c
 }
 
 #[test]
+fn windows_skill_paths_use_the_configured_claude_profile() {
+    struct RestoreConfigDir(Option<std::ffi::OsString>);
+
+    impl Drop for RestoreConfigDir {
+        fn drop(&mut self) {
+            match self.0.as_ref() {
+                Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+                None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+            }
+        }
+    }
+
+    let _lock = lock_home();
+    let home = TempHome::new("claude-profile");
+    let _restore_config = RestoreConfigDir(std::env::var_os("CLAUDE_CONFIG_DIR"));
+    let default_root = home.path.join(".claude");
+    std::env::set_var("CLAUDE_CONFIG_DIR", &default_root);
+    let svc = Service::new(&fsutil::default_sqlite_path(), fsutil::home()).unwrap();
+    svc.init().unwrap();
+    let source = add_center_test_skill(&svc, "source", "review");
+    let preview = || {
+        svc.preview_distribute_skill(
+            vec!["review".into()],
+            vec!["claude-code".into()],
+            "copy".into(),
+        )
+        .unwrap()
+    };
+    svc.apply_reviewed_skill_pack("default", preview(), vec![])
+        .unwrap();
+
+    let configured_root = home.path.join("Claude profile with spaces");
+    std::env::set_var("CLAUDE_CONFIG_DIR", &configured_root);
+    let skills_dir = configured_root.join("skills");
+    let target = skills_dir.join("review");
+    let settings = configured_root.join("settings.json");
+    let cache = configured_root.join("plugins/cache");
+    let agent = svc.get_agent_detail("claude-code").unwrap();
+    assert_eq!(
+        agent.skills_dir.map(PathBuf::from),
+        Some(skills_dir.clone())
+    );
+    assert_eq!(agent.config_path.map(PathBuf::from), Some(settings.clone()));
+    assert_eq!(agent.plugin_dir.map(PathBuf::from), Some(cache.clone()));
+    assert_eq!(
+        crate::skills::agent_paths::paths_for_agent("claude-code").skill_dirs,
+        vec![skills_dir.clone()]
+    );
+
+    let imported = write_skill(&skills_dir, "profile-local", "Profile local", None);
+    svc.scan_one_agent_into_db("claude-code").unwrap();
+    assert!(svc
+        .list_unmanaged()
+        .unwrap()
+        .iter()
+        .any(|item| item.agent_id.as_deref() == Some("claude-code")
+            && Path::new(&item.path) == imported));
+    let plan = preview();
+    assert_eq!(plan.changes[0].action, "create");
+    assert_eq!(Path::new(&plan.changes[0].target_path), target);
+    assert!(!target.exists());
+    svc.apply_reviewed_skill_pack("default", plan, vec![])
+        .unwrap();
+    let content = fs::read(source.join("SKILL.md")).unwrap();
+    assert_eq!(fs::read(target.join("SKILL.md")).unwrap(), content);
+    assert_eq!(
+        fs::read(default_root.join("skills/review/SKILL.md")).unwrap(),
+        content
+    );
+    let installed = svc.get_agent_detail("claude-code").unwrap();
+    for expected in [default_root.join("skills/review"), target] {
+        assert!(installed
+            .skills
+            .iter()
+            .any(|skill| Path::new(&skill.target_path) == expected));
+    }
+
+    let manifest = cache.join("fixture/profile-tool/1.0/.claude-plugin/plugin.json");
+    fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+    fs::write(&manifest, r#"{"name":"profile-tool","version":"1.0"}"#).unwrap();
+    fs::write(&settings, r#"{"enabledPlugins":{"profile-tool":true}}"#).unwrap();
+    let inventory = crate::skills::plugin_management::list_plugins(&svc, "claude-code").unwrap();
+    assert_eq!(
+        inventory.config_path.map(PathBuf::from),
+        Some(settings.clone())
+    );
+    let plugin =
+        crate::skills::plugin_management::get_plugin_detail(&svc, "claude-code", "profile-tool")
+            .unwrap();
+    assert_eq!(plugin.manifest_path.map(PathBuf::from), Some(manifest));
+    let updated = crate::skills::plugin_management::set_plugin_enabled(
+        &svc,
+        "claude-code",
+        "profile-tool",
+        &inventory.revision,
+        false,
+    )
+    .unwrap();
+    assert!(!updated.plugins[0].enabled);
+    assert!(!default_root.join("settings.json").exists());
+}
+
+#[test]
 #[cfg(target_os = "windows")]
 fn windows_link_distribution_falls_back_to_copy_even_with_ask_policy() {
     let (_home, svc, _lock) = fresh_service("windows-link-fallback");

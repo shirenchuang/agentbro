@@ -5867,10 +5867,9 @@ impl Service {
         })?;
         let (version, latest_version, persisted_skills_dir) =
             persisted.unwrap_or((None, None, None));
-        let skills_dir = persisted_skills_dir.or_else(|| {
-            agent_meta::agent_skills_dir(&self.home, agent_id)
-                .map(|path| path.display().to_string())
-        });
+        let skills_dir = agent_meta::agent_skills_dir(&self.home, agent_id)
+            .map(|path| path.display().to_string())
+            .or(persisted_skills_dir);
 
         let skills = self.skill_targets_for_agent(agent_id)?;
         let (mut inherited_managed_skills, mut inherited_unmanaged_skills) =
