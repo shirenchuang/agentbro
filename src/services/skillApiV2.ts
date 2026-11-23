@@ -1459,34 +1459,40 @@ export const skillApiV2 = {
     isTauriRuntime()
       ? invoke<PluginInventory>('set_plugin_enabled_v2', { agentId, pluginId, revision, enabled })
       : Promise.resolve(demoPluginInventory(agentId)),
-  listMcpInventory: (agent: string) =>
+  listMcpInventory: (agent: string, environmentId: string) =>
     isTauriRuntime()
-      ? invoke<McpInventory>('list_mcp_inventory_cmd', { agent })
+      ? invoke<McpInventory>('list_mcp_inventory_cmd', { agent }, environmentId)
       : Promise.resolve(demoMcpInventory(agent)),
-  validateMcpServerDraft: (agent: string, server: McpServerDraft, originalName?: string | null) =>
+  validateMcpServerDraft: (agent: string, server: McpServerDraft, originalName: string | null, environmentId: string) =>
     isTauriRuntime()
       ? invoke<McpValidationResultV2>('validate_mcp_server_draft_cmd', {
           agent,
           server,
-          originalName: originalName ?? null,
-        })
+          originalName,
+        }, environmentId)
       : Promise.resolve({ valid: true, message: 'MCP configuration is valid', warnings: [] }),
-  saveMcpServer: (agent: string, server: McpServerDraft, revision: string, originalName?: string | null) =>
+  saveMcpServer: (
+    agent: string,
+    server: McpServerDraft,
+    revision: string,
+    originalName: string | null,
+    environmentId: string,
+  ) =>
     isTauriRuntime()
       ? invoke<McpInventory>('save_mcp_server_cmd', {
           agent,
           server,
           revision,
-          originalName: originalName ?? null,
-        })
+          originalName,
+        }, environmentId)
       : Promise.resolve(demoMcpInventory(agent)),
-  setMcpServerEnabled: (agent: string, serverName: string, revision: string, enabled: boolean) =>
+  setMcpServerEnabled: (agent: string, serverName: string, revision: string, enabled: boolean, environmentId: string) =>
     isTauriRuntime()
-      ? invoke<McpInventory>('set_mcp_server_enabled_cmd', { agent, serverName, revision, enabled })
+      ? invoke<McpInventory>('set_mcp_server_enabled_cmd', { agent, serverName, revision, enabled }, environmentId)
       : Promise.resolve(demoMcpInventory(agent)),
-  deleteMcpServer: (agent: string, serverName: string, revision: string) =>
+  deleteMcpServer: (agent: string, serverName: string, revision: string, environmentId: string) =>
     isTauriRuntime()
-      ? invoke<McpInventory>('delete_mcp_server_v2_cmd', { agent, serverName, revision })
+      ? invoke<McpInventory>('delete_mcp_server_v2_cmd', { agent, serverName, revision }, environmentId)
       : Promise.resolve(demoMcpInventory(agent)),
   testMcpServerConnection: (agent: string, serverName: string) =>
     isTauriRuntime()
