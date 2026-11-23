@@ -5804,6 +5804,16 @@ async fn resize_notch(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    let (_startup_lock, startup_lock_error) = match data_dir::try_windows_startup_lock(
+        &data_dir::agentbro_home(),
+        hook_endpoint::current().tcp_port,
+    ) {
+        Ok(Some(lock)) => (Some(lock), None),
+        Ok(None) => return,
+        Err(error) => (None, Some(error)),
+    };
+
     let context = tauri::generate_context!();
     #[cfg(target_os = "windows")]
     let context = {
@@ -5843,8 +5853,12 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
-        .setup(|app| {
+        .setup(move |app| {
             log::info!("Startup: configured windows created");
+            #[cfg(target_os = "windows")]
+            if let Some(error) = startup_lock_error {
+                log::warn!("Could not acquire the Windows startup lock: {error}");
+            }
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
