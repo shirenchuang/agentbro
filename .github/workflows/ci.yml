@@ -94,3 +94,5 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::programs::tests'
       - name: Test Agent launcher discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::executable::tests'
+      - name: Test Agent and Skill metadata writes
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::registry::tests'

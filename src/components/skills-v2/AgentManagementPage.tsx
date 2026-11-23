@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -16,7 +16,7 @@ import {
 } from '../../stores/runtimeEnvironmentStore'
 import { AgentIconBadge } from './AgentIconBadge'
 import { AdoptDialog } from './AdoptDialog'
-import { PreviewDialog } from './PreviewDialog'
+import { ModalDialog, PreviewDialog } from './PreviewDialog'
 import { McpManagementTab } from './McpManagementTab'
 import { PluginManagementTab } from './PluginManagementTab'
 import { RemoteAgentHooksTab } from './RemoteAgentHooksTab'
@@ -755,8 +755,6 @@ export function AgentManagementPage() {
       setNotice(added.hooksInstalled
         ? 'Claude Code 实例已添加，Hook 已安装'
         : '自定义 Agent 已添加')
-    } catch (e) {
-      if (isCurrent()) state.setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -1019,6 +1017,7 @@ function CustomAgentDialog({
   onSubmit: (config: CustomAgentConfig) => Promise<void>
 }) {
   const { t } = useTranslation()
+  const titleId = useId()
   const isLocal = environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
   const [displayName, setDisplayName] = useState('')
   const [configRoot, setConfigRoot] = useState('')
@@ -1052,6 +1051,7 @@ function CustomAgentDialog({
   }
 
   const submit = async () => {
+    if (busy) return
     const name = displayName.trim()
     const root = configRoot.trim()
     const skillPath = skillsDir.trim()
@@ -1068,46 +1068,29 @@ function CustomAgentDialog({
       return
     }
     setError(null)
-    await onSubmit({
-      id: null,
-      displayName: name,
-      category: 'claude-compatible',
-      globalSkillsDir: skillPath,
-      iconName: 'claude-code',
-      configDir: root,
-      settingsFile: settingsFile.trim() || null,
-      mcpConfig: mcpConfig.trim() || null,
-      pluginDir: pluginDir.trim() || null,
-    })
-  }
-
-  if (remotePickerOpen) {
-    return (
-      <RemoteSourcePicker
-        kind="directory"
-        environmentId={environmentId}
-        environmentName={environmentName}
-        onCancel={() => setRemotePickerOpen(false)}
-        onSelect={(path) => {
-          applyRoot(path)
-          setRemotePickerOpen(false)
-        }}
-      />
-    )
+    try {
+      await onSubmit({
+        id: null,
+        displayName: name,
+        category: 'claude-compatible',
+        globalSkillsDir: skillPath,
+        iconName: 'claude-code',
+        configDir: root,
+        settingsFile: settingsFile.trim() || null,
+        mcpConfig: mcpConfig.trim() || null,
+        pluginDir: pluginDir.trim() || null,
+      })
+    } catch (nextError) {
+      setError(skillErrorMessage(t, nextError))
+    }
   }
 
   return (
-    <div className="skills-dialog-overlay sm2-custom-agent-overlay" onClick={onClose}>
-      <div
-        aria-labelledby="custom-agent-dialog-title"
-        className="skills-dialog custom-agent-dialog"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-      >
+    <ModalDialog titleId={titleId} overlayClassName="skills-dialog-overlay sm2-custom-agent-overlay" busy={busy} onCancel={onClose}>
+      <div className="skills-dialog custom-agent-dialog">
         <div className="skills-dialog__header">
           <div>
-            <div className="skills-dialog__title" id="custom-agent-dialog-title">{t('settings.addEngineBranch')}</div>
+            <div className="skills-dialog__title" id={titleId}>{t('settings.addEngineBranch')}</div>
             <p className="custom-agent-dialog__subtitle">{isLocal
               ? '让企业封装版 Claude Code 使用自己的配置目录，同时复用 AgentBro 的 Hook、会话和 Skills 管理。'
               : `在 ${environmentName} 上添加 Claude Code 实例，管理它的配置与 Skills。`}</p>
@@ -1131,6 +1114,7 @@ function CustomAgentDialog({
               id="custom-agent-name"
               placeholder="例如研发团队 Claude Code"
               value={displayName}
+              readOnly={busy}
               onChange={(e) => setDisplayName(e.target.value)}
             />
           </div>
@@ -1142,6 +1126,7 @@ function CustomAgentDialog({
                 id="custom-agent-root"
                 placeholder="例如 ~/.codefuse/engine/cc/"
                 value={configRoot}
+                readOnly={busy}
                 onChange={(e) => applyRoot(e.target.value)}
               />
               <button className="skills-btn custom-agent-path-input__browse" type="button" disabled={busy} onClick={chooseRoot}>
@@ -1159,6 +1144,7 @@ function CustomAgentDialog({
                   className="install-form-input"
                   id="custom-agent-skills"
                   value={skillsDir}
+                  readOnly={busy}
                   onChange={(e) => setSkillsDir(e.target.value)}
                 />
               </div>
@@ -1168,6 +1154,7 @@ function CustomAgentDialog({
                   className="install-form-input"
                   id="custom-agent-settings"
                   value={settingsFile}
+                  readOnly={busy}
                   onChange={(e) => setSettingsFile(e.target.value)}
                 />
               </div>
@@ -1177,6 +1164,7 @@ function CustomAgentDialog({
                   className="install-form-input"
                   id="custom-agent-mcp"
                   value={mcpConfig}
+                  readOnly={busy}
                   onChange={(e) => setMcpConfig(e.target.value)}
                 />
               </div>
@@ -1186,12 +1174,13 @@ function CustomAgentDialog({
                   className="install-form-input"
                   id="custom-agent-plugin"
                   value={pluginDir}
+                  readOnly={busy}
                   onChange={(e) => setPluginDir(e.target.value)}
                 />
               </div>
             </div>
           </details>
-          {error && <div className="custom-agent-error">{error}</div>}
+          {error && <div className="custom-agent-error" role="alert">{error}</div>}
         </div>
         <div className="skills-dialog__footer">
           <button className="skills-btn" disabled={busy} onClick={onClose} type="button">取消</button>
@@ -1200,7 +1189,19 @@ function CustomAgentDialog({
           </ActionButton>
         </div>
       </div>
-    </div>
+      {remotePickerOpen && (
+        <RemoteSourcePicker
+          kind="directory"
+          environmentId={environmentId}
+          environmentName={environmentName}
+          onCancel={() => setRemotePickerOpen(false)}
+          onSelect={(path) => {
+            applyRoot(path)
+            setRemotePickerOpen(false)
+          }}
+        />
+      )}
+    </ModalDialog>
   )
 }
 

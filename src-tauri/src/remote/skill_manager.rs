@@ -445,6 +445,44 @@ json.dump = fail_snapshot_write
     }
 
     #[test]
+    fn remote_custom_agent_names_keep_legacy_ids_and_distinguish_unicode_names() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let command = "add_custom_agent";
+        let args = |name: &str, id: Option<&str>| {
+            serde_json::json!({ "config": {
+                "id": id,
+                "displayName": name,
+                "globalSkillsDir": "~/skills"
+            } })
+        };
+        let legacy = run_script(
+            home.path(),
+            command,
+            args("研发 Claude", Some("custom-claude")),
+        );
+        assert_eq!(legacy["id"], "custom-claude");
+        let sibling = run_script(home.path(), command, args("运维 Claude", None));
+        assert_ne!(sibling["id"], legacy["id"]);
+        let other = run_script(home.path(), command, args("测试 Claude", None));
+        assert_ne!(other["id"], sibling["id"]);
+        let unicode = run_script(home.path(), command, args(" 研发助手 ", None));
+        assert_eq!(unicode["displayName"], "研发助手");
+        assert_eq!(
+            unicode["id"],
+            "custom-unicode-1b18e79ddcc903d4cdd035e65afe757205a1b412f9e0ac2bd6103993d816edfa"
+        );
+        for name in ["研发 Claude", "研发助手"] {
+            let error = run_script_error(home.path(), command, args(name, None));
+            assert!(error.contains("Agent already exists"), "{error}");
+        }
+        let agents = run_script(home.path(), "agent_list", serde_json::json!({}));
+        assert!(agents.as_array().unwrap().iter().any(|agent| {
+            agent["id"] == unicode["id"] && agent["displayName"] == "研发助手"
+        }));
+    }
+
+    #[test]
     fn remote_custom_agent_uses_registered_paths_in_management_inventory() {
         let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
             .expect("temporary remote home");
@@ -487,6 +525,7 @@ json.dump = fail_snapshot_write
             serde_json::json!({ "config": config }),
         );
         let id = added["id"].as_str().expect("custom Agent identity");
+        assert_eq!(id, "custom-company-claude");
         let agents = run_script(path, "list_managed_agents_v2", serde_json::json!({}));
         let agent = agents
             .as_array()
