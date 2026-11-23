@@ -2,14 +2,15 @@
 
 ## English
 
-AgentBro v{{VERSION}} improves reliability when managing Agents and Skills on macOS and Windows.
+AgentBro v{{VERSION}} improves Windows startup and Island approvals and makes MCP management more reliable.
 
 ### Highlights
 
-- **Keyboard focus stays inside confirmations.** Agent and Skill dialogs prevent clicks and keyboard input from reaching the page behind them. Closing a dialog restores focus to the control that opened it when it is still available. [#494](https://github.com/shirenchuang/agentbro/pull/494)
-- **Retry custom Agent saves without retyping.** A failed save keeps your entries and displays the error in the form. The dialog stays open while saving, and the SSH folder picker returns to the same form. [#496](https://github.com/shirenchuang/agentbro/pull/496)
-- **Use Chinese and other Unicode names for custom Agents.** Names work on local and SSH runtimes, including when two display names share the same Latin text. Previously registered Agents keep their identifiers. [#498](https://github.com/shirenchuang/agentbro/pull/498)
-- **Protect local Agent and Skill settings while saving.** Overlapping updates preserve each other's changes, failed writes leave the previous metadata file intact, and concurrent backup imports use separate temporary folders. [#500](https://github.com/shirenchuang/agentbro/pull/500)
+- **Windows skips duplicate launches early.** If AgentBro is already starting or running for the same user and Hook port, a second launch exits before loading WebView2. The first process keeps handling Hooks. [#514](https://github.com/shirenchuang/agentbro/pull/514)
+- **Windows Island approvals can recover keyboard focus more than once.** A pending approval button can regain focus after a separate loss, so you can still make your choice with the keyboard. [#511](https://github.com/shirenchuang/agentbro/pull/511)
+- **MCP changes stay on the Agent and host you reviewed.** Switching between Agents, the local machine, or SSH hosts clears outdated inventories and confirmations. Responses from the previously selected host no longer replace the current list. [#505](https://github.com/shirenchuang/agentbro/pull/505)
+- **The MCP editor preserves focus and draft values.** Renaming environment variables or HTTP headers keeps keyboard focus. Switching transports preserves each draft, and saving preserves argument order, intentional empty arguments, and existing credentials when you clear a replacement value. [#507](https://github.com/shirenchuang/agentbro/pull/507)
+- **Agent Management displays OpenCode's native MCP configuration.** View entries from user-level JSON and JSONC files on local and SSH hosts, with their configuration source and enabled state. This inventory is read-only. [#509](https://github.com/shirenchuang/agentbro/pull/509)
 
 ### Install and update
 
@@ -25,18 +26,19 @@ AgentBro v{{VERSION}} improves reliability when managing Agents and Skills on ma
 ### Notes
 
 - The Windows installers are x64 and may show a SmartScreen prompt. Intermittent startup and Island accessibility reports are tracked in [#194](https://github.com/shirenchuang/agentbro/issues/194) and [#351](https://github.com/shirenchuang/agentbro/issues/351).
-- [Full changes since v3.3.0](https://github.com/shirenchuang/agentbro/compare/v3.3.0...v{{VERSION}})
+- [Full changes since v3.3.1](https://github.com/shirenchuang/agentbro/compare/v3.3.1...v{{VERSION}})
 
 ## 中文
 
-AgentBro v{{VERSION}} 改进了 macOS 和 Windows 上 Agent 管理与 Skills 的稳定性。
+AgentBro v{{VERSION}} 改进了 Windows 启动与灵动岛审批，以及 MCP 管理的稳定性。
 
 ### 重点更新
 
-- **确认弹窗内的键盘焦点更稳定。** Agent 和 Skill 弹窗打开时，鼠标和键盘操作留在弹窗内。关闭时，如果打开弹窗的控件仍然可用，焦点会回到该控件。[#494](https://github.com/shirenchuang/agentbro/pull/494)
-- **自定义 Agent 保存失败后可直接重试。** 表单会保留输入并就地显示错误。保存过程中弹窗保持打开，SSH 目录选择结束后也会回到同一个表单。[#496](https://github.com/shirenchuang/agentbro/pull/496)
-- **自定义 Agent 可使用中文和其他 Unicode 名称。** 本机和 SSH 主机均支持，能区分包含相同拉丁字母的不同名称。已登记的 Agent 保留原标识。[#498](https://github.com/shirenchuang/agentbro/pull/498)
-- **保存时保护本机 Agent 和 Skill 设置。** 同时发生的更新会保留各自的修改，写入失败时保留上一次的元数据文件，并发导入备份时分别使用独立的临时目录。[#500](https://github.com/shirenchuang/agentbro/pull/500)
+- **Windows 提前结束重复启动。** 同一用户下的 AgentBro 正在用同一个 Hook 端口启动或运行时，第二个进程会在加载 WebView2 前退出，第一个进程继续处理 Hook。[#514](https://github.com/shirenchuang/agentbro/pull/514)
+- **Windows 灵动岛审批可以多次恢复键盘焦点。** 同一个待审批按钮再次失去焦点后仍可恢复，方便继续用键盘作出选择。[#511](https://github.com/shirenchuang/agentbro/pull/511)
+- **MCP 修改固定在已确认的 Agent 和主机上。** 切换 Agent、本机或 SSH 主机时会清除旧列表和确认弹窗。上一个主机迟到的响应也不会覆盖当前列表。[#505](https://github.com/shirenchuang/agentbro/pull/505)
+- **MCP 编辑器保留焦点和草稿。** 重命名环境变量或 HTTP 请求头时会保留键盘焦点，切换传输方式时会保留各自的草稿。保存时会保留参数顺序和有意留空的参数，清空替换值也会保留原凭据。[#507](https://github.com/shirenchuang/agentbro/pull/507)
+- **Agent 管理可以查看 OpenCode 原生 MCP 配置。** 支持读取本机和 SSH 主机上的用户级 JSON 与 JSONC 文件，显示配置来源和启用状态。列表为只读。[#509](https://github.com/shirenchuang/agentbro/pull/509)
 
 ### 安装与更新
 
@@ -52,4 +54,4 @@ AgentBro v{{VERSION}} 改进了 macOS 和 Windows 上 Agent 管理与 Skills 的
 ### 说明
 
 - Windows 安装包为 x64，可能出现 SmartScreen 提示。偶发启动和灵动岛无障碍问题在 [#194](https://github.com/shirenchuang/agentbro/issues/194) 和 [#351](https://github.com/shirenchuang/agentbro/issues/351) 中跟踪。
-- [自 v3.3.0 以来的完整改动](https://github.com/shirenchuang/agentbro/compare/v3.3.0...v{{VERSION}})
+- [自 v3.3.1 以来的完整改动](https://github.com/shirenchuang/agentbro/compare/v3.3.1...v{{VERSION}})
