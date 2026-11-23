@@ -5141,14 +5141,34 @@ impl Service {
         skill_ids: &[String],
         include_sources: bool,
     ) -> Result<Vec<SkillPackFingerprint>, String> {
-        let _guard = self
-            .center_import_lock
-            .lock()
-            .map_err(|error| error.to_string())?;
-        let current = self.read_skill_pack_fingerprints(skill_ids, include_sources)?;
-        if current.iter().any(|member| member.missing) {
-            self.scan_center_into_db()?;
-            return self.read_skill_pack_fingerprints(skill_ids, include_sources);
+        self.skill_pack_fingerprints_with(
+            skill_ids,
+            include_sources,
+            installer::checkout_skill_lock_ref,
+        )
+    }
+
+    pub(super) fn skill_pack_fingerprints_with(
+        &self,
+        skill_ids: &[String],
+        include_sources: bool,
+        fetch: impl FnMut(&str, &str) -> Result<(PathBuf, TempInstallDir), String>,
+    ) -> Result<Vec<SkillPackFingerprint>, String> {
+        let mut current = {
+            let _guard = self
+                .center_import_lock
+                .lock()
+                .map_err(|error| error.to_string())?;
+            let current = self.read_skill_pack_fingerprints(skill_ids, include_sources)?;
+            if current.iter().any(|member| member.missing) {
+                self.scan_center_into_db()?;
+                self.read_skill_pack_fingerprints(skill_ids, include_sources)?
+            } else {
+                current
+            }
+        };
+        if include_sources {
+            super::pack_manifest::verify_export_sources(&mut current, fetch);
         }
         Ok(current)
     }
@@ -5246,9 +5266,6 @@ impl Service {
         skill_id: &str,
         fetch: impl FnOnce(&str, &str) -> Result<(PathBuf, TempInstallDir), String>,
     ) -> Result<(), String> {
-        use super::project_lock::{
-            checked_source_skill, fingerprint_canonical_skill_directory, stage_skill_copy,
-        };
         use crate::data_dir::rename_path_if_absent;
 
         super::pack_manifest::validate(manifest)?;
@@ -5264,13 +5281,7 @@ impl Service {
         }
 
         let (checkout, _checkout_directory) = fetch(&source.git_url(), &source.commit)?;
-        if !installer::read_checkout_commit(&checkout)
-            .is_some_and(|actual| actual.eq_ignore_ascii_case(&source.commit))
-        {
-            return Err("Git did not return the recorded Skill commit.".to_string());
-        }
-        let repository = checkout.canonicalize().map_err(|error| error.to_string())?;
-        let directory = checked_source_skill(&repository, &repository.join(source.directory()?))?;
+        let repository = super::pack_manifest::verified_checkout(&checkout, &source.commit)?;
 
         let _guard = self
             .center_import_lock
@@ -5284,19 +5295,7 @@ impl Service {
         std::fs::create_dir_all(&center).map_err(|error| error.to_string())?;
         let staging = TempInstallDir::create_hidden_in(&center)?;
         let staged = staging.path().join("skill");
-        fsutil::copy_dir_recursive(&directory, &staged)?;
-        let fingerprint = || {
-            let canonical = staged.canonicalize().map_err(|error| error.to_string())?;
-            fingerprint_canonical_skill_directory(&canonical, false)
-        };
-        if fingerprint()? != *expected {
-            // SSH imports can retain files that the local library omits.
-            fsutil::remove_path(&staged)?;
-            stage_skill_copy(&directory, &staged, false)?;
-            if fingerprint()? != *expected {
-                return Err("Skill content does not match the recorded fingerprint.".to_string());
-            }
-        }
+        let directory = source.stage_verified_skill(&repository, &staged, expected)?;
         let destination = center.join(skill_id);
         let input = AddCenterSkillInput {
             source_path: directory.display().to_string(),

@@ -326,10 +326,14 @@ function Test-InstalledPinnedPackManifest(
     [string]$ExportPath
 ) {
     $manifest = Get-Content -LiteralPath $ImportPath -Encoding UTF8 -Raw | ConvertFrom-Json
-    $skillId = $manifest.skillIds[0]
-    $expected = $manifest.skillSources.PSObject.Properties[$skillId].Value
     $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
-    $destination = Join-Path $profileDirectory ".agentbro\skills\$skillId\SKILL.md"
+    $skillRoot = Join-Path $profileDirectory '.agentbro\skills'
+    $conflictingId = $manifest.skillIds[0]
+    $copyId = "${conflictingId}-restored"
+    $localPath = Join-Path $skillRoot "$conflictingId\SKILL.md"
+    $localContent = "---`nname: $conflictingId`n---`nKeep the locally edited Skill.`n"
+    New-Item -ItemType Directory -Path (Split-Path $localPath) -Force | Out-Null
+    [IO.File]::WriteAllText($localPath, $localContent, [Text.UTF8Encoding]::new($false))
     $settings = Open-InstalledAgentSkills $Island
     $packs = Wait-IslandValue 'the Skill Packs navigation item' { Find-PackControl $settings '技能包' }
     Invoke-PackControl $packs
@@ -339,26 +343,65 @@ function Test-InstalledPinnedPackManifest(
     }
     Invoke-PackControl $open
     Set-PackDialogFile 'Open' $ImportPath
-    $restore = Wait-IslandValue 'the Restore action for the missing pinned Skill' {
-        $button = Find-PackControl $settings "Restore $skillId"
+    $restore = Wait-IslandValue 'the batch Restore action for the missing pinned Skills' {
+        $button = Find-PackControl $settings "Restore $($manifest.skillIds.Count - 1) missing Skills"
         if ($button -and $button.Current.IsEnabled) { $button }
     }
     $confirm = Find-PackControl $settings 'Create Skill Pack'
-    if (-not $confirm -or $confirm.Current.IsEnabled -or (Test-Path -LiteralPath $destination)) {
-        throw 'Import must wait until the missing Skill is explicitly restored.'
+    if (-not $confirm -or $confirm.Current.IsEnabled) {
+        throw 'Import must wait until the missing Skills are explicitly restored.'
+    }
+    foreach ($skillId in $manifest.skillIds) {
+        if ($skillId -cne $conflictingId -and (Test-Path -LiteralPath (Join-Path $skillRoot $skillId))) {
+            throw "The review unexpectedly installed $skillId."
+        }
     }
     Invoke-PackControl $restore
-    $confirm = Wait-IslandValue 'the enabled Create Skill Pack action after verifying the restored Skill' {
-        $button = Find-PackControl $settings 'Create Skill Pack'
-        if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings 'Content matches')) { $button }
+    $copy = Wait-IslandValue 'the copy action for the conflicting pinned Skill' {
+        $button = Find-PackControl $settings "Restore a copy of $conflictingId"
+        if ($button -and $button.Current.IsEnabled) { $button }
     }
-    $content = Get-Content -LiteralPath $destination -Encoding UTF8 -Raw
-    if ($content -cnotmatch 'Pinned fixture commit\.' -or $content -cmatch 'Later branch content\.') {
-        throw 'The restored Skill did not come from the recorded commit.'
+    Invoke-PackControl $copy
+    $confirmCopy = Wait-IslandValue 'the enabled Restore copy action' {
+        $button = Find-PackControl $settings 'Restore copy'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    $createBeforeCopy = Find-PackControl $settings 'Create Skill Pack'
+    if (-not $createBeforeCopy -or $createBeforeCopy.Current.IsEnabled) {
+        throw 'The native review offered to create the Pack before resolving the collision.'
+    }
+    Invoke-PackControl $confirmCopy
+    $confirm = Wait-IslandValue 'the enabled Create Skill Pack action after verifying the restored Skills' {
+        $button = Find-PackControl $settings 'Create Skill Pack'
+        if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings "Manifest ID $conflictingId")) { $button }
+    }
+    if ([IO.File]::ReadAllText($localPath) -cne $localContent) {
+        throw 'The restored copy changed the pre-existing Skill.'
+    }
+    $importedIds = @($copyId) + @($manifest.skillIds | Select-Object -Skip 1)
+    foreach ($skillId in $manifest.skillIds) {
+        $source = $manifest.skillSources.PSObject.Properties[$skillId].Value
+        $destinationId = if ($skillId -ceq $conflictingId) { $copyId } else { $skillId }
+        $content = Get-Content -LiteralPath (Join-Path $skillRoot "$destinationId\SKILL.md") -Encoding UTF8 -Raw
+        if (-not $content.Contains("Pinned fixture commit at $($source.skillPath).") -or $content -cmatch 'Later branch content') {
+            throw "The restored Skill $skillId did not come from the recorded commit and path."
+        }
     }
     Invoke-PackControl $confirm
     $null = Wait-IslandValue 'the imported pinned Skill Pack notice' {
         Find-PackControl $settings "Imported $($manifest.name) as a new Skill Pack."
+    }
+    $editedId = $importedIds[1]
+    $editedPath = Join-Path $skillRoot "$editedId\SKILL.md"
+    $editedContent = (Get-Content -LiteralPath $editedPath -Encoding UTF8 -Raw) -replace '\r\n', "`n"
+    $editedContent += "`nEdited on this machine.`n"
+    [IO.File]::WriteAllText($editedPath, $editedContent, [Text.UTF8Encoding]::new($false))
+    $editedBytes = [Text.Encoding]::UTF8.GetBytes("SKILL.md`0$([Text.Encoding]::UTF8.GetByteCount($editedContent))`0$editedContent")
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $editedHash = [BitConverter]::ToString($sha256.ComputeHash($editedBytes)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
     }
     $menu = Wait-IslandValue 'the new pinned pack actions menu' { Find-PackControl $settings '更多操作' }
     Invoke-PackControl $menu
@@ -369,11 +412,26 @@ function Test-InstalledPinnedPackManifest(
     Set-PackDialogFile 'Save' $ExportPath
     $null = Wait-IslandValue 'the exported pinned Skill Pack file' { Test-Path -LiteralPath $ExportPath -PathType Leaf }
     $saved = Get-Content -LiteralPath $ExportPath -Encoding UTF8 -Raw | ConvertFrom-Json
-    $pin = $saved.skillSources.PSObject.Properties[$skillId].Value
-    if ($saved.version -ne 3 -or $pin.repository -cne $expected.repository -or
-        $pin.commit -cne $expected.commit -or $pin.skillPath -cne $expected.skillPath -or
-        $saved.skillFingerprints.PSObject.Properties[$skillId].Value -cne $manifest.skillFingerprints.PSObject.Properties[$skillId].Value) {
-        throw 'The exported Pack did not retain the verified GitHub source and fingerprint.'
+    if ($saved.version -ne 3 -or ($saved.skillIds -join ',') -cne ($importedIds -join ',')) {
+        throw 'The exported Pack did not use the new copy at the original member position.'
     }
-    Write-Output 'The installed app restored the recorded Git commit, matched its fingerprint, and exported the pinned source through native dialogs.'
+    foreach ($skillId in $manifest.skillIds) {
+        $destinationId = if ($skillId -ceq $conflictingId) { $copyId } else { $skillId }
+        $pinProperty = $saved.skillSources.PSObject.Properties[$destinationId]
+        $hash = $saved.skillFingerprints.PSObject.Properties[$destinationId].Value
+        if ($skillId -ceq $editedId) {
+            if ($pinProperty -or $hash -cne $editedHash) {
+                throw "The exported Pack did not preserve the edited fingerprint separately from the old source for $skillId."
+            }
+            continue
+        }
+        $expected = $manifest.skillSources.PSObject.Properties[$skillId].Value
+        $pin = $pinProperty.Value
+        if ($pin.repository -cne $expected.repository -or $pin.commit -cne $expected.commit -or
+            $pin.skillPath -cne $expected.skillPath -or
+            $hash -cne $manifest.skillFingerprints.PSObject.Properties[$skillId].Value) {
+            throw "The exported Pack did not retain the verified GitHub source and fingerprint for $skillId."
+        }
+    }
+    Write-Output 'The installed app preserved the existing Skill, restored a verified copy with a new ID, and re-exported the Pack in order with the verified source and edited fingerprints.'
 }

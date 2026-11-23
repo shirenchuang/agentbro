@@ -1025,7 +1025,8 @@ pub fn install_at(
             update_nested_json_hooks(profile, path, &command)?;
         }
         InstallationKind::JsonHooks { nested: false, .. } => {
-            update_json_hooks(profile, path)?;
+            let command = managed_bridge_command(profile)?;
+            update_json_hooks(profile, path, &command, true)?;
         }
         InstallationKind::AntigravityJsonHooks => {
             let command = managed_bridge_command(profile)?;
@@ -1082,31 +1083,7 @@ fn install_at_labeled(
             update_nested_json_hooks(profile, path, &command)?;
         }
         InstallationKind::JsonHooks { nested: false, .. } => {
-            let InstallationKind::JsonHooks {
-                entry,
-                nested: false,
-            } = profile.installation_kind
-            else {
-                unreachable!();
-            };
-            let mut settings = hook_manager::read_json_config(path);
-            if !settings.get("hooks").is_some_and(|hooks| hooks.is_object()) {
-                settings["hooks"] = serde_json::json!({});
-            }
-            strip_json_hooks_for_profile(&mut settings, profile);
-            let hooks = settings["hooks"].as_object_mut().expect("hooks is object");
-            for event in effective_events(profile) {
-                let value = hooks
-                    .entry(event.name.to_string())
-                    .or_insert_with(|| serde_json::json!([]));
-                if !value.is_array() {
-                    *value = serde_json::json!([]);
-                }
-                let entries = value.as_array_mut().expect("event hook list is array");
-                entries.retain(|entry| !json_hook_contains_profile(entry, profile));
-                entries.push(flat_json_hook_entry(entry, &event, &command));
-            }
-            hook_manager::write_json_config(path, &settings)?;
+            update_json_hooks(profile, path, &command, false)?;
         }
         InstallationKind::AntigravityJsonHooks => {
             update_antigravity_json_hooks(profile, path, &command)?;
@@ -1215,10 +1192,7 @@ pub fn uninstall_at(
     path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match profile.installation_kind {
-        InstallationKind::JsonHooks { nested: true, .. } => {
-            remove_nested_json_hooks(profile, path)?;
-        }
-        InstallationKind::JsonHooks { nested: false, .. } => {
+        InstallationKind::JsonHooks { .. } => {
             remove_json_hooks(profile, path)?;
         }
         InstallationKind::AntigravityJsonHooks => {
@@ -1298,12 +1272,9 @@ pub fn is_installed_at(profile: &AgentIntegrationProfile, path: &Path) -> bool {
 }
 
 pub fn install_health(profile: &AgentIntegrationProfile, path: &Path) -> HookInstallHealth {
-    if !path.exists() {
-        return HookInstallHealth::NotInstalled;
-    }
-
     match profile.installation_kind {
         InstallationKind::JsonHooks { nested, .. } => json_hooks_health(profile, path, nested),
+        _ if !path.exists() => HookInstallHealth::NotInstalled,
         InstallationKind::AntigravityJsonHooks => antigravity_json_hooks_health(profile, path),
         InstallationKind::ZcodeJsonHooks => zcode_json_hooks_health(profile, path),
         InstallationKind::YamlHooks | InstallationKind::TomlHooks => {
@@ -1400,9 +1371,9 @@ fn json_hooks_health(
     path: &Path,
     nested: bool,
 ) -> HookInstallHealth {
-    let settings = match read_json_health(path) {
+    let settings = match read_json_hook_settings(profile, path) {
         Ok(value) => value,
-        Err(status) => return status,
+        Err(_) => return HookInstallHealth::SettingsCorrupted,
     };
     let Some(hooks) = settings.get("hooks").and_then(Value::as_object) else {
         return if json_hook_contains_profile(&settings, profile) {
@@ -1891,6 +1862,8 @@ fn contains_marker(path: &Path, profile: &AgentIntegrationProfile) -> bool {
 fn update_json_hooks(
     profile: &AgentIntegrationProfile,
     path: &Path,
+    command: &str,
+    prepend_command_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let InstallationKind::JsonHooks {
         entry,
@@ -1899,25 +1872,22 @@ fn update_json_hooks(
     else {
         return Err("Profile is not a flat JSON hooks integration".into());
     };
-    let command = managed_bridge_command(profile)?;
-    let mut settings = hook_manager::read_json_config(path);
-    if !settings.get("hooks").is_some_and(|hooks| hooks.is_object()) {
+    let mut settings = read_json_hook_settings(profile, path)?;
+    if settings.get("hooks").is_none() {
         settings["hooks"] = serde_json::json!({});
     }
     strip_json_hooks_for_profile(&mut settings, profile);
 
     let hooks = settings["hooks"].as_object_mut().expect("hooks is object");
     for event in effective_events(profile) {
-        let value = hooks
+        let entries = hooks
             .entry(event.name.to_string())
-            .or_insert_with(|| serde_json::json!([]));
-        if !value.is_array() {
-            *value = serde_json::json!([]);
-        }
-        let entries = value.as_array_mut().expect("event hook list is array");
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .expect("event hook list is array");
         entries.retain(|entry| !json_hook_contains_profile(entry, profile));
-        let hook = flat_json_hook_entry(entry, &event, &command);
-        if matches!(entry, JsonHookEntry::CommandOnly) {
+        let hook = flat_json_hook_entry(entry, &event, command);
+        if prepend_command_only && matches!(entry, JsonHookEntry::CommandOnly) {
             entries.insert(0, hook);
         } else {
             entries.push(hook);
@@ -1931,12 +1901,13 @@ fn remove_json_hooks(
     profile: &AgentIntegrationProfile,
     path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut settings = hook_manager::read_json_config(path);
+    let mut settings = read_json_hook_settings(profile, path)?;
+    let original = settings.clone();
     strip_json_hooks_for_profile(&mut settings, profile);
-    hook_manager::write_json_config(path, &settings)
+    if settings != original {
+        hook_manager::write_json_config(path, &settings)?;
+    }
+    Ok(())
 }
 
 fn flat_json_hook_entry(entry: JsonHookEntry, event: &HookEventDescriptor, command: &str) -> Value {
@@ -1969,21 +1940,19 @@ fn update_nested_json_hooks(
     path: &Path,
     command: &str,
 ) -> Result<Value, Box<dyn std::error::Error>> {
-    let mut settings = hook_manager::read_json_config(path);
-    if !settings.get("hooks").is_some_and(|hooks| hooks.is_object()) {
+    let mut settings = read_json_hook_settings(profile, path)?;
+    if settings.get("hooks").is_none() {
         settings["hooks"] = serde_json::json!({});
     }
     strip_json_hooks_for_profile(&mut settings, profile);
     let hooks = settings["hooks"].as_object_mut().expect("hooks is object");
 
     for event in effective_events(profile) {
-        let value = hooks
+        let groups = hooks
             .entry(event.name.to_string())
-            .or_insert_with(|| serde_json::json!([]));
-        if !value.is_array() {
-            *value = serde_json::json!([]);
-        }
-        let groups = value.as_array_mut().expect("event hook groups is array");
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .expect("event hook groups is array");
 
         let mut inner_hook = serde_json::json!({
             "type": "command",
@@ -2019,18 +1988,6 @@ fn update_nested_json_hooks(
 
     hook_manager::write_json_config(path, &settings)?;
     Ok(settings)
-}
-
-fn remove_nested_json_hooks(
-    profile: &AgentIntegrationProfile,
-    path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut settings = hook_manager::read_json_config(path);
-    strip_json_hooks_for_profile(&mut settings, profile);
-    hook_manager::write_json_config(path, &settings)
 }
 
 const ANTIGRAVITY_AGENTBRO_HOOK: &str = "agentbro";
@@ -2102,15 +2059,56 @@ fn remove_antigravity_json_hooks(
 }
 
 fn read_json_config_for_update(path: &Path) -> Result<Value, Box<dyn std::error::Error>> {
-    if !path.exists() {
-        return Ok(serde_json::json!({}));
-    }
-    let content = std::fs::read_to_string(path)?;
-    let value = serde_json::from_str::<Value>(&content)?;
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && matches!(path.symlink_metadata(), Err(error) if error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(serde_json::json!({}));
+        }
+        Err(error) => {
+            return Err(format!(
+                "Could not read JSON configuration {}: {error}",
+                path.display()
+            )
+            .into());
+        }
+    };
+    let value = serde_json::from_str::<Value>(&content)
+        .map_err(|error| invalid_json_config(path, error))?;
     if !value.is_object() {
-        return Err("JSON configuration root must be an object".into());
+        return Err(invalid_json_config(path, "the root must be an object"));
     }
     Ok(value)
+}
+
+fn read_json_hook_settings(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let settings = read_json_config_for_update(path)?;
+    if let Some(hooks) = settings.get("hooks") {
+        let hooks = hooks
+            .as_object()
+            .ok_or_else(|| invalid_json_config(path, "hooks must be an object"))?;
+        for event in profile.events {
+            if hooks
+                .get(event.name)
+                .is_some_and(|entries| !entries.is_array())
+            {
+                return Err(invalid_json_config(
+                    path,
+                    format_args!("hooks.{} must be an array", event.name),
+                ));
+            }
+        }
+    }
+    Ok(settings)
+}
+
+fn invalid_json_config(path: &Path, reason: impl std::fmt::Display) -> Box<dyn std::error::Error> {
+    format!("Invalid JSON configuration {}: {reason}", path.display()).into()
 }
 
 fn antigravity_json_hooks_contain_profile(profile: &AgentIntegrationProfile, path: &Path) -> bool {
@@ -2483,24 +2481,21 @@ where
     F: FnMut(&Value) -> bool,
 {
     if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
-        for value in hooks.values_mut() {
-            if let Some(entries) = value.as_array_mut() {
-                entries.retain_mut(|entry| {
-                    if let Some(handlers) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
-                        let original_count = handlers.len();
-                        handlers.retain(|handler| !should_remove(handler));
-                        !handlers.is_empty() || original_count == 0
-                    } else {
-                        !should_remove(entry)
-                    }
-                });
-            }
-        }
         hooks.retain(|_, value| {
-            value
-                .as_array()
-                .map(|entries| !entries.is_empty())
-                .unwrap_or(true)
+            let Some(entries) = value.as_array_mut() else {
+                return true;
+            };
+            let original_count = entries.len();
+            entries.retain_mut(|entry| {
+                if let Some(handlers) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
+                    let original_count = handlers.len();
+                    handlers.retain(|handler| !should_remove(handler));
+                    !handlers.is_empty() || original_count == 0
+                } else {
+                    !should_remove(entry)
+                }
+            });
+            !entries.is_empty() || original_count == 0
         });
     }
 }
@@ -3620,6 +3615,163 @@ export default server;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_hook_install_preserves_malformed_settings() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("settings.json");
+        let original = br#"{"model":"user-model","hooks":{"PreToolUse": ["#;
+        std::fs::write(&path, original).unwrap();
+
+        let result = update_nested_json_hooks(&claude_code_profile(), &path, "agentbro-bridge");
+
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains(&path.display().to_string()));
+    }
+
+    #[test]
+    fn json_hook_uninstall_preserves_malformed_settings() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("settings.json");
+        let original = br#"{"model":"user-model","hooks":{"PreToolUse": ["#;
+        for profile in [claude_code_profile(), copilot_profile()] {
+            std::fs::write(&path, original).unwrap();
+
+            let result = uninstall_at(&profile, &path);
+
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains(&path.display().to_string()));
+        }
+    }
+
+    #[test]
+    fn json_hook_updates_preserve_incompatible_settings() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("settings.json");
+        let profile = copilot_profile();
+        let event = profile.events[0].name;
+        for (settings, reason) in [
+            (serde_json::json!([]), "root must be an object".to_string()),
+            (
+                serde_json::json!({"hooks": true}),
+                "hooks must be an object".to_string(),
+            ),
+            (
+                serde_json::json!({"hooks": {(event): {"command": "user-hook"}}}),
+                format!("hooks.{event} must be an array"),
+            ),
+        ] {
+            let original = serde_json::to_vec(&settings).unwrap();
+            std::fs::write(&path, &original).unwrap();
+
+            let error =
+                update_json_hooks(&profile, &path, "agentbro-bridge --source copilot", true)
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains(&reason), "{error}");
+            assert!(error.contains(&path.display().to_string()), "{error}");
+            assert!(uninstall_at(&profile, &path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_eq!(
+                install_health(&profile, &path),
+                HookInstallHealth::SettingsCorrupted
+            );
+        }
+    }
+
+    #[test]
+    fn json_hook_install_and_removal_preserve_user_settings() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("settings.json");
+        let profile = claude_code_profile();
+        let command = "agentbro-bridge --source claude-code";
+        uninstall_at(&profile, &path).unwrap();
+        assert!(!path.exists());
+        update_nested_json_hooks(&profile, &path, command).unwrap();
+        assert!(is_installed_at(&profile, &path));
+
+        let original = r#"{
+  "model": "user-model",
+  "hooks": {
+    "PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": "user-hook"}]}],
+    "UserDefined": []
+  }
+}
+"#;
+        std::fs::write(&path, original).unwrap();
+        uninstall_at(&profile, &path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        let settings: Value = serde_json::from_str(original).unwrap();
+        update_nested_json_hooks(&profile, &path, command).unwrap();
+        uninstall_at(&profile, &path).unwrap();
+        let after: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(after, settings);
+    }
+
+    #[test]
+    fn json_hook_flat_install_keeps_user_hooks_and_the_existing_command_order() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("hooks.json");
+        let profile = copilot_profile();
+        let event = profile.events[0].name;
+        let original = serde_json::json!({"hooks": {(event): [{"command": "user-hook"}]}});
+        for prepend in [true, false] {
+            std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+
+            update_json_hooks(&profile, &path, "agentbro-bridge --source copilot", prepend)
+                .unwrap();
+
+            let after: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let entries = after["hooks"][event].as_array().unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[usize::from(prepend)]["command"], "user-hook");
+            uninstall_at(&profile, &path).unwrap();
+            let after: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(after, original);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn json_hook_updates_preserve_a_settings_file_locked_by_another_writer() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("settings.json");
+        let original = br#"{"model":"user-model"}"#;
+        let profile = claude_code_profile();
+        std::fs::write(&path, original).unwrap();
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+
+        let error = update_nested_json_hooks(&profile, &path, "agentbro-bridge")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Could not read JSON configuration"),
+            "{error}"
+        );
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(uninstall_at(&profile, &path).is_err());
+        drop(locked);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

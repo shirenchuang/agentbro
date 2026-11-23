@@ -762,6 +762,7 @@ def pack_git_source_from_record(record):
 def skill_pack_fingerprints(skill_ids, include_sources=False):
     paths = {path.name: path for path in center_path().iterdir()}
     items = []
+    sources = {}
     for skill_id in skill_ids:
         entry = {"skillId": skill_id, "missing": False, "fingerprint": None}
         path = paths.get(skill_id)
@@ -778,9 +779,57 @@ def skill_pack_fingerprints(skill_ids, include_sources=False):
                 and valid_pack_component(skill_id) and not skill_id.startswith((".", " "))):
             source = pack_git_source_from_record(STATE["sources"].get(skill_id, {}))
             if source:
-                entry["source"] = source
+                key = (source["repository"], source["commit"])
+                sources.setdefault(key, []).append((entry, source))
         items.append(entry)
+    if sources:
+        verify_pack_export_sources(sources)
     return items
+
+
+def verify_pack_export_sources(sources):
+    # Leave time for the SSH caller to receive fingerprints after a slow checkout.
+    deadline = time.monotonic() + 300
+    for (repository, commit), members in sources.items():
+        if time.monotonic() >= deadline:
+            break
+        try:
+            checkout, temporary = checked_pack_checkout(repository, commit, deadline=deadline)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            continue
+        with temporary as directory:
+            for entry, source in members:
+                if time.monotonic() >= deadline:
+                    break
+                try:
+                    with tempfile.TemporaryDirectory(prefix="verify-", dir=directory) as staging:
+                        staged = pathlib.Path(staging) / "skill"
+                        stage_verified_pack_skill(checkout, source, staged, entry["fingerprint"])
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                entry["source"] = source
+
+
+def checked_pack_checkout(repository, commit, deadline=None):
+    checkout, temporary = clone_repository("https://github.com/" + repository + ".git", commit, deadline=deadline)
+    try:
+        if run_repository_git(checkout, "rev-parse", "HEAD", deadline=deadline).lower() != commit.lower():
+            raise ValueError("Git did not return the recorded Skill commit")
+        return checkout.resolve(), temporary
+    except BaseException:
+        temporary.cleanup()
+        raise
+
+
+def stage_verified_pack_skill(checkout, source, staged, expected):
+    directory = repository_relative_path(checkout, source["skillPath"]).parent
+    # The local library filters some entries that SSH imports retain.
+    if pack_content_fingerprint(directory, staged, local_import_layout=True) != expected:
+        shutil.rmtree(staged)
+        if pack_content_fingerprint(directory, staged) != expected:
+            raise ValueError("Skill content does not match the recorded fingerprint")
+    if pack_content_fingerprint(staged) != expected:
+        raise ValueError("Skill content does not match the recorded fingerprint")
 
 
 def validate_reviewable_skill_pack(manifest):
@@ -809,22 +858,14 @@ def restore_pack_skill(manifest, skill_id):
     destination = center / skill_id
     if path_present(destination):
         raise ValueError("The Skill already exists in the selected library")
-    repository = "https://github.com/" + source["repository"] + ".git"
     commit = source["commit"]
-    checkout, temporary = clone_repository(repository, commit)
+    repository = "https://github.com/" + source["repository"] + ".git"
+    checkout, temporary = checked_pack_checkout(source["repository"], commit)
     try:
-        if run_repository_git(checkout, "rev-parse", "HEAD").lower() != commit.lower():
-            raise ValueError("Git did not return the recorded Skill commit")
-        directory = repository_relative_path(checkout.resolve(), source["skillPath"]).parent
         expected = manifest["skillFingerprints"][skill_id]
         with tempfile.TemporaryDirectory(prefix=".agentbro-skill-import-", dir=str(center)) as staging:
             staged = pathlib.Path(staging) / "skill"
-            # The local library filters some entries that SSH imports retain.
-            if pack_content_fingerprint(directory, staged, local_import_layout=True) != expected:
-                shutil.rmtree(staged)
-                pack_content_fingerprint(directory, staged)
-            if pack_content_fingerprint(staged) != expected:
-                raise ValueError("Skill content does not match the recorded fingerprint")
+            stage_verified_pack_skill(checkout, source, staged, expected)
             try:
                 destination.mkdir()
             except FileExistsError:
@@ -2528,18 +2569,20 @@ def install_to_project(project_id, agent_id, skill_ids, mode):
     return scan_project_data(project)
 
 
-def run_repository_git(root, *args):
+def run_repository_git(root, *args, deadline=None):
+    timeout = None if deadline is None else max(0, deadline - time.monotonic())
     result = subprocess.run(
         ["git", "-C", str(root), *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         check=True,
+        timeout=timeout,
     )
     return result.stdout.strip()
 
 
-def clone_repository(repository, reference=None):
+def clone_repository(repository, reference=None, deadline=None):
     if not repository:
         raise ValueError("Only GitHub, GitLab, and skills.sh repositories are supported")
     temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-repo-")
@@ -2547,17 +2590,17 @@ def clone_repository(repository, reference=None):
     root = directory / "repo"
     try:
         if reference is None:
-            run_repository_git(directory, "clone", "--depth", "1", "--", repository, str(root))
+            run_repository_git(directory, "clone", "--depth", "1", "--", repository, str(root), deadline=deadline)
         else:
             if not reference or reference.startswith(("-", "+")) or ":" in reference:
                 raise ValueError("Invalid Git revision")
             root.mkdir()
-            run_repository_git(root, "check-ref-format", "--allow-onelevel", reference)
-            run_repository_git(root, "init", "--quiet", "--template=")
+            run_repository_git(root, "check-ref-format", "--allow-onelevel", reference, deadline=deadline)
+            run_repository_git(root, "init", "--quiet", "--template=", deadline=deadline)
             run_repository_git(root, "fetch", "--quiet", "--depth=1", "--no-tags",
-                               "--no-recurse-submodules", "--", repository, reference)
+                               "--no-recurse-submodules", "--", repository, reference, deadline=deadline)
             run_repository_git(root, "-c", "core.hooksPath=.git/agentbro-no-hooks",
-                               "checkout", "--quiet", "--detach", "FETCH_HEAD")
+                               "checkout", "--quiet", "--detach", "FETCH_HEAD", deadline=deadline)
         return root, temporary
     except BaseException:
         temporary.cleanup()

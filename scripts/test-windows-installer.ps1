@@ -242,10 +242,15 @@ if ($VerifyPinnedPackManifest) {
         throw 'The pinned Git checkout fixture requires an isolated GitHub-hosted runner'
     }
     $repo = Join-Path $stage 'Pinned Pack Git fixture'
-    $source = Join-Path $repo 'skills\review\SKILL.md'
-    New-Item -ItemType Directory -Path (Split-Path $source) -Force | Out-Null
-    $recorded = "---`nname: Pinned review`n---`nPinned fixture commit.`n"
-    [IO.File]::WriteAllText($source, $recorded, [Text.UTF8Encoding]::new($false))
+    $members = @('review', 'release', 'support')
+    $recorded = @{}
+    foreach ($member in $members) {
+        $relativePath = "skills/$member/SKILL.md"
+        $source = Join-Path $repo $relativePath
+        New-Item -ItemType Directory -Path (Split-Path $source) -Force | Out-Null
+        $recorded[$member] = "---`nname: Pinned $member`n---`nPinned fixture commit at $relativePath.`n"
+        [IO.File]::WriteAllText($source, $recorded[$member], [Text.UTF8Encoding]::new($false))
+    }
     function Invoke-FixtureGit([string[]]$Arguments) {
         & git -C $repo -c 'user.name=AgentBro Fixture' -c 'user.email=fixture@example.invalid' -c commit.gpgSign=false @Arguments
         if ($LASTEXITCODE -ne 0) { throw "Git failed in the pinned Pack fixture: $Arguments" }
@@ -254,35 +259,47 @@ if ($VerifyPinnedPackManifest) {
     Invoke-FixtureGit @('add', '.') | Out-Host
     Invoke-FixtureGit @('commit', '-m', 'Pinned Skill') | Out-Host
     $commit = Invoke-FixtureGit @('rev-parse', 'HEAD')
-    [IO.File]::WriteAllText($source, $recorded.Replace('Pinned fixture commit.', 'Later branch content.'), [Text.UTF8Encoding]::new($false))
+    foreach ($member in $members) {
+        $source = Join-Path $repo "skills/$member/SKILL.md"
+        [IO.File]::WriteAllText($source, $recorded[$member].Replace('Pinned fixture commit', 'Later branch content'), [Text.UTF8Encoding]::new($false))
+    }
     Invoke-FixtureGit @('add', '.') | Out-Host
     Invoke-FixtureGit @('commit', '-m', 'Advance fixture branch') | Out-Host
     $repoUri = ([uri]::new($repo)).AbsoluteUri
     $env:GIT_CONFIG_COUNT = '1'
     $env:GIT_CONFIG_KEY_0 = "url.$repoUri.insteadOf"
     $env:GIT_CONFIG_VALUE_0 = 'https://github.com/agentbro-fixture/windows-pack-smoke.git'
-    $fingerprintBytes = [Text.Encoding]::UTF8.GetBytes("SKILL.md`0$([Text.Encoding]::UTF8.GetByteCount($recorded))`0$recorded")
-    $fingerprint = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($fingerprintBytes)).ToLowerInvariant()
-    $id = "windows-pinned-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+    $suffix = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
-    $packFixtures += Join-Path $profileDirectory ".agentbro\skills\$id"
+    $fingerprints = @{}
+    $sources = @{}
+    $skillIds = foreach ($member in $members) {
+        $id = "windows-pinned-$member-$suffix"
+        $packFixtures += Join-Path $profileDirectory ".agentbro\skills\$id"
+        if ($member -eq $members[0]) {
+            $packFixtures += Join-Path $profileDirectory ".agentbro\skills\${id}-restored"
+        }
+        $content = $recorded[$member]
+        $bytes = [Text.Encoding]::UTF8.GetBytes("SKILL.md`0$([Text.Encoding]::UTF8.GetByteCount($content))`0$content")
+        $fingerprints[$id] = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+        $sources[$id] = @{
+            repository = 'agentbro-fixture/windows-pack-smoke'
+            commit = $commit
+            skillPath = "skills/$member/SKILL.md"
+        }
+        $id
+    }
     $pinnedPackPath = Join-Path $stage 'Pinned Pack.agentbro-pack.json'
     $pinnedPackExportPath = Join-Path $stage 'Re-exported pinned Pack.agentbro-pack.json'
     @{
         format = 'agentbro-skill-pack'
         version = 3
-        name = "Native pinned Pack $id"
+        name = "Native pinned Pack $suffix"
         description = ''
         tags = @()
-        skillIds = @($id)
-        skillFingerprints = @{ $id = $fingerprint }
-        skillSources = @{
-            $id = @{
-                repository = 'agentbro-fixture/windows-pack-smoke'
-                commit = $commit
-                skillPath = 'skills/review/SKILL.md'
-            }
-        }
+        skillIds = @($skillIds)
+        skillFingerprints = $fingerprints
+        skillSources = $sources
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $pinnedPackPath -Encoding utf8
 }
 if ($VerifyPackManifest) {

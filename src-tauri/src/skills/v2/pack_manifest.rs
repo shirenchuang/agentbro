@@ -1,12 +1,15 @@
 use super::models::{
     LinkedSkillPackManifest, SkillPackFingerprint, SkillPackGitHubSource, SkillPackManifest,
 };
-use super::project_lock::{locked_skill_directory, valid_skill_name};
-use crate::skills::installer::TempInstallDir;
-use std::collections::HashSet;
+use super::project_lock::{
+    checked_source_skill, fingerprint_canonical_skill_directory, locked_skill_directory,
+    stage_skill_copy, valid_skill_name,
+};
+use crate::skills::installer::{self, TempInstallDir};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const MAX_BYTES: usize = 1024 * 1024;
@@ -189,6 +192,53 @@ fn github_repository_component(part: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
+pub(super) fn verify_export_sources(
+    fingerprints: &mut [SkillPackFingerprint],
+    mut fetch: impl FnMut(&str, &str) -> Result<(PathBuf, TempInstallDir), String>,
+) {
+    let mut groups = BTreeMap::<_, Vec<_>>::new();
+    for member in fingerprints {
+        if let Some(source) = member.source.take() {
+            groups
+                .entry((source.git_url(), source.commit.clone()))
+                .or_default()
+                .push((member, source));
+        }
+    }
+
+    for ((repository, commit), members) in groups {
+        let Ok((checkout, temporary)) = fetch(&repository, &commit) else {
+            continue;
+        };
+        let Ok(checkout) = verified_checkout(&checkout, &commit) else {
+            continue;
+        };
+        for (member, source) in members {
+            let Some(expected) = member.fingerprint.as_deref() else {
+                continue;
+            };
+            let Ok(staging) = TempInstallDir::create_in(temporary.path()) else {
+                continue;
+            };
+            if source
+                .stage_verified_skill(&checkout, &staging.path().join("skill"), expected)
+                .is_ok()
+            {
+                member.source = Some(source);
+            }
+        }
+    }
+}
+
+pub(super) fn verified_checkout(checkout: &Path, commit: &str) -> Result<PathBuf, String> {
+    if !installer::read_checkout_commit(checkout)
+        .is_some_and(|actual| actual.eq_ignore_ascii_case(commit))
+    {
+        return Err("Git did not return the recorded Skill commit.".to_string());
+    }
+    checkout.canonicalize().map_err(|error| error.to_string())
+}
+
 impl SkillPackGitHubSource {
     fn validate(&self) -> Result<(), String> {
         if !self
@@ -257,6 +307,29 @@ impl SkillPackGitHubSource {
 
     pub(super) fn git_url(&self) -> String {
         format!("https://github.com/{}.git", self.repository)
+    }
+
+    pub(super) fn stage_verified_skill(
+        &self,
+        checkout: &Path,
+        staged: &Path,
+        expected: &str,
+    ) -> Result<PathBuf, String> {
+        let directory = checked_source_skill(checkout, &checkout.join(self.directory()?))?;
+        super::fsutil::copy_dir_recursive(&directory, staged)?;
+        let fingerprint = || {
+            let canonical = staged.canonicalize().map_err(|error| error.to_string())?;
+            fingerprint_canonical_skill_directory(&canonical, false)
+        };
+        if fingerprint()? != expected {
+            // SSH imports can retain files that the local library omits.
+            super::fsutil::remove_path(staged)?;
+            stage_skill_copy(&directory, staged, false)?;
+            if fingerprint()? != expected {
+                return Err("Skill content does not match the recorded fingerprint.".to_string());
+            }
+        }
+        Ok(directory)
     }
 
     pub(super) fn source_uri(&self) -> Result<String, String> {

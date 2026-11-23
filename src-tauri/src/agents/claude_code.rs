@@ -174,15 +174,13 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // Clean up old Python hook if present
-        Self::cleanup_old_python_hook();
-
         let hook_command = self.hook_command()?;
         profiles::install_nested_json_hooks_at(
             &profiles::claude_code_profile(),
             &self.settings_path(),
             &hook_command,
         )?;
+        Self::cleanup_old_python_hook();
 
         log::info!("Claude Code hooks installed successfully");
         Ok(())
