@@ -24,7 +24,12 @@ pub fn find_binary(binary: &str) -> Option<PathBuf> {
 pub fn find_codex_cli_binary() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        find_windows_codex_cli_binary()
+        find_windows_codex_cli_binary(
+            windows_codex_bundled_cli_candidates(),
+            candidate_dirs()
+                .into_iter()
+                .chain(std::env::current_dir().ok()),
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -272,25 +277,20 @@ fn windows_binary_candidates(binary: &str) -> Vec<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn find_windows_codex_cli_binary() -> Option<PathBuf> {
-    let mut candidates = windows_codex_bundled_cli_candidates();
-    let binaries = windows_binary_candidates("codex");
-
-    for dir in candidate_dirs()
-        .into_iter()
-        .filter(|dir| !is_windows_app_execution_path(dir))
-    {
-        candidates.extend(binaries.iter().map(|binary| dir.join(binary)));
-    }
-
-    if let Ok(current_dir) = std::env::current_dir() {
-        candidates.extend(binaries.iter().map(|binary| current_dir.join(binary)));
-    }
-
-    dedupe_paths(candidates)
+fn find_windows_codex_cli_binary(
+    bundled_candidates: impl IntoIterator<Item = PathBuf>,
+    directories: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    bundled_candidates
         .into_iter()
         .filter(|path| !is_windows_app_execution_path(path))
         .find(|path| path.is_file())
+        .or_else(|| {
+            let directories = directories
+                .into_iter()
+                .filter(|dir| !is_windows_app_execution_path(dir));
+            find_windows_binary_in_dirs(directories, "codex", &windows_binary_candidates("codex"))
+        })
 }
 
 #[cfg(target_os = "windows")]
@@ -348,11 +348,8 @@ fn windows_local_app_data_dir() -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn is_windows_app_execution_path(path: &Path) -> bool {
-    let normalized = path
-        .to_string_lossy()
-        .replace('/', "\\")
-        .to_ascii_lowercase();
-    normalized.contains("\\microsoft\\windowsapps\\") || normalized.contains("\\windowsapps\\")
+    path.components()
+        .any(|part| part.as_os_str().eq_ignore_ascii_case("WindowsApps"))
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -810,6 +807,49 @@ mod tests {
         assert_eq!(
             super::find_windows_binary_in_dirs(directories, binary, &candidates),
             Some(extensionless)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_codex_finds_a_native_launcher_after_a_posix_shim() {
+        let root =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let aliases = root.path().join("Microsoft\\WindowsApps");
+        let git_bash = root.path().join("Git Bash shims");
+        let standalone = root.path().join("Standalone Codex");
+        for directory in [&aliases, &git_bash, &standalone] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let shim = git_bash.join("codex");
+        let launcher = standalone.join("codex.cmd");
+        std::fs::write(aliases.join("codex.exe"), []).unwrap();
+        std::fs::write(&shim, "#!/bin/sh\n").unwrap();
+        std::fs::write(&launcher, "@echo codex-cli 1.2.3\r\n").unwrap();
+
+        let directories = [aliases, git_bash, standalone];
+        let selected = super::find_windows_codex_cli_binary([], directories.clone()).unwrap();
+        assert_eq!(selected, launcher);
+        let version = std::process::Command::new(selected)
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(version.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&version.stdout).trim(),
+            "codex-cli 1.2.3"
+        );
+
+        let bundled = root.path().join("desktop-codex.exe");
+        std::fs::write(&bundled, []).unwrap();
+        assert_eq!(
+            super::find_windows_codex_cli_binary([bundled.clone()], directories.clone()),
+            Some(bundled)
+        );
+        std::fs::remove_file(launcher).unwrap();
+        assert_eq!(
+            super::find_windows_codex_cli_binary([], directories),
+            Some(shim)
         );
     }
 
