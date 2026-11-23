@@ -7,6 +7,7 @@ import { useSessionStore } from '../stores/sessionStore'
 import { skillApiV2 } from '../services/skillApiV2'
 import { agentApi, type AgentOutputEvent, type AgentPackageOutput, type AgentProgramInfo } from '../services/agentApi'
 import * as tauriApi from '../services/tauriApi'
+import * as platform from '../utils/platform'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import i18n from '../i18n'
@@ -8452,6 +8453,37 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(fingerprints).toHaveBeenCalledWith([skill.id, edited], LOCAL_RUNTIME_ENVIRONMENT_ID, true)
   })
 
+  it('exports migration recommendations as verified sources and built-in Agent IDs', async () => {
+    const { pack, skill, overview } = await renderPackPage()
+    const claude = { ...overview.agents[0], isCustom: false }
+    const codex = { ...overview.agents[1], isCustom: false }
+    const shared = { ...claude, id: 'agents' }
+    const custom = { ...claude, id: 'team-agent', isCustom: true, skillsDir: '/private/team/skills' }
+    const agents = [claude, codex, shared, custom]
+    const appliedAgents = [claude, shared, custom].map(({ id }) => ({
+      packId: pack.id, packName: pack.name, memberCount: 1, agentId: id,
+    }))
+    act(() => useSkillStoreV2.setState({ agents, selectedPackDetail: { ...pack, appliedAgents } }))
+
+    const destination = '/Team/migration.agentbro-pack.json'
+    const source = { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' }
+    const fingerprint = 'a'.repeat(64)
+    vi.mocked(saveDialog).mockResolvedValueOnce(destination)
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints').mockResolvedValue([
+      { skillId: skill.id, missing: false, fingerprint, source },
+    ])
+    const write = vi.spyOn(skillApiV2, 'writePackManifest').mockResolvedValue(undefined)
+    fireEvent.click(screen.getByLabelText('更多操作'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '导出迁移文件' }))
+
+    await waitFor(() => expect(write).toHaveBeenCalledWith(destination, {
+      format: 'agentbro-skill-pack', version: 4, name: pack.name, description: pack.description, tags: pack.tags,
+      skillIds: [skill.id], skillFingerprints: { [skill.id]: fingerprint }, skillSources: { [skill.id]: source },
+      suggestedAgentIds: ['claude-code'],
+    }))
+    expect(fingerprints).toHaveBeenCalledWith([skill.id], LOCAL_RUNTIME_ENVIRONMENT_ID, true)
+  })
+
   it('reports a failed individual restore and requires a fresh comparison before creating the Pack', async () => {
     const { pack, skill } = await renderPackPage()
     const fingerprint = 'a'.repeat(64)
@@ -8640,7 +8672,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       description: manifest.description,
       tags: manifest.tags,
       skillIds: ['review-notes', skill.id],
-    }, { deferSync: true })
+    }, { deferSync: true, environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
     expect(useSkillStoreV2.getState().selectedPackId).toBe('pack-imported')
   })
 
@@ -8805,7 +8837,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const execute = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue(latest)
     fireEvent.click(dialog.getByRole('button', { name: /Claude Code/ }))
     fireEvent.click(dialog.getByRole('button', { name: '预览影响' }))
-    expect(preview).toHaveBeenCalledWith(pack.id, ['claude-code'], 'link')
+    expect(preview).toHaveBeenCalledWith(pack.id, ['claude-code'], 'link', LOCAL_RUNTIME_ENVIRONMENT_ID)
 
     fireEvent.click(dialog.getByRole('button', { name: /Claude Code/ }))
     fireEvent.click(dialog.getByRole('button', { name: /Codex/ }))
@@ -8815,12 +8847,104 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('dialog', { name: '确认应用预览' })).not.toBeInTheDocument()
     expect(execute).not.toHaveBeenCalled()
     fireEvent.click(dialog.getByRole('button', { name: '预览影响' }))
-    expect(preview).toHaveBeenLastCalledWith(pack.id, ['codex'], 'copy')
+    expect(preview).toHaveBeenLastCalledWith(pack.id, ['codex'], 'copy', LOCAL_RUNTIME_ENVIRONMENT_ID)
     const review = await screen.findByRole('dialog', { name: '确认应用预览' })
     expect(review).toHaveTextContent('Codex')
     expect(review).toHaveTextContent('复制')
     fireEvent.click(within(review).getByRole('button', { name: '执行应用' }))
-    await waitFor(() => expect(execute).toHaveBeenCalledWith(pack.id, ['codex'], 'copy', [], latest))
+    await waitFor(() => expect(execute).toHaveBeenCalledWith(pack.id, ['codex'], 'copy', [], latest, LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
+  it.each([false, true])('discards Agent selections before preview when changing runtime (returned: %s)', async (returnToLocal) => {
+    const { pack, dialog } = await openPackApplication()
+    const preview = vi.spyOn(skillApiV2, 'previewApplyPack')
+    fireEvent.click(dialog.getByRole('button', { name: /Claude Code/ }))
+    const button = dialog.getByRole('button', { name: '预览影响' })
+    expect(button).toBeEnabled()
+
+    act(() => {
+      const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+      const remote = 'another-pack-host'
+      selectEnvironment(remote)
+      if (returnToLocal) selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      else useSkillStoreV2.setState({
+        runtimeEnvironmentId: remote,
+        selectedPackDetail: { ...pack, name: 'Same ID on SSH' },
+      })
+    })
+    const staleButton = screen.queryByRole('button', { name: '预览影响' })
+    if (staleButton) fireEvent.click(staleButton)
+    expect(preview).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: '应用「Review pack」' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    { environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID, windows: false },
+    { environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID, windows: true },
+    { environmentId: 'pack-migration-ssh', windows: true },
+  ])('reviews migration Agent choices on $environmentId before writing (Windows: $windows)', async ({ environmentId, windows }) => {
+    const { pack, skill, overview } = await renderPackPage()
+    const usesProgramDetection = windows && environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
+    vi.spyOn(platform, 'isWindowsPlatform').mockReturnValue(windows)
+    const listPrograms = vi.spyOn(agentApi, 'list').mockResolvedValue([
+      makeProgram({ binaryPath: 'C:\\Tools\\claude.cmd' }),
+    ])
+    const claude = { ...overview.agents[0], isCustom: false, installed: !usesProgramDetection }
+    const codex = { ...overview.agents[1], isCustom: false }
+    const cursor = { ...codex, id: 'cursor', displayName: 'Cursor', installed: false }
+    const custom = { ...claude, id: 'team-agent', displayName: 'Team Agent', installed: true, isCustom: true }
+    const agents = [claude, codex, cursor, custom]
+    const importedPack = { ...pack, id: 'migration-pack', name: 'Migration Pack' }
+    const packs = [{ ...overview.packs[0], id: importedPack.id, name: importedPack.name }]
+    vi.mocked(skillApiV2.overview).mockResolvedValue({ ...overview, agents, packs })
+    vi.mocked(skillApiV2.getPackDetail).mockResolvedValue(importedPack)
+    act(() => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment(environmentId)
+      useSkillStoreV2.setState({ runtimeEnvironmentId: environmentId, agents })
+    })
+
+    const fingerprint = 'a'.repeat(64)
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack', version: 4, name: importedPack.name, description: '', tags: [],
+      skillIds: [skill.id], skillFingerprints: { [skill.id]: fingerprint },
+      suggestedAgentIds: ['claude-code', 'cursor', 'team-agent'],
+    }
+    const reviewed = [{ skillId: skill.id, missing: false, fingerprint }]
+    vi.mocked(openDialog).mockResolvedValueOnce('/tmp/migrate.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    vi.spyOn(skillApiV2, 'getPackFingerprints').mockResolvedValue(reviewed)
+    const create = vi.spyOn(skillApiV2, 'importReviewedPack').mockResolvedValue(importedPack)
+    const result: DistributionPreview = {
+      skillIds: [skill.id], targetAgents: ['codex'], requestedMode: 'link', changes: [], blockers: [], blockerDecisions: [],
+    }
+    const preview = vi.spyOn(skillApiV2, 'previewApplyPack').mockResolvedValue(result)
+    const execute = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue(result)
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const review = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    expect(review.getByText('原技能包应用过的 Agent 包括 Claude Code, Cursor, team-agent。')).toBeInTheDocument()
+    expect(create).not.toHaveBeenCalled()
+    fireEvent.click(review.getByRole('button', { name: '创建并选择 Agent' }))
+
+    const choice = within(await screen.findByRole('dialog', { name: '应用「Migration Pack」' }))
+    expect(create).toHaveBeenCalledWith(manifest, reviewed, false, environmentId)
+    expect(await choice.findByRole('button', { name: /Claude Code/, pressed: true })).toBeInTheDocument()
+    if (usesProgramDetection) expect(listPrograms).toHaveBeenCalledWith(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    else expect(listPrograms).not.toHaveBeenCalled()
+    expect(choice.getByRole('button', { name: /Team Agent/, pressed: false })).toBeInTheDocument()
+    expect(choice.queryByRole('button', { name: /Cursor/ })).not.toBeInTheDocument()
+    expect(choice.getByText('当前环境中无法预选 Cursor, team-agent。')).toBeInTheDocument()
+    expect(preview).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+
+    fireEvent.click(choice.getByRole('button', { name: /Claude Code/ }))
+    fireEvent.click(choice.getByRole('button', { name: /Codex/ }))
+    fireEvent.click(choice.getByRole('button', { name: '预览影响' }))
+    expect(preview).toHaveBeenCalledWith(importedPack.id, ['codex'], 'link', environmentId)
+    const confirm = await screen.findByRole('button', { name: '执行应用' })
+    expect(execute).not.toHaveBeenCalled()
+    fireEvent.click(confirm)
+    await waitFor(() => expect(execute).toHaveBeenCalledWith(importedPack.id, ['codex'], 'link', [], result, environmentId))
   })
 
   it.each([false, true])('invalidates a pack review after changing runtime (returned: %s)', async (returnToLocal) => {

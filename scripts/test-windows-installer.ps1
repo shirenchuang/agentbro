@@ -278,6 +278,9 @@ if ($VerifyPinnedPackManifest) {
         $packFixtures += Join-Path $profileDirectory ".agentbro\skills\$id"
         if ($member -eq $members[0]) {
             $packFixtures += Join-Path $profileDirectory ".agentbro\skills\${id}-restored"
+            $packFixtures += Join-Path $profileDirectory ".claude\skills\${id}-restored"
+        } else {
+            $packFixtures += Join-Path $profileDirectory ".claude\skills\$id"
         }
         $content = $recorded[$member]
         $bytes = [Text.Encoding]::UTF8.GetBytes("SKILL.md`0$([Text.Encoding]::UTF8.GetByteCount($content))`0$content")
@@ -293,13 +296,14 @@ if ($VerifyPinnedPackManifest) {
     $pinnedPackExportPath = Join-Path $stage 'Re-exported pinned Pack.agentbro-pack.json'
     @{
         format = 'agentbro-skill-pack'
-        version = 3
+        version = 4
         name = "Native pinned Pack $suffix"
         description = ''
         tags = @()
         skillIds = @($skillIds)
         skillFingerprints = $fingerprints
         skillSources = $sources
+        suggestedAgentIds = @('claude-code', 'unavailable-fixture')
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $pinnedPackPath -Encoding utf8
 }
 if ($VerifyPackManifest) {

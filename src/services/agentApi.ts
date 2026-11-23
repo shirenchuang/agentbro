@@ -265,8 +265,8 @@ export function seedAgentPrograms() {
 }
 
 export const agentApi = {
-  list: () => isTauriRuntime()
-    ? invoke<AgentProgramInfo[]>('agent_list')
+  list: (environmentId?: string) => isTauriRuntime()
+    ? invoke<AgentProgramInfo[]>('agent_list', undefined, environmentId)
     : Promise.resolve(seedAgentPrograms()),
 
   refresh: (environmentId?: string) => isTauriRuntime()

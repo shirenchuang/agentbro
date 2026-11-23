@@ -6,6 +6,8 @@ Use **Import Skill Pack** on the Skill Packs page to open the file. The preview 
 
 Use **Export with GitHub sources** to check the recorded repository paths and commits against the current library files. The export keeps the current fingerprints and includes only sources that can reproduce them. The result reports how many sources were verified. Use **Export Skill Pack** to save the definition and fingerprints offline.
 
+Use **Export for migration** to also record the built-in Agents that use the pack. The manifest includes their stable IDs. During import, **Create and choose Agents** saves the reviewed pack and opens the normal application dialog with available suggestions selected. Edit the selection, preview the changes, and confirm to write to the selected local or SSH environment.
+
 In the import preview, **Restore missing Skills** restores the missing members that have a recorded source, then compares the library again. You can also restore individual members. If one Skill fails, the preview shows its error and lets you retry it. Select **Create Skill Pack** when the reviewed members are ready.
 
 If a pinned member has different content from the Skill with the same ID in the selected library, choose **Restore as a copy** and confirm a new Skill ID. Both versions stay in the library. The imported Pack uses the new copy at the original member's position and retains its verified fingerprint and source when exported.
@@ -26,6 +28,6 @@ If a pinned member has different content from the Skill with the same ID in the 
 
 Manifests use UTF-8 JSON files up to 1 MiB. The `name` and each Skill ID must be nonempty. Skill IDs are case-sensitive, unique and ordered. Use the ID recorded in the center library. The `description` and `tags` fields may be omitted.
 
-Version 3 can also record pinned GitHub sources in `skillSources`. Version 2 records fingerprints as lowercase SHA-256 digests keyed by member ID. Version 1 compares member IDs. Keep the Skill files in their own repositories or another source your team can access.
+Version 4 can record recommended built-in Agent IDs in `suggestedAgentIds`. Each ID is a unique lowercase identifier of up to 64 ASCII characters, with digits and hyphens allowed. Version 3 can record pinned GitHub sources in `skillSources`. Version 2 records fingerprints as lowercase SHA-256 digests keyed by member ID. Version 1 compares member IDs. Keep the Skill files in their own repositories or another source your team can access.
 
 A portable fingerprint hashes files in sorted order by relative UTF-8 path with forward slashes. For each file it includes the path, a zero byte, the decimal byte length, another zero byte, and the contents. CRLF is normalized to LF in files without NUL bytes. The fingerprint skips Git and Python cache directories and symlinks that leave the Skill folder.

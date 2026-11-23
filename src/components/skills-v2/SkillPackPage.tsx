@@ -3,9 +3,11 @@ import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
-import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
+import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
+import { agentApi } from '../../services/agentApi'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type {
+  AgentSummary,
   ConflictBlocker,
   DeleteSkillPackPreview,
   DistributionBlockerDecision,
@@ -17,6 +19,8 @@ import type {
   SkillPackManifest,
   SkillPackSummary,
 } from '../../services/skillApiV2'
+import { isAgentProgramInstalled } from '../../utils/agentPrograms'
+import { isWindowsPlatform } from '../../utils/platform'
 import { PreviewDialog } from './PreviewDialog'
 import { AgentIconBadge } from './AgentIconBadge'
 import { SkillDetailSlider } from './SkillDetailSlider'
@@ -24,6 +28,7 @@ import { skillModeLabel, skillSourceTypeLabel } from './skillLabels'
 
 type BuilderMode = 'create' | 'edit' | 'duplicate'
 type PackRuntime = Pick<ReturnType<typeof useRuntimeEnvironmentStore.getState>, 'selectedEnvironmentId' | 'selectionRevision'>
+type PackExportMode = 'definition' | 'sources' | 'migration'
 type PackImport = {
   manifest: SkillPackManifest
   sourceUrl?: string
@@ -128,6 +133,10 @@ function isManagedCopyBlocker(blocker: ConflictBlocker) {
   return blocker.reason.startsWith('Managed copy ')
 }
 
+function suggestedAgentNames(ids: string[], agents: AgentSummary[]) {
+  return ids.map((id) => agents.find((agent) => agent.id === id && agent.isCustom === false)?.displayName ?? id).join(', ')
+}
+
 function replacePackMemberId(manifest: SkillPackManifest, skillId: string, destinationId: string): SkillPackManifest {
   const replaceId = (id: string) => id === skillId ? destinationId : id
   const replaceKeys = <T,>(entries: Record<string, T> | undefined) =>
@@ -145,7 +154,11 @@ export function SkillPackPage() {
   const state = useSkillStoreV2()
   const [packQuery, setPackQuery] = useState('')
   const [builderDraft, setBuilder] = useState<{ mode: BuilderMode; runtime: PackRuntime } | null>(null)
-  const [applyFor, setApplyFor] = useState<SkillPackDetail | null>(null)
+  const [applyDraft, setApplyDraft] = useState<{
+    pack: SkillPackDetail
+    runtime: PackRuntime
+    suggestedAgentIds: string[]
+  } | null>(null)
   const [removalDraft, setRemovalReview] = useState<PackRemovalReview | null>(null)
   const [removalOperation, setRemovalOperation] = useState<{ runtime: PackRuntime } | null>(null)
   const [syncConflictDraft, setSyncConflict] = useState<PackSyncConflictState | null>(null)
@@ -160,6 +173,11 @@ export function SkillPackPage() {
   const [restoringMember, setRestoringMember] = useState<{ runtime: PackRuntime; skillId: string } | null>(null)
   const restoreRuntime = useRef<PackRuntime | null>(null)
   const runtimeRevision = useRuntimeEnvironmentStore((runtime) => runtime.selectionRevision)
+  const application = applyDraft?.runtime.selectionRevision === runtimeRevision
+    && applyDraft.runtime.selectedEnvironmentId === state.runtimeEnvironmentId
+    && applyDraft.pack.id === state.selectedPackId
+    ? applyDraft
+    : null
   const builder = builderDraft?.runtime.selectionRevision === runtimeRevision ? builderDraft : null
   const builderMode = builder?.mode
   const syncConflict = syncConflictDraft?.runtime.selectionRevision === runtimeRevision && syncConflictDraft.packId === state.selectedPackId
@@ -174,6 +192,8 @@ export function SkillPackPage() {
     ? notice.message
     : null
   const packImport = packImportDraft?.runtime.selectionRevision === runtimeRevision ? packImportDraft : null
+  const importAgentIds = packImport?.manifest.suggestedAgentIds ?? []
+  const chooseAgentsAfterImport = importAgentIds.length > 0 && Boolean(packImport?.manifest.skillIds.length)
   const packLink = packLinkDraft?.runtime.selectionRevision === runtimeRevision ? packLinkDraft : null
   const activeRestore = restoringMember?.runtime.selectionRevision === runtimeRevision ? restoringMember : null
   const packImportBusy = busy || Boolean(activeRestore)
@@ -409,13 +429,17 @@ export function SkillPackPage() {
             description: manifest.description,
             tags: manifest.tags,
             skillIds: manifest.skillIds,
-          }, { deferSync: true })
+          }, { deferSync: true, environmentId: runtime.selectedEnvironmentId })
       if (!isPackRuntimeCurrent(runtime)) return
       setPackImport(null)
       setPackQuery('')
       useSkillStoreV2.setState({ selectedPackId: pack.id, selectedPackDetail: pack })
       setSyncNotice(t('skills.packManifest.imported', { name: pack.name }))
       await state.loadOverview(true)
+      if (chooseAgentsAfterImport && isPackRuntimeCurrent(runtime)
+        && useSkillStoreV2.getState().selectedPackId === pack.id) {
+        setApplyDraft({ pack, runtime, suggestedAgentIds: importAgentIds })
+      }
     } catch (error) {
       if (isPackRuntimeCurrent(runtime)) setPackImportError(String(error))
     } finally {
@@ -423,9 +447,15 @@ export function SkillPackPage() {
     }
   }
 
-  const exportPackManifest = async (pack: SkillPackDetail, includeSources = false) => {
+  const exportPackManifest = async (pack: SkillPackDetail, mode: PackExportMode) => {
     const runtime = useRuntimeEnvironmentStore.getState()
     if (busy || !isPackRuntimeCurrent(runtime)) return
+    const includeSources = mode !== 'definition'
+    const appliedAgentIds = new Set(pack.appliedAgents.map((agent) => agent.agentId))
+    const suggestedAgentIds = mode === 'migration'
+      ? state.agents.filter((agent) => agent.isCustom === false
+          && agent.id !== SHARED_SKILLS_AGENT_ID && appliedAgentIds.has(agent.id)).map((agent) => agent.id)
+      : []
     setBusy(true)
     state.setError(null)
     setSyncNotice(null)
@@ -447,7 +477,7 @@ export function SkillPackPage() {
       const sourceCount = Object.keys(sources).length
       await skillApiV2.writePackManifest(path, {
         format: 'agentbro-skill-pack',
-        version: sourceCount ? 3 : 2,
+        version: suggestedAgentIds.length ? 4 : sourceCount ? 3 : 2,
         name: pack.name,
         description: pack.description,
         tags: pack.tags,
@@ -456,6 +486,7 @@ export function SkillPackPage() {
           fingerprint ? [[skillId, fingerprint]] : [],
         )),
         ...(sourceCount ? { skillSources: sources } : {}),
+        ...(suggestedAgentIds.length ? { suggestedAgentIds } : {}),
       })
       if (isPackRuntimeCurrent(runtime)) {
         if (includeSources) {
@@ -661,6 +692,7 @@ export function SkillPackPage() {
                   active={state.selectedPackId === pack.id && !builderMode}
                   onClick={() => {
                     setBuilder(null)
+                    setApplyDraft(null)
                     setSyncConflict(null)
                     setRemovalReview(null)
                     state.selectPack(pack.id)
@@ -679,9 +711,14 @@ export function SkillPackPage() {
               key={detail.id}
               detail={detail}
               busy={busy}
-              onApply={() => setApplyFor(detail)}
+              onApply={() => {
+                const runtime = useRuntimeEnvironmentStore.getState()
+                if (isPackRuntimeCurrent(runtime) && runtime.selectionRevision === runtimeRevision) {
+                  setApplyDraft({ pack: detail, runtime, suggestedAgentIds: [] })
+                }
+              }}
               onEdit={startEdit}
-              onExport={(withSources) => exportPackManifest(detail, withSources)}
+              onExport={(mode) => exportPackManifest(detail, mode)}
               onDuplicate={startDuplicate}
               onDelete={() => reviewPackRemoval(detail.id, async (environmentId) => ({
                 kind: 'delete', preview: await skillApiV2.previewDeletePack(detail.id, environmentId),
@@ -741,7 +778,7 @@ export function SkillPackPage() {
       {packImport && (
         <PreviewDialog
           title={t('skills.packManifest.import')}
-          confirmLabel={t('skills.packManifest.create')}
+          confirmLabel={t(chooseAgentsAfterImport ? 'skills.packManifest.createAndChooseAgents' : 'skills.packManifest.create')}
           cancelLabel={t('settings.cancel')}
           busyLabel={t(activeRestore ? 'skills.packManifest.restoring' : 'skills.packManifest.creating')}
           busy={packImportBusy}
@@ -755,7 +792,13 @@ export function SkillPackPage() {
           )}
           {packImport.manifest.description && <p>{packImport.manifest.description}</p>}
           {packImport.manifest.tags.length > 0 && <p>{packImport.manifest.tags.join(', ')}</p>}
-          <p>{t(packImport.manifest.version >= 3 ? 'skills.packManifest.pinnedReview' : 'skills.packManifest.review')}</p>
+          <p>{t(Object.keys(packImport.manifest.skillSources ?? {}).length
+            ? 'skills.packManifest.pinnedReview' : 'skills.packManifest.review')}</p>
+          {importAgentIds.length > 0 && (
+            <p>{t('skills.packManifest.suggestedAgents', {
+              agents: suggestedAgentNames(importAgentIds, state.agents),
+            })}</p>
+          )}
           {hasMissingPackSkills && <div className="sm2__notice sm2__notice--warn">{t('skills.packManifest.missingHelp')}</div>}
           {hasUnavailablePackSkills && <div className="sm2__notice sm2__notice--warn">{t('skills.packManifest.unavailableHelp')}</div>}
           {restorableIds.length > 1 && (
@@ -871,19 +914,18 @@ export function SkillPackPage() {
         />
       )}
 
-      {applyFor && (
+      {application && (
         <ApplyPackDialog
-          key={applyFor.id}
-          pack={applyFor}
+          key={application.pack.id}
+          pack={application.pack}
+          runtime={application.runtime}
+          suggestedAgentIds={application.suggestedAgentIds}
           agents={state.agents}
           defaultMode={state.settings?.defaultDistributeMode || 'link'}
-          onClose={() => setApplyFor(null)}
+          onClose={() => setApplyDraft((current) => current === application ? null : current)}
           onDone={async () => {
-            const packId = applyFor.id
-            const runtime = useRuntimeEnvironmentStore.getState()
-            setApplyFor(null)
-            await state.loadOverview(true)
-            if (isPackRuntimeCurrent(runtime)) await state.selectPack(packId)
+            setApplyDraft((current) => current === application ? null : current)
+            await refreshSelectedPack(application.pack.id, application.runtime)
           }}
         />
       )}
@@ -1065,7 +1107,7 @@ function PackDetail({
   membershipsLoading: boolean
   onApply: () => void
   onEdit: () => void
-  onExport: (withSources: boolean) => void
+  onExport: (mode: PackExportMode) => void
   onDuplicate: () => void
   onDelete: () => void
   onRemoveSkill: (skillId: string) => void
@@ -1118,8 +1160,9 @@ function PackDetail({
           <details className="sm2__pack-more">
             <summary aria-label="更多操作">•••</summary>
             <div role="menu">
-              <button role="menuitem" onClick={() => onExport(false)} disabled={busy}>{t('skills.packManifest.export')}</button>
-              <button role="menuitem" onClick={() => onExport(true)} disabled={busy}>{t('skills.packManifest.exportWithSources')}</button>
+              <button role="menuitem" onClick={() => onExport('definition')} disabled={busy}>{t('skills.packManifest.export')}</button>
+              <button role="menuitem" onClick={() => onExport('sources')} disabled={busy}>{t('skills.packManifest.exportWithSources')}</button>
+              <button role="menuitem" onClick={() => onExport('migration')} disabled={busy}>{t('skills.packManifest.exportForMigration')}</button>
               {!isDefault && (
                 <>
                   <button role="menuitem" onClick={onDuplicate} disabled={busy}>复制技能包</button>
@@ -1859,11 +1902,6 @@ function distributionBlockerMessage(blocker: ConflictBlocker) {
   return blocker.reason
 }
 
-type PackApplicationReview = {
-  preview: DistributionPreview
-  runtime: PackRuntime
-}
-
 function isPackRuntimeCurrent(runtime: PackRuntime) {
   const current = useRuntimeEnvironmentStore.getState()
   return current.selectedEnvironmentId === runtime.selectedEnvironmentId
@@ -1873,28 +1911,58 @@ function isPackRuntimeCurrent(runtime: PackRuntime) {
 
 function ApplyPackDialog({
   pack,
+  runtime,
+  suggestedAgentIds,
   agents,
   defaultMode,
   onClose,
   onDone,
 }: {
   pack: SkillPackDetail
-  agents: { id: string; displayName: string; iconKey: string; installed: boolean }[]
+  runtime: PackRuntime
+  suggestedAgentIds: string[]
+  agents: AgentSummary[]
   defaultMode: 'link' | 'copy'
   onClose: () => void
   onDone: () => void | Promise<void>
 }) {
   const { t } = useTranslation()
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [selection, setSelection] = useState<Set<string> | null>(null)
   const [mode, setMode] = useState<'link' | 'copy'>(defaultMode)
-  const [review, setReview] = useState<PackApplicationReview | null>(null)
+  const [preview, setPreview] = useState<DistributionPreview | null>(null)
   const [blockerDecisions, setBlockerDecisions] = useState<Record<string, BlockerDecision>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [detectedAgentIds, setDetectedAgentIds] = useState<Set<string> | null>(null)
   const previewRequest = useRef(0)
-  const preview = review?.preview
+  const detectWindowsPrograms = runtime.selectedEnvironmentId === LOCAL_RUNTIME_ENVIRONMENT_ID && isWindowsPlatform()
+  const checkingPrograms = detectWindowsPrograms && detectedAgentIds === null
+  useEffect(() => {
+    if (!detectWindowsPrograms) return
+    let closed = false
+    void agentApi.list(runtime.selectedEnvironmentId).then((programs) => {
+      if (!closed && isPackRuntimeCurrent(runtime)) {
+        setDetectedAgentIds(new Set(programs.filter(isAgentProgramInstalled).map((program) => program.id)))
+      }
+    }).catch((error) => {
+      if (!closed && isPackRuntimeCurrent(runtime)) {
+        setDetectedAgentIds(new Set())
+        setError(String(error))
+      }
+    })
+    return () => { closed = true }
+  }, [detectWindowsPrograms, runtime])
 
-  const installedAgents = agents.filter((agent) => agent.installed && agent.id !== SHARED_SKILLS_AGENT_ID)
+  const installedAgents = agents.filter((agent) => agent.id !== SHARED_SKILLS_AGENT_ID
+    && (agent.installed || detectedAgentIds?.has(agent.id)))
+  const suggestions = new Set(installedAgents.filter((agent) =>
+    agent.isCustom === false && suggestedAgentIds.includes(agent.id),
+  ).map((agent) => agent.id))
+  const unavailable = suggestedAgentIds.filter((id) => !suggestions.has(id))
+  const selected = selection ?? suggestions
+  const targetAgents = Array.from(selected).filter((id) => installedAgents.some((agent) => agent.id === id))
+  const isCurrentApplication = () => isPackRuntimeCurrent(runtime)
+    && useSkillStoreV2.getState().selectedPackId === pack.id
   const changesByAction = useMemo(() => {
     const grouped = { create: 0, reuse: 0, other: 0 }
     if (!preview) return grouped
@@ -1908,7 +1976,7 @@ function ApplyPackDialog({
 
   const resetPreview = () => {
     previewRequest.current += 1
-    setReview(null)
+    setPreview(null)
     setBlockerDecisions({})
     setBusy(false)
     setError(null)
@@ -1916,8 +1984,8 @@ function ApplyPackDialog({
 
   const toggle = (id: string) => {
     resetPreview()
-    setSelected((prev) => {
-      const next = new Set(prev)
+    setSelection((prev) => {
+      const next = new Set(prev ?? suggestions)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
@@ -1925,17 +1993,14 @@ function ApplyPackDialog({
   }
 
   const runPreview = async () => {
-    if (busy || !selected.size) return
-    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
-    const runtime = { selectedEnvironmentId, selectionRevision }
-    if (!isPackRuntimeCurrent(runtime)) return
+    if (busy || !targetAgents.length || !isCurrentApplication()) return
     const requestId = ++previewRequest.current
-    const isCurrent = () => requestId === previewRequest.current && isPackRuntimeCurrent(runtime)
+    const isCurrent = () => requestId === previewRequest.current && isCurrentApplication()
     setBusy(true)
     setError(null)
     try {
-      const result = await skillApiV2.previewApplyPack(pack.id, Array.from(selected), mode)
-      if (isCurrent()) setReview({ preview: result, runtime })
+      const result = await skillApiV2.previewApplyPack(pack.id, targetAgents, mode, runtime.selectedEnvironmentId)
+      if (isCurrent()) setPreview(result)
     } catch (e) {
       if (isCurrent()) setError(String(e))
     } finally {
@@ -1944,12 +2009,7 @@ function ApplyPackDialog({
   }
 
   const execute = async () => {
-    if (!review || busy) return
-    const { preview, runtime } = review
-    if (!isPackRuntimeCurrent(runtime)) {
-      resetPreview()
-      return
-    }
+    if (!preview || busy || !isCurrentApplication()) return
     setBusy(true)
     setError(null)
     try {
@@ -1960,20 +2020,17 @@ function ApplyPackDialog({
         })
         .filter((item): item is DistributionBlockerDecision => Boolean(item))
       const result = await skillApiV2.executeApplyPack(
-        pack.id, preview.targetAgents, preview.requestedMode, blockerDecisionsPayload, preview,
+        pack.id, preview.targetAgents, preview.requestedMode, blockerDecisionsPayload, preview, runtime.selectedEnvironmentId,
       )
-      if (!isPackRuntimeCurrent(runtime)) {
-        resetPreview()
-        return
-      }
+      if (!isCurrentApplication()) return
       if (result.blockers.length > 0) {
-        setReview({ preview: result, runtime })
+        setPreview(result)
         setBlockerDecisions({})
         return
       }
       await onDone()
     } catch (e) {
-      if (isPackRuntimeCurrent(runtime)) setError(String(e))
+      if (isCurrentApplication()) setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -1986,7 +2043,7 @@ function ApplyPackDialog({
         confirmLabel="预览影响"
         modalClassName="sm2__modal--pack-apply"
         busy={busy}
-        disabled={selected.size === 0}
+        disabled={targetAgents.length === 0}
         onConfirm={runPreview}
         onCancel={onClose}
       >
@@ -2014,6 +2071,7 @@ function ApplyPackDialog({
                 <button
                   key={agent.id}
                   type="button"
+                  aria-pressed={selected.has(agent.id)}
                   className={`sm2__agent-choice${selected.has(agent.id) ? ' sm2__agent-choice--active' : ''}`}
                   onClick={() => toggle(agent.id)}
                 >
@@ -2023,7 +2081,13 @@ function ApplyPackDialog({
               ))}
             </div>
           </div>
-          {installedAgents.length === 0 && <div className="sm2__empty sm2__empty--compact">没有可用 Agent</div>}
+          {checkingPrograms && <div className="sm2__empty sm2__empty--compact" role="status">{t('settings.detecting')}</div>}
+          {!checkingPrograms && unavailable.length > 0 && (
+            <p className="sm2__notice sm2__notice--warn">{t('skills.packManifest.unavailableAgents', {
+              agents: suggestedAgentNames(unavailable, agents),
+            })}</p>
+          )}
+          {!checkingPrograms && installedAgents.length === 0 && <div className="sm2__empty sm2__empty--compact">没有可用 Agent</div>}
           {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
         </div>
       </PreviewDialog>

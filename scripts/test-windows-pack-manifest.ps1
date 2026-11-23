@@ -328,6 +328,9 @@ function Test-InstalledPinnedPackManifest(
     $manifest = Get-Content -LiteralPath $ImportPath -Encoding UTF8 -Raw | ConvertFrom-Json
     $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
     $skillRoot = Join-Path $profileDirectory '.agentbro\skills'
+    $agentSkillRoot = Join-Path $profileDirectory '.claude\skills'
+    $createAction = 'Create and choose Agents'
+    $batchAction = "Restore $($manifest.skillIds.Count - 1) missing Skills"
     $conflictingId = $manifest.skillIds[0]
     $copyId = "${conflictingId}-restored"
     $localPath = Join-Path $skillRoot "$conflictingId\SKILL.md"
@@ -344,10 +347,10 @@ function Test-InstalledPinnedPackManifest(
     Invoke-PackControl $open
     Set-PackDialogFile 'Open' $ImportPath
     $restore = Wait-IslandValue 'the batch Restore action for the missing pinned Skills' {
-        $button = Find-PackControl $settings "Restore $($manifest.skillIds.Count - 1) missing Skills"
+        $button = Find-PackControl $settings $batchAction
         if ($button -and $button.Current.IsEnabled) { $button }
     }
-    $confirm = Find-PackControl $settings 'Create Skill Pack'
+    $confirm = Find-PackControl $settings $createAction
     if (-not $confirm -or $confirm.Current.IsEnabled) {
         throw 'Import must wait until the missing Skills are explicitly restored.'
     }
@@ -358,6 +361,10 @@ function Test-InstalledPinnedPackManifest(
     }
     Invoke-PackControl $restore
     $copy = Wait-IslandValue 'the copy action for the conflicting pinned Skill' {
+        foreach ($id in ($manifest.skillIds | Select-Object -Skip 1)) {
+            if (-not (Test-Path -LiteralPath (Join-Path $skillRoot "$id\SKILL.md") -PathType Leaf)) { return }
+        }
+        if (Find-PackControl $settings $batchAction) { return }
         $button = Find-PackControl $settings "Restore a copy of $conflictingId"
         if ($button -and $button.Current.IsEnabled) { $button }
     }
@@ -366,13 +373,13 @@ function Test-InstalledPinnedPackManifest(
         $button = Find-PackControl $settings 'Restore copy'
         if ($button -and $button.Current.IsEnabled) { $button }
     }
-    $createBeforeCopy = Find-PackControl $settings 'Create Skill Pack'
+    $createBeforeCopy = Find-PackControl $settings $createAction
     if (-not $createBeforeCopy -or $createBeforeCopy.Current.IsEnabled) {
         throw 'The native review offered to create the Pack before resolving the collision.'
     }
     Invoke-PackControl $confirmCopy
-    $confirm = Wait-IslandValue 'the enabled Create Skill Pack action after verifying the restored Skills' {
-        $button = Find-PackControl $settings 'Create Skill Pack'
+    $confirm = Wait-IslandValue 'the enabled Create and choose Agents action after verifying restored Skills' {
+        $button = Find-PackControl $settings $createAction
         if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings "Manifest ID $conflictingId")) { $button }
     }
     if ([IO.File]::ReadAllText($localPath) -cne $localContent) {
@@ -387,9 +394,53 @@ function Test-InstalledPinnedPackManifest(
             throw "The restored Skill $skillId did not come from the recorded commit and path."
         }
     }
+    if (-not (Test-PackVisibleText $settings 'The original Skill Pack was applied to Claude Code, unavailable-fixture.')) {
+        throw 'The import preview did not show the Agent recommendations.'
+    }
     Invoke-PackControl $confirm
-    $null = Wait-IslandValue 'the imported pinned Skill Pack notice' {
-        Find-PackControl $settings "Imported $($manifest.name) as a new Skill Pack."
+    $null = Wait-IslandValue 'the application preview enabled by the suggested Claude Code target' {
+        $button = Find-PackControl $settings '预览影响'
+        if ($button -and $button.Current.IsEnabled -and
+            (Test-PackVisibleText $settings 'This environment cannot preselect unavailable-fixture.')) { $button }
+    }
+    $mode = Wait-IslandValue 'the distribution mode selector' {
+        Find-PackControl $settings '分发方式' ([Windows.Automation.ControlType]::ComboBox)
+    }
+    $mode.SetFocus()
+    $null = Wait-IslandValue 'focus in the distribution mode selector' { $mode.Current.HasKeyboardFocus }
+    [AgentBroSmokeInput]::PressKeyInWindow([IntPtr]$settings.Current.NativeWindowHandle, 0x23)
+    $preview = Wait-IslandValue 'the enabled application preview' {
+        $button = Find-PackControl $settings '预览影响'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Invoke-PackControl $preview
+    $apply = Wait-IslandValue 'the enabled confirmation of the Claude Code distribution' {
+        $button = Find-PackControl $settings '执行应用'
+        if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings 'Claude Code')) { $button }
+    }
+    foreach ($id in $importedIds) {
+        if (Test-Path -LiteralPath (Join-Path $agentSkillRoot $id)) {
+            throw "The Skill $id was distributed before confirming the preview."
+        }
+    }
+    Invoke-PackControl $apply
+    $null = Wait-IslandValue 'the confirmed Skills applied to Claude Code' {
+        $paths = @($importedIds | ForEach-Object { Join-Path $agentSkillRoot "$_\SKILL.md" })
+        @($paths | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }).Count -eq 0 -and
+            -not (Find-PackControl $settings '执行应用')
+    }
+    $null = Wait-IslandValue 'the refreshed Pack with one applied Agent' {
+        Find-PackControl $settings '已应用 Agent 1' ([Windows.Automation.ControlType]::TabItem)
+    }
+    foreach ($id in $importedIds) {
+        $target = Join-Path $agentSkillRoot $id
+        if ((Get-Item -LiteralPath $target).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "The confirmed copy of $id is a link."
+        }
+        if ([IO.File]::ReadAllText((Join-Path $target 'SKILL.md')) -cne
+            [IO.File]::ReadAllText((Join-Path $skillRoot "$id\SKILL.md"))) {
+            throw "Claude Code did not receive the reviewed contents of $id."
+        }
     }
     $editedId = $importedIds[1]
     $editedPath = Join-Path $skillRoot "$editedId\SKILL.md"
@@ -405,15 +456,16 @@ function Test-InstalledPinnedPackManifest(
     }
     $menu = Wait-IslandValue 'the new pinned pack actions menu' { Find-PackControl $settings '更多操作' }
     Invoke-PackControl $menu
-    $export = Wait-IslandValue 'the Export with GitHub sources action' {
-        Find-PackControl $settings 'Export with GitHub sources'
+    $export = Wait-IslandValue 'the Export for migration action' {
+        Find-PackControl $settings 'Export for migration'
     }
     Invoke-PackControl $export
     Set-PackDialogFile 'Save' $ExportPath
     $null = Wait-IslandValue 'the exported pinned Skill Pack file' { Test-Path -LiteralPath $ExportPath -PathType Leaf }
     $saved = Get-Content -LiteralPath $ExportPath -Encoding UTF8 -Raw | ConvertFrom-Json
-    if ($saved.version -ne 3 -or ($saved.skillIds -join ',') -cne ($importedIds -join ',')) {
-        throw 'The exported Pack did not use the new copy at the original member position.'
+    if ($saved.version -ne 4 -or ($saved.skillIds -join ',') -cne ($importedIds -join ',') -or
+        ($saved.suggestedAgentIds -join ',') -cne 'claude-code') {
+        throw 'The migration export did not preserve the copied Skill order and the applied built-in Agent.'
     }
     foreach ($skillId in $manifest.skillIds) {
         $destinationId = if ($skillId -ceq $conflictingId) { $copyId } else { $skillId }
@@ -433,5 +485,5 @@ function Test-InstalledPinnedPackManifest(
             throw "The exported Pack did not retain the verified GitHub source and fingerprint for $skillId."
         }
     }
-    Write-Output 'The installed app preserved the existing Skill, restored a verified copy with a new ID, and re-exported the Pack in order with the verified source and edited fingerprints.'
+    Write-Output 'The installed app restored and verified the Skills, preselected Claude Code, wrote the reviewed copies only after confirmation, and re-exported the applied Agent and verified sources.'
 }

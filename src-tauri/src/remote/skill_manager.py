@@ -417,6 +417,7 @@ def custom_agent_spec(record):
         "id": record["id"],
         "displayName": record["displayName"],
         "iconKey": record.get("icon") or "custom",
+        "isCustom": True,
         "commands": [],
         "configDir": root,
         "config": settings,
@@ -833,7 +834,7 @@ def stage_verified_pack_skill(checkout, source, staged, expected):
 
 
 def validate_reviewable_skill_pack(manifest):
-    if manifest.get("version") not in (2, 3) or manifest.get("format") != "agentbro-skill-pack":
+    if manifest.get("version") not in (2, 3, 4) or manifest.get("format") != "agentbro-skill-pack":
         raise ValueError("A content review requires Skill Pack version 2 or later")
     ids = manifest["skillIds"]
     expected = manifest.get("skillFingerprints", {})
@@ -847,6 +848,15 @@ def validate_reviewable_skill_pack(manifest):
         if (skill_id not in expected or not valid_pack_component(skill_id)
                 or skill_id.startswith((".", " ")) or not valid_pack_git_source(source)):
             raise ValueError(f"Invalid pinned GitHub source for '{skill_id}'")
+    suggested = manifest.get("suggestedAgentIds", [])
+    if manifest["version"] < 4 and suggested:
+        raise ValueError("Suggested Agents require Skill Pack version 4")
+    if (not isinstance(suggested, list)
+            or any(not isinstance(agent_id, str) or agent_id == "agents"
+                   or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", agent_id)
+                   or len(agent_id) > 64 for agent_id in suggested)
+            or len(set(suggested)) != len(suggested)):
+        raise ValueError("Suggested Agent IDs must be unique lowercase identifiers")
 
 
 def restore_pack_skill(manifest, skill_id):
@@ -1369,6 +1379,7 @@ def inventory():
             "id": spec["id"],
             "displayName": spec["displayName"],
             "iconKey": spec["iconKey"],
+            "isCustom": spec.get("isCustom", False),
             "enabled": True,
             "skillsDir": str(root),
             "version": None,

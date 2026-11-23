@@ -325,6 +325,7 @@ pub struct AgentSummary {
     pub id: String,
     pub display_name: String,
     pub icon_key: String,
+    pub is_custom: bool,
     pub enabled: bool,
     pub skills_dir: Option<String>,
     pub version: Option<String>,
@@ -405,6 +406,8 @@ pub struct SkillPackManifest {
     pub skill_fingerprints: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub skill_sources: BTreeMap<String, SkillPackGitHubSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_agent_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
