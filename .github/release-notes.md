@@ -34,7 +34,6 @@ AgentBro v{{VERSION}} brings portable Skill Packs, project Skill recovery, and b
 
 - On macOS, use the universal installer, the in-app updater, or Homebrew with `brew tap shirenchuang/tap && brew install --cask agentbro`.
 - If DeepSeek Harness is already connected, quit it, remove and reinstall its Hook in AgentBro, then reopen Harness.
-- Windows installers are x64. Windows can show a SmartScreen prompt. Intermittent Windows startup and accessibility behavior are tracked in [#194](https://github.com/shirenchuang/agentbro/issues/194) and [#351](https://github.com/shirenchuang/agentbro/issues/351).
 
 ### Downloads
 
@@ -42,6 +41,10 @@ AgentBro v{{VERSION}} brings portable Skill Packs, project Skill recovery, and b
 - Windows x64 installers `AgentBro_latest_x64-setup.exe` and `AgentBro_latest_x64.msi`
 - In-app update files `AgentBro.app.tar.gz` and `latest.json`
 - [Mainland China macOS mirror](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)
+
+### Notes
+
+- Windows installers are x64. Windows can show a SmartScreen prompt. Intermittent Windows startup and accessibility behavior are tracked in [#194](https://github.com/shirenchuang/agentbro/issues/194) and [#351](https://github.com/shirenchuang/agentbro/issues/351).
 - [Full changes since v3.2.2](https://github.com/shirenchuang/agentbro/compare/v3.2.2...v{{VERSION}})
 
 ## 中文
@@ -78,7 +81,6 @@ AgentBro v{{VERSION}} 加入可移植技能包、项目 Skill 恢复和更多 Wi
 
 - macOS 可使用通用安装包、应用内更新，或执行 Homebrew 命令 `brew tap shirenchuang/tap && brew install --cask agentbro`。
 - 若已接入 DeepSeek Harness，请先退出客户端，在 AgentBro 中卸载并重新安装它的 Hook，再打开 Harness。
-- Windows 安装包为 x64，可能出现 SmartScreen 提示。偶发启动和界面无障碍问题在 [#194](https://github.com/shirenchuang/agentbro/issues/194) 和 [#351](https://github.com/shirenchuang/agentbro/issues/351) 中持续跟踪。
 
 ### 下载
 
@@ -86,4 +88,8 @@ AgentBro v{{VERSION}} 加入可移植技能包、项目 Skill 恢复和更多 Wi
 - Windows x64 安装包 `AgentBro_latest_x64-setup.exe` 和 `AgentBro_latest_x64.msi`
 - 应用内更新文件 `AgentBro.app.tar.gz` 和 `latest.json`
 - [macOS 国内镜像](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)
+
+### 说明
+
+- Windows 安装包为 x64，可能出现 SmartScreen 提示。偶发启动和界面无障碍问题在 [#194](https://github.com/shirenchuang/agentbro/issues/194) 和 [#351](https://github.com/shirenchuang/agentbro/issues/351) 中持续跟踪。
 - [自 v3.2.2 以来的完整改动](https://github.com/shirenchuang/agentbro/compare/v3.2.2...v{{VERSION}})
