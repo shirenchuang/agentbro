@@ -394,6 +394,7 @@ export function SkillPackPage() {
       })
       if (!path || !isPackRuntimeCurrent(runtime)) return
       const skillIds = pack.members.map((member) => member.skillId)
+      if (includeSources) setSyncNotice(t('skills.packManifest.verifyingSources'))
       const fingerprints = includeSources
         ? await skillApiV2.getPackFingerprints(skillIds, runtime.selectedEnvironmentId, true)
         : await skillApiV2.getPackFingerprints(skillIds, runtime.selectedEnvironmentId)
@@ -401,10 +402,10 @@ export function SkillPackPage() {
       const sources = includeSources ? Object.fromEntries(fingerprints.flatMap(({ skillId, source }) =>
         source ? [[skillId, source]] : [],
       )) : {}
-      const hasSources = Object.keys(sources).length > 0
+      const sourceCount = Object.keys(sources).length
       await skillApiV2.writePackManifest(path, {
         format: 'agentbro-skill-pack',
-        version: hasSources ? 3 : 2,
+        version: sourceCount ? 3 : 2,
         name: pack.name,
         description: pack.description,
         tags: pack.tags,
@@ -412,13 +413,22 @@ export function SkillPackPage() {
         skillFingerprints: Object.fromEntries(fingerprints.flatMap(({ skillId, fingerprint }) =>
           fingerprint ? [[skillId, fingerprint]] : [],
         )),
-        ...(hasSources ? { skillSources: sources } : {}),
+        ...(sourceCount ? { skillSources: sources } : {}),
       })
       if (isPackRuntimeCurrent(runtime)) {
-        setSyncNotice(t(includeSources && !hasSources ? 'skills.packManifest.exportedWithoutSources' : 'skills.packManifest.exported'))
+        if (includeSources) {
+          setSyncNotice(sourceCount
+            ? t('skills.packManifest.exportedWithVerifiedSources', { verifiedCount: sourceCount, totalCount: skillIds.length })
+            : t('skills.packManifest.exportedWithoutSources'))
+        } else {
+          setSyncNotice(t('skills.packManifest.exported'))
+        }
       }
     } catch (error) {
-      if (isPackRuntimeCurrent(runtime)) state.setError(String(error))
+      if (isPackRuntimeCurrent(runtime)) {
+        setSyncNotice(null)
+        state.setError(String(error))
+      }
     } finally {
       setBusy(false)
     }

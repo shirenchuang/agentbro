@@ -300,7 +300,7 @@ fn pack_restore_checks_the_pinned_git_content_before_installing() {
     );
 
     let exported = svc
-        .skill_pack_fingerprints(&manifest.skill_ids, true)
+        .skill_pack_fingerprints_with(&manifest.skill_ids, true, fetch)
         .unwrap();
     assert_eq!(exported[0].source.as_ref(), Some(&pin));
     let reviewed = svc
@@ -308,10 +308,44 @@ fn pack_restore_checks_the_pinned_git_content_before_installing() {
         .unwrap();
     assert_eq!(reviewed[0].source, None);
     assert_eq!(reviewed[0].fingerprint.as_deref(), Some(expected.as_str()));
+    let unchanged = "unchanged-review".to_string();
+    let mut pair = manifest.clone();
+    pair.skill_ids.push(unchanged.clone());
+    pair.skill_fingerprints
+        .insert(unchanged.clone(), expected.clone());
+    pair.skill_sources.insert(unchanged.clone(), pin.clone());
+    svc.restore_pack_skill_with(&pair, &unchanged, fetch)
+        .unwrap();
     let pack = svc
         .import_reviewed_skill_pack(manifest, &reviewed, false)
         .unwrap();
     assert_eq!(pack.members[0].skill_id, skill_id);
+
+    fs::write(destination.join("reference.md"), "edited after restore").unwrap();
+    let mut fetch_count = 0;
+    let edited = svc
+        .skill_pack_fingerprints_with(&pair.skill_ids, true, |url, revision| {
+            fetch_count += 1;
+            fetch(url, revision)
+        })
+        .unwrap();
+    assert_ne!(edited[0].fingerprint.as_deref(), Some(expected.as_str()));
+    assert!(edited[0].source.is_none());
+    assert_eq!(edited[1].source.as_ref(), Some(&pin));
+    assert_eq!(fetch_count, 1);
+
+    let offline = svc
+        .skill_pack_fingerprints_with(&pair.skill_ids, true, |_, _| {
+            Err("Repository unavailable".to_string())
+        })
+        .unwrap();
+    assert_eq!(offline[0], edited[0]);
+    assert_eq!(offline[1].fingerprint, edited[1].fingerprint);
+    assert!(offline[1].source.is_none());
+    assert_eq!(
+        fs::read_to_string(destination.join("reference.md")).unwrap(),
+        "edited after restore"
+    );
 }
 
 fn insert_shared_managed_target(

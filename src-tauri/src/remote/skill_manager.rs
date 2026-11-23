@@ -17,14 +17,10 @@ pub async fn invoke(host: &RemoteHost, command: &str, mut args: Value) -> Result
 }
 
 async fn invoke_remote(host: &RemoteHost, command: &str, args: Value) -> Result<Value, String> {
+    let timeout = command_timeout(command, &args);
     let script = render_script(command, args)?;
-    let result = run_ssh_with_input(
-        host,
-        REMOTE_RUNNER_COMMAND,
-        script.into_bytes(),
-        command_timeout(command),
-    )
-    .await;
+    let result =
+        run_ssh_with_input(host, REMOTE_RUNNER_COMMAND, script.into_bytes(), timeout).await;
     if result.exit_code != 0 {
         let detail = if result.stderr.trim().is_empty() {
             result.stdout.trim()
@@ -129,8 +125,9 @@ async fn stage_local_skill_source(
     Ok(Some(StagedLocalSource { upload_id }))
 }
 
-fn command_timeout(command: &str) -> u64 {
+fn command_timeout(command: &str, args: &Value) -> u64 {
     match command {
+        "get_skill_pack_fingerprints" if args["includeSources"].as_bool() == Some(true) => 360,
         "execute_marketplace_skill_batch"
         | "import_github_repo_skills"
         | "restore_skill_pack_member"
@@ -156,8 +153,17 @@ mod tests {
 
     #[test]
     fn install_commands_receive_a_longer_timeout() {
-        assert_eq!(command_timeout("execute_add_center_skill"), 360);
-        assert_eq!(command_timeout("skill_manager_overview"), 35);
+        let empty = serde_json::json!({});
+        assert_eq!(command_timeout("execute_add_center_skill", &empty), 360);
+        assert_eq!(command_timeout("skill_manager_overview", &empty), 35);
+        assert_eq!(command_timeout("get_skill_pack_fingerprints", &empty), 35);
+        assert_eq!(
+            command_timeout(
+                "get_skill_pack_fingerprints",
+                &serde_json::json!({"includeSources": true})
+            ),
+            360
+        );
         assert_eq!(
             REMOTE_RUNNER_COMMAND,
             "\"${SHELL:-/bin/bash}\" -lc 'python3 -'"
@@ -442,6 +448,21 @@ json.dump = fail_snapshot_write
             contents
         );
         assert!(!filtered.join("output").exists());
+
+        let edited_path = home.path().join(".agentbro/skills/demo/SKILL.md");
+        std::fs::write(&edited_path, format!("{contents}\nEdited on this host.\n")).unwrap();
+        let edited_export = run_script(
+            home.path(),
+            "get_skill_pack_fingerprints",
+            serde_json::json!({ "skillIds": ["demo", "restored"], "includeSources": true }),
+        );
+        assert!(edited_export[0]["fingerprint"].is_string());
+        assert_ne!(
+            edited_export[0]["fingerprint"],
+            fingerprints[0]["fingerprint"]
+        );
+        assert!(edited_export[0].get("source").is_none());
+        assert_eq!(edited_export[1]["source"], fingerprints[0]["source"]);
     }
 
     #[test]
