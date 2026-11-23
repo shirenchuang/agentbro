@@ -372,7 +372,12 @@ function Test-InstalledPinnedPackManifest(
     $editedContent += "`nEdited on this machine.`n"
     [IO.File]::WriteAllText($editedPath, $editedContent, [Text.UTF8Encoding]::new($false))
     $editedBytes = [Text.Encoding]::UTF8.GetBytes("SKILL.md`0$([Text.Encoding]::UTF8.GetByteCount($editedContent))`0$editedContent")
-    $editedHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($editedBytes)).ToLowerInvariant()
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $editedHash = [BitConverter]::ToString($sha256.ComputeHash($editedBytes)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
     $menu = Wait-IslandValue 'the new pinned pack actions menu' { Find-PackControl $settings '更多操作' }
     Invoke-PackControl $menu
     $export = Wait-IslandValue 'the Export with GitHub sources action' {
