@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
-import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
+import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
+import { agentApi } from '../../services/agentApi'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type {
   AgentSummary,
@@ -18,6 +19,8 @@ import type {
   SkillPackManifest,
   SkillPackSummary,
 } from '../../services/skillApiV2'
+import { isAgentProgramInstalled } from '../../utils/agentPrograms'
+import { isWindowsPlatform } from '../../utils/platform'
 import { PreviewDialog } from './PreviewDialog'
 import { AgentIconBadge } from './AgentIconBadge'
 import { SkillDetailSlider } from './SkillDetailSlider'
@@ -1930,8 +1933,28 @@ function ApplyPackDialog({
   const [blockerDecisions, setBlockerDecisions] = useState<Record<string, BlockerDecision>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [detectedAgentIds, setDetectedAgentIds] = useState<Set<string> | null>(null)
   const previewRequest = useRef(0)
-  const installedAgents = agents.filter((agent) => agent.installed && agent.id !== SHARED_SKILLS_AGENT_ID)
+  const detectWindowsPrograms = runtime.selectedEnvironmentId === LOCAL_RUNTIME_ENVIRONMENT_ID && isWindowsPlatform()
+  const checkingPrograms = detectWindowsPrograms && detectedAgentIds === null
+  useEffect(() => {
+    if (!detectWindowsPrograms) return
+    let closed = false
+    void agentApi.list(runtime.selectedEnvironmentId).then((programs) => {
+      if (!closed && isPackRuntimeCurrent(runtime)) {
+        setDetectedAgentIds(new Set(programs.filter(isAgentProgramInstalled).map((program) => program.id)))
+      }
+    }).catch((error) => {
+      if (!closed && isPackRuntimeCurrent(runtime)) {
+        setDetectedAgentIds(new Set())
+        setError(String(error))
+      }
+    })
+    return () => { closed = true }
+  }, [detectWindowsPrograms, runtime])
+
+  const installedAgents = agents.filter((agent) => agent.id !== SHARED_SKILLS_AGENT_ID
+    && (agent.installed || detectedAgentIds?.has(agent.id)))
   const suggestions = new Set(installedAgents.filter((agent) =>
     agent.isCustom === false && suggestedAgentIds.includes(agent.id),
   ).map((agent) => agent.id))
@@ -2058,12 +2081,13 @@ function ApplyPackDialog({
               ))}
             </div>
           </div>
-          {unavailable.length > 0 && (
+          {checkingPrograms && <div className="sm2__empty sm2__empty--compact" role="status">{t('settings.detecting')}</div>}
+          {!checkingPrograms && unavailable.length > 0 && (
             <p className="sm2__notice sm2__notice--warn">{t('skills.packManifest.unavailableAgents', {
               agents: suggestedAgentNames(unavailable, agents),
             })}</p>
           )}
-          {installedAgents.length === 0 && <div className="sm2__empty sm2__empty--compact">没有可用 Agent</div>}
+          {!checkingPrograms && installedAgents.length === 0 && <div className="sm2__empty sm2__empty--compact">没有可用 Agent</div>}
           {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
         </div>
       </PreviewDialog>

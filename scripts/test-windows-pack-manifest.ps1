@@ -330,6 +330,7 @@ function Test-InstalledPinnedPackManifest(
     $skillRoot = Join-Path $profileDirectory '.agentbro\skills'
     $agentSkillRoot = Join-Path $profileDirectory '.claude\skills'
     $createAction = 'Create and choose Agents'
+    $batchAction = "Restore $($manifest.skillIds.Count - 1) missing Skills"
     $conflictingId = $manifest.skillIds[0]
     $copyId = "${conflictingId}-restored"
     $localPath = Join-Path $skillRoot "$conflictingId\SKILL.md"
@@ -346,7 +347,7 @@ function Test-InstalledPinnedPackManifest(
     Invoke-PackControl $open
     Set-PackDialogFile 'Open' $ImportPath
     $restore = Wait-IslandValue 'the batch Restore action for the missing pinned Skills' {
-        $button = Find-PackControl $settings "Restore $($manifest.skillIds.Count - 1) missing Skills"
+        $button = Find-PackControl $settings $batchAction
         if ($button -and $button.Current.IsEnabled) { $button }
     }
     $confirm = Find-PackControl $settings $createAction
@@ -360,6 +361,10 @@ function Test-InstalledPinnedPackManifest(
     }
     Invoke-PackControl $restore
     $copy = Wait-IslandValue 'the copy action for the conflicting pinned Skill' {
+        foreach ($id in ($manifest.skillIds | Select-Object -Skip 1)) {
+            if (-not (Test-Path -LiteralPath (Join-Path $skillRoot "$id\SKILL.md") -PathType Leaf)) { return }
+        }
+        if (Find-PackControl $settings $batchAction) { return }
         $button = Find-PackControl $settings "Restore a copy of $conflictingId"
         if ($button -and $button.Current.IsEnabled) { $button }
     }
@@ -393,7 +398,7 @@ function Test-InstalledPinnedPackManifest(
         throw 'The import preview did not show the Agent recommendations.'
     }
     Invoke-PackControl $confirm
-    $preview = Wait-IslandValue 'the application preview enabled by the suggested Claude Code target' {
+    $null = Wait-IslandValue 'the application preview enabled by the suggested Claude Code target' {
         $button = Find-PackControl $settings '预览影响'
         if ($button -and $button.Current.IsEnabled -and
             (Test-PackVisibleText $settings 'This environment cannot preselect unavailable-fixture.')) { $button }
@@ -404,6 +409,10 @@ function Test-InstalledPinnedPackManifest(
     $mode.SetFocus()
     $null = Wait-IslandValue 'focus in the distribution mode selector' { $mode.Current.HasKeyboardFocus }
     [AgentBroSmokeInput]::PressKeyInWindow([IntPtr]$settings.Current.NativeWindowHandle, 0x23)
+    $preview = Wait-IslandValue 'the enabled application preview' {
+        $button = Find-PackControl $settings '预览影响'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
     Invoke-PackControl $preview
     $apply = Wait-IslandValue 'the enabled confirmation of the Claude Code distribution' {
         $button = Find-PackControl $settings '执行应用'
@@ -419,6 +428,12 @@ function Test-InstalledPinnedPackManifest(
         $paths = @($importedIds | ForEach-Object { Join-Path $agentSkillRoot "$_\SKILL.md" })
         @($paths | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }).Count -eq 0 -and
             -not (Find-PackControl $settings '执行应用')
+    }
+    $heroClass = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::ClassNameProperty, 'sm2__pack-detail-hero')
+    $null = Wait-IslandValue 'the Pack header refreshed with one applied Agent' {
+        $header = $settings.FindFirst([Windows.Automation.TreeScope]::Descendants, $heroClass)
+        if ($header) { Find-PackControl $header '1 Agents' }
     }
     foreach ($id in $importedIds) {
         $target = Join-Path $agentSkillRoot $id

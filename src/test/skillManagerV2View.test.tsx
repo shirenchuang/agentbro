@@ -7,6 +7,7 @@ import { useSessionStore } from '../stores/sessionStore'
 import { skillApiV2 } from '../services/skillApiV2'
 import { agentApi, type AgentOutputEvent, type AgentPackageOutput, type AgentProgramInfo } from '../services/agentApi'
 import * as tauriApi from '../services/tauriApi'
+import * as platform from '../utils/platform'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import i18n from '../i18n'
@@ -8877,12 +8878,21 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('dialog', { name: '应用「Review pack」' })).not.toBeInTheDocument()
   })
 
-  it.each([LOCAL_RUNTIME_ENVIRONMENT_ID, 'pack-migration-ssh'])('reviews migration Agent choices on %s before writing', async (environmentId) => {
+  it.each([
+    { environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID, windows: false },
+    { environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID, windows: true },
+    { environmentId: 'pack-migration-ssh', windows: true },
+  ])('reviews migration Agent choices on $environmentId before writing (Windows: $windows)', async ({ environmentId, windows }) => {
     const { pack, skill, overview } = await renderPackPage()
-    const claude = { ...overview.agents[0], isCustom: false }
+    const usesProgramDetection = windows && environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
+    vi.spyOn(platform, 'isWindowsPlatform').mockReturnValue(windows)
+    const listPrograms = vi.spyOn(agentApi, 'list').mockResolvedValue([
+      makeProgram({ binaryPath: 'C:\\Tools\\claude.cmd' }),
+    ])
+    const claude = { ...overview.agents[0], isCustom: false, installed: !usesProgramDetection }
     const codex = { ...overview.agents[1], isCustom: false }
     const cursor = { ...codex, id: 'cursor', displayName: 'Cursor', installed: false }
-    const custom = { ...claude, id: 'team-agent', displayName: 'Team Agent', isCustom: true }
+    const custom = { ...claude, id: 'team-agent', displayName: 'Team Agent', installed: true, isCustom: true }
     const agents = [claude, codex, cursor, custom]
     const importedPack = { ...pack, id: 'migration-pack', name: 'Migration Pack' }
     const packs = [{ ...overview.packs[0], id: importedPack.id, name: importedPack.name }]
@@ -8918,7 +8928,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     const choice = within(await screen.findByRole('dialog', { name: '应用「Migration Pack」' }))
     expect(create).toHaveBeenCalledWith(manifest, reviewed, false, environmentId)
-    expect(choice.getByRole('button', { name: /Claude Code/, pressed: true })).toBeInTheDocument()
+    expect(await choice.findByRole('button', { name: /Claude Code/, pressed: true })).toBeInTheDocument()
+    if (usesProgramDetection) expect(listPrograms).toHaveBeenCalledWith(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    else expect(listPrograms).not.toHaveBeenCalled()
     expect(choice.getByRole('button', { name: /Team Agent/, pressed: false })).toBeInTheDocument()
     expect(choice.queryByRole('button', { name: /Cursor/ })).not.toBeInTheDocument()
     expect(choice.getByText('当前环境中无法预选 Cursor, team-agent。')).toBeInTheDocument()
