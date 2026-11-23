@@ -110,29 +110,36 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
             (Test-PackVisibleText $reopened '当前版本 999.0.0')
     }
     Write-Output 'The recreated Settings window refreshed the installed version when the package command finished.'
+    Test-InstalledCustomAgentForm $reopened
 }
 
-function Test-InstalledCustomAgentSaveError([Windows.Automation.AutomationElement]$Settings) {
+function Test-InstalledCustomAgentForm([Windows.Automation.AutomationElement]$Settings) {
     $title = 'Add Claude Code Instance...'
     $buttonType = [Windows.Automation.ControlType]::Button
     $editType = [Windows.Automation.ControlType]::Edit
-    Click-IslandElement $null 'open the custom Agent form' -FindElement {
-        Find-PackControl $Settings $title $buttonType
-    }
-    $null = Wait-IslandValue 'initial focus in the custom Agent display name' {
+    $handle = [IntPtr]$Settings.Current.NativeWindowHandle
+    $root = Join-Path (Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT) 'custom-claude'
+    $null = New-Item -ItemType Directory -Path $root
+    $nameFocused = {
         $focused = [Windows.Automation.AutomationElement]::FocusedElement
         $focused -and $focused.Current.Name -eq '显示名称' -and $focused.Current.HasKeyboardFocus
     }
+    $enterRootAndSave = {
+        Click-IslandElement $null 'enter the custom configuration root' -FindElement {
+            Find-PackControl $Settings '配置根目录' $editType
+        }
+        foreach ($character in $root.ToCharArray()) {
+            [AgentBroSmokeInput]::AppendCharacter($character)
+        }
+        $save = Wait-IslandValue 'the custom Agent save action' { Find-PackControl $Settings '保存 Agent' $buttonType }
+        Invoke-PackControl $save
+    }
+    Click-IslandElement $null 'open the custom Agent form' -FindElement {
+        Find-PackControl $Settings $title $buttonType
+    }
+    $null = Wait-IslandValue 'initial focus in the custom Agent display name' $nameFocused
     [AgentBroSmokeInput]::AppendCharacter('!')
-    Click-IslandElement $null 'enter the custom configuration root' -FindElement {
-        Find-PackControl $Settings '配置根目录' $editType
-    }
-    $root = '~/.agentbro-smoke-invalid'
-    foreach ($character in $root.ToCharArray()) {
-        [AgentBroSmokeInput]::AppendCharacter($character)
-    }
-    $save = Wait-IslandValue 'the custom Agent save action' { Find-PackControl $Settings '保存 Agent' $buttonType }
-    Invoke-PackControl $save
+    & $enterRootAndSave
     $null = Wait-IslandValue 'the custom Agent rejection with the draft still in the form' {
         $name = Find-PackControl $Settings '显示名称' $editType
         $configRoot = Find-PackControl $Settings '配置根目录' $editType
@@ -140,13 +147,26 @@ function Test-InstalledCustomAgentSaveError([Windows.Automation.AutomationElemen
             $name.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value -ceq '!' -and
             $configRoot.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value -ceq $root
     }
-    [AgentBroSmokeInput]::PressKeyInWindow([IntPtr]$Settings.Current.NativeWindowHandle, 0x1B)
+    [AgentBroSmokeInput]::PressKeyInWindow($handle, 0x1B)
     $null = Wait-IslandValue 'focus restored to Add Claude Code Instance after Escape' {
         $focused = [Windows.Automation.AutomationElement]::FocusedElement
         $focused -and $focused.Current.Name -eq $title -and $focused.Current.HasKeyboardFocus -and
             -not (Find-PackControl $Settings '保存 Agent' $buttonType)
     }
     Write-Output 'The installed custom Agent form displayed the save error, retained both fields and restored focus after Escape.'
+    [AgentBroSmokeInput]::PressKeyInWindow($handle, 0x20)
+    $null = Wait-IslandValue 'the reopened custom Agent display name' $nameFocused
+    $displayName = '研发助手'
+    foreach ($character in $displayName.ToCharArray()) {
+        [AgentBroSmokeInput]::AppendCharacter($character)
+    }
+    & $enterRootAndSave
+    $null = Wait-IslandValue 'the saved custom Agent with a Chinese-only display name' {
+        -not (Find-PackControl $Settings '保存 Agent' $buttonType) -and
+            (Test-PackVisibleText $Settings $displayName) -and
+            (Test-Path -LiteralPath (Join-Path $root 'settings.json') -PathType Leaf)
+    }
+    Write-Output 'The installed app saved and displayed the Chinese-only custom Agent and created its Hook settings.'
 }
 
 function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {
@@ -262,8 +282,6 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     if ($report.shellConsoleVisible -or $report.toolConsoleVisible) {
         throw 'The package update opened a visible Windows console'
     }
-
-    Test-InstalledCustomAgentSaveError $settings
 
     $uninstall = Wait-IslandValue 'the uninstall button for the installed Agent' {
         $button = Find-PackControl $settings '卸载 Agent'
