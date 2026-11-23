@@ -841,33 +841,55 @@ async fn run_agent_command(
         return Err("The selected Codex installation is managed by its desktop client".to_string());
     }
     publish_package_output(&app, agent_id, None);
+    let result = execute_package_operation(
+        &app,
+        agent_id,
+        operation,
+        &meta,
+        installed_binary.as_deref(),
+    )
+    .await;
+    let (stream, message) = match &result {
+        Ok(message) => ("info", *message),
+        Err(error) => ("stderr", error.as_str()),
+    };
+    emit_output(
+        &app,
+        agent_id,
+        operation,
+        stream,
+        message,
+        true,
+        Some(result.is_ok()),
+    );
+    result.map(|_| ())
+}
+
+async fn execute_package_operation(
+    app: &AppHandle,
+    agent_id: &str,
+    operation: &str,
+    meta: &ProgramMetadata,
+    installed_binary: Option<&Path>,
+) -> Result<&'static str, String> {
     if operation == "uninstall"
         && !program_is_installed_for_agent(
             agent_id,
-            &meta,
+            meta,
             installed_binary.is_some(),
-            installed_app_path(agent_id, &meta).is_some(),
+            installed_app_path(agent_id, meta).is_some(),
         )
     {
-        emit_output(
-            &app,
-            agent_id,
-            operation,
-            "info",
-            "Agent is already uninstalled",
-            true,
-            Some(true),
-        );
-        return Ok(());
+        return Ok("Agent is already uninstalled");
     }
     if operation == "uninstall"
         && meta.kind == AgentProgramKind::App
         && meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND)
     {
-        return trash_agent_app(app, agent_id, &meta).await;
+        return trash_agent_app(app, agent_id, meta).await;
     }
     let (command_line, mut command) =
-        if let Some(launcher) = native_claude_launcher(agent_id, installed_binary.as_deref()) {
+        if let Some(launcher) = native_claude_launcher(agent_id, installed_binary) {
             (
                 CLAUDE_NATIVE_UPDATE_COMMAND.to_string(),
                 native_claude_package_command(launcher, operation)?,
@@ -888,7 +910,7 @@ async fn run_agent_command(
         };
 
     emit_output(
-        &app,
+        app,
         agent_id,
         operation,
         "info",
@@ -901,7 +923,7 @@ async fn run_agent_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| format!("Could not start package command: {error}"))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -926,29 +948,19 @@ async fn run_agent_command(
         .await
     });
 
-    let status = child.wait().await.map_err(|e| e.to_string())?;
+    let status = child.wait().await;
+    if status.is_err() {
+        stdout_task.abort();
+        stderr_task.abort();
+    }
     let _ = stdout_task.await;
     let _ = stderr_task.await;
 
-    let success = status.success();
-    emit_output(
-        &app,
-        agent_id,
-        operation,
-        "info",
-        if success {
-            "Operation completed"
-        } else {
-            "Operation failed"
-        },
-        true,
-        Some(success),
-    );
-
-    if success {
-        Ok(())
+    let status = status.map_err(|error| format!("Could not wait for package command: {error}"))?;
+    if status.success() {
+        Ok("Operation completed")
     } else {
-        Err(format!("{operation} failed for {agent_id}"))
+        Err(format!("{operation} failed for {agent_id} ({status})"))
     }
 }
 
@@ -1043,10 +1055,10 @@ async fn aider_uninstall_command(
 }
 
 async fn trash_agent_app(
-    app: AppHandle,
+    app: &AppHandle,
     agent_id: &str,
     meta: &ProgramMetadata,
-) -> Result<(), String> {
+) -> Result<&'static str, String> {
     let app_path = installed_app_path(agent_id, meta)
         .ok_or_else(|| format!("Application is not installed for {agent_id}"))?;
     let path = Path::new(&app_path);
@@ -1062,7 +1074,7 @@ async fn trash_agent_app(
     }
 
     emit_output(
-        &app,
+        app,
         agent_id,
         "uninstall",
         "info",
@@ -1082,23 +1094,8 @@ async fn trash_agent_app(
         .output()
         .await
         .map_err(|error| error.to_string())?;
-    let success = output.status.success();
-    emit_output(
-        &app,
-        agent_id,
-        "uninstall",
-        "info",
-        if success {
-            "Application moved to Trash"
-        } else {
-            "Failed to move application to Trash"
-        },
-        true,
-        Some(success),
-    );
-
-    if success {
-        Ok(())
+    if output.status.success() {
+        Ok("Application moved to Trash")
     } else {
         let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
         Err(if error.is_empty() {
