@@ -246,7 +246,8 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         Set-Content -LiteralPath $invalidNpm -Value 'Not a Windows executable' -Encoding ascii
         Invoke-PackControl $update
         $null = Wait-IslandValue 'the Windows package launch error' {
-            Test-PackVisibleText $settings '(os error 193)'
+            (Test-PackVisibleText $settings '(os error 193)') -or
+                (Test-PackVisibleText $settings '(os error 216)')
         }
         Write-Output 'Agent Management received the Windows package launch error.'
         $null = Wait-IslandValue 'the package launch error in the retained transcript' {
