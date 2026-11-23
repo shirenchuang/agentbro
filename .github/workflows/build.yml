@@ -62,6 +62,10 @@ on:
         description: Verify that the x64 Windows startup sampler resolves AgentBro frames
         type: boolean
         default: false
+      windows_verify_startup_lock:
+        description: Verify duplicate launches against an existing Windows installer
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -398,6 +402,7 @@ jobs:
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
           AUTOMATION_FOCUS_PERMISSION: ${{ inputs.windows_automation_focus_permission }}
           VERIFY_STARTUP_STACKS: ${{ inputs.windows_verify_startup_stacks }}
+          VERIFY_STARTUP_LOCK: ${{ !inputs.windows_artifact_run || inputs.windows_verify_startup_lock }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           if (-not $installer) {
@@ -419,6 +424,7 @@ jobs:
                   -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
                   -AutomationFocusPermission:($env:AUTOMATION_FOCUS_PERMISSION -eq 'true') `
                   -VerifyStartupStackSampler:($env:VERIFY_STARTUP_STACKS -eq 'true') `
+                  -VerifyStartupLock:($env:VERIFY_STARTUP_LOCK -eq 'true') `
                   -SymbolsDirectory (Join-Path $PWD 'windows-installers')
           } finally {
               if ($wslPromptWatcher) {
