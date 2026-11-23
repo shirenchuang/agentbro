@@ -4684,14 +4684,24 @@ def dispatch():
         return None
     if command == "add_custom_agent":
         config = args["config"]
-        slug = re.sub(r"[^a-z0-9]+", "-", config["displayName"].lower()).strip("-")
-        agent_id = safe_id(config.get("id") or "custom-" + (slug or uuid.uuid4().hex[:10]))
+        name = config["displayName"].strip()
+        explicit_id = config.get("id")
+        generated_unicode_id = not explicit_id and not name.isascii()
+        if generated_unicode_id:
+            agent_id = "custom-unicode-" + hashlib.sha256(name.encode("utf-8")).hexdigest()
+        else:
+            slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+            agent_id = safe_id(explicit_id or "custom-" + (slug or uuid.uuid4().hex[:10]))
         if (
             agent_id == SHARED_SKILLS_AGENT_ID
             or any(spec["id"] == agent_id for spec in AGENTS)
             or agent_id in STATE["customAgents"]
         ):
             raise ValueError("Agent already exists: " + agent_id)
+        if generated_unicode_id:
+            for existing_id, agent in STATE["customAgents"].items():
+                if agent.get("displayName") == name:
+                    raise ValueError("Agent already exists: " + existing_id)
         value = custom_agent_program(agent_id, config)
         STATE["customAgents"][agent_id] = value
         save_state()

@@ -4,6 +4,7 @@ use super::{
     SyncConfig,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -392,21 +393,11 @@ pub fn add_custom_agent(config: CustomAgentConfig) -> Result<CustomAgentEntry, S
     }
 
     let mut meta = load();
-    let id = config
-        .id
-        .as_deref()
-        .map(normalize_agent_id)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| format!("custom-{}", normalize_agent_id(&config.display_name)));
-
-    if id == "custom-" {
-        return Err("Agent ID cannot be empty".to_string());
-    }
-    if agent_paths::known_agent_ids().contains(&id.as_str())
-        || meta.custom_agents.iter().any(|agent| agent.id == id)
-    {
-        return Err(format!("Agent already exists: {id}"));
-    }
+    let id = resolve_custom_agent_id(
+        config.id.as_deref(),
+        &config.display_name,
+        &meta.custom_agents,
+    )?;
 
     let entry = CustomAgentEntry {
         id,
@@ -464,6 +455,37 @@ pub fn remove_custom_agent(agent_id: &str) -> Result<(), String> {
         return Err(format!("Custom agent not found: {agent_id}"));
     }
     save(&meta)
+}
+
+fn resolve_custom_agent_id(
+    explicit_id: Option<&str>,
+    display_name: &str,
+    existing_agents: &[CustomAgentEntry],
+) -> Result<String, String> {
+    let display_name = display_name.trim();
+    let explicit_id = explicit_id
+        .map(normalize_agent_id)
+        .filter(|value| !value.is_empty());
+    let generated_unicode_id = explicit_id.is_none() && !display_name.is_ascii();
+    let id = explicit_id.unwrap_or_else(|| {
+        if generated_unicode_id {
+            format!("custom-unicode-{:x}", Sha256::digest(display_name))
+        } else {
+            format!("custom-{}", normalize_agent_id(display_name))
+        }
+    });
+    if id == "custom-" {
+        return Err("Agent ID cannot be empty".to_string());
+    }
+    if agent_paths::known_agent_ids().contains(&id.as_str()) {
+        return Err(format!("Agent already exists: {id}"));
+    }
+    if let Some(agent) = existing_agents.iter().find(|agent| {
+        agent.id == id || (generated_unicode_id && agent.display_name == display_name)
+    }) {
+        return Err(format!("Agent already exists: {}", agent.id));
+    }
+    Ok(id)
 }
 
 fn normalize_agent_id(value: &str) -> String {
@@ -529,6 +551,53 @@ fn expand_home(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_agent_names_keep_legacy_ids_and_distinguish_unicode_names() {
+        let expected =
+            "custom-unicode-1b18e79ddcc903d4cdd035e65afe757205a1b412f9e0ac2bd6103993d816edfa";
+        assert_eq!(
+            resolve_custom_agent_id(None, " 研发助手 ", &[]).unwrap(),
+            expected
+        );
+        assert_ne!(
+            resolve_custom_agent_id(None, "研发 Claude", &[]).unwrap(),
+            resolve_custom_agent_id(None, "运维 Claude", &[]).unwrap(),
+        );
+        assert_eq!(
+            resolve_custom_agent_id(None, "Company Claude", &[]).unwrap(),
+            "custom-company-claude",
+        );
+        assert_eq!(
+            resolve_custom_agent_id(Some(" Team_Claude "), "研发助手", &[]).unwrap(),
+            "team-claude",
+        );
+        assert_eq!(
+            resolve_custom_agent_id(Some(expected), "研发助手", &[]).unwrap(),
+            expected,
+        );
+        assert_eq!(
+            resolve_custom_agent_id(Some("Codex"), "研发助手", &[]).unwrap_err(),
+            "Agent already exists: codex",
+        );
+        assert_eq!(
+            resolve_custom_agent_id(None, "!", &[]).unwrap_err(),
+            "Agent ID cannot be empty",
+        );
+
+        let legacy: CustomAgentEntry = serde_json::from_value(serde_json::json!({
+            "id": "custom-claude",
+            "displayName": "研发 Claude",
+            "category": "claude-compatible",
+            "globalSkillsDir": "/example/skills",
+            "isEnabled": true,
+        }))
+        .unwrap();
+        assert_eq!(
+            resolve_custom_agent_id(None, "研发 Claude", &[legacy]).unwrap_err(),
+            "Agent already exists: custom-claude",
+        );
+    }
 
     #[test]
     fn normalize_path_expands_posix_home_prefix() {
