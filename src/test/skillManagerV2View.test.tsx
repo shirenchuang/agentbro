@@ -8670,6 +8670,70 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('dialog', { name: '导入技能包' })).not.toBeInTheDocument()
   })
 
+  it.each([LOCAL_RUNTIME_ENVIRONMENT_ID, 'pack-ssh-host'])('keeps both conflicting pinned Skills on %s and updates the Pack order', async (environmentId) => {
+    const { pack, skill } = await renderPackPage()
+    act(() => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment(environmentId)
+      useSkillStoreV2.setState({
+        runtimeEnvironmentId: environmentId,
+        skills: [skill, makeSkill({ id: `${skill.id}-restored`.toUpperCase() })],
+      })
+    })
+    const hash = 'a'.repeat(64)
+    const source = { repository: 'example/team', commit: 'b'.repeat(40), skillPath: 'skills/review/SKILL.md' }
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack', version: 3, name: 'Pinned review', description: '', tags: [],
+      skillIds: ['first', skill.id, 'last'],
+      skillFingerprints: { first: hash, [skill.id]: hash, last: hash },
+      skillSources: { [skill.id]: source },
+    }
+    const alias = 'team-pinned-review'
+    const replacement: SkillPackManifest = {
+      ...manifest, skillIds: ['first', alias, 'last'],
+      skillFingerprints: { first: hash, [alias]: hash, last: hash }, skillSources: { [alias]: source },
+    }
+    const current = manifest.skillIds.map((skillId) => ({ skillId, missing: false, fingerprint: skillId === skill.id ? 'c'.repeat(64) : hash }))
+    const reviewed = replacement.skillIds.map((skillId) => ({ skillId, missing: false, fingerprint: hash }))
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/pinned.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    const compare = vi.spyOn(skillApiV2, 'getPackFingerprints')
+      .mockResolvedValueOnce(current).mockResolvedValueOnce(current).mockResolvedValueOnce(reviewed)
+    const restore = vi.spyOn(skillApiV2, 'restorePackMember')
+      .mockRejectedValueOnce('The destination already exists.')
+      .mockResolvedValueOnce(undefined)
+    const create = vi.spyOn(skillApiV2, 'importReviewedPack')
+      .mockResolvedValue({ ...pack, id: 'resolved-pack', name: manifest.name })
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    const confirm = dialog.getByRole('button', { name: '创建技能包' })
+    fireEvent.click(dialog.getByRole('button', { name: `将 ${skill.id} 恢复为副本` }))
+    const input = dialog.getByLabelText('新技能 ID')
+    const copy = dialog.getByRole('button', { name: '恢复副本' })
+    const suggested = `${skill.id}-restored-2`
+    expect(input).toHaveValue(suggested)
+    fireEvent.change(input, { target: { value: skill.id.toUpperCase() } })
+    expect(copy).toBeDisabled()
+    expect(restore).not.toHaveBeenCalled()
+    fireEvent.change(input, { target: { value: suggested } })
+    fireEvent.click(copy)
+    expect(await dialog.findByText('The destination already exists.')).toBeInTheDocument()
+    expect(confirm).toBeDisabled()
+    expect(input).toHaveValue(suggested)
+    expect(compare).toHaveBeenLastCalledWith(manifest.skillIds, environmentId)
+
+    fireEvent.change(input, { target: { value: alias } })
+    fireEvent.click(copy)
+    await waitFor(() => expect(confirm).toBeEnabled())
+    expect(dialog.getByText(alias)).toBeInTheDocument()
+    expect(dialog.getByText(`清单中的 ID ${skill.id}`)).toBeInTheDocument()
+    expect(restore).toHaveBeenLastCalledWith(replacement, alias, environmentId)
+    expect(compare).toHaveBeenLastCalledWith(replacement.skillIds, environmentId)
+    expect(create).not.toHaveBeenCalled()
+    fireEvent.click(confirm)
+    await waitFor(() => expect(create).toHaveBeenCalledWith(replacement, reviewed, false, environmentId))
+  })
+
   it('requires fresh confirmation when the reviewed Skill Pack copy changed', async () => {
     const { pack, skill } = await renderPackPage()
     const manifest: SkillPackManifest = {

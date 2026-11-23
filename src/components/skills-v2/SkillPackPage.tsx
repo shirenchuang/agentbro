@@ -31,6 +31,8 @@ type PackImport = {
   reviewed: SkillPackFingerprint[] | null
   acceptLocalCopies: boolean
   restoreErrors: Map<string, string>
+  restoredFrom: Map<string, string>
+  copyDraft?: { skillId: string; destinationId: string }
 }
 type PackLink = {
   runtime: PackRuntime
@@ -126,6 +128,18 @@ function isManagedCopyBlocker(blocker: ConflictBlocker) {
   return blocker.reason.startsWith('Managed copy ')
 }
 
+function replacePackMemberId(manifest: SkillPackManifest, skillId: string, destinationId: string): SkillPackManifest {
+  const replaceId = (id: string) => id === skillId ? destinationId : id
+  const replaceKeys = <T,>(entries: Record<string, T> | undefined) =>
+    Object.fromEntries(Object.entries(entries ?? {}).map(([id, value]) => [replaceId(id), value]))
+  return {
+    ...manifest,
+    skillIds: manifest.skillIds.map(replaceId),
+    skillFingerprints: replaceKeys(manifest.skillFingerprints),
+    skillSources: replaceKeys(manifest.skillSources),
+  }
+}
+
 export function SkillPackPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
@@ -219,6 +233,15 @@ export function SkillPackPage() {
   const restorableIds = packImport?.manifest.skillIds.filter((id) =>
     packMemberStatuses.get(id) === 'missing' && pinnedSources.has(id),
   ) ?? []
+  const conflictingPins = new Set([...pinnedSources.keys()].filter((id) => {
+    const status = packMemberStatuses.get(id)
+    return status === 'different' || status === 'unavailable'
+  }))
+  const packMemberIds = packImport?.manifest.skillIds
+  const occupiedSkillIds = useMemo(() => new Set([
+    ...(packMemberIds ?? []),
+    ...state.skills.map((skill) => skill.id),
+  ].map((id) => id.toLowerCase())), [packMemberIds, state.skills])
   const packMemberships = useSkillPackMemberships(state.packs, detail)
   const missingCount = detail?.members.filter((member) => member.missing).length || 0
   const totalMembers = state.packs.reduce((sum, pack) => sum + pack.memberCount, 0)
@@ -245,7 +268,7 @@ export function SkillPackPage() {
       : null
     if (!reviewed) await state.loadOverview(true)
     if (isPackRuntimeCurrent(runtime)) {
-      setPackImport({ manifest, sourceUrl, runtime, reviewed, acceptLocalCopies: false, restoreErrors: new Map() })
+      setPackImport({ manifest, sourceUrl, runtime, reviewed, acceptLocalCopies: false, restoreErrors: new Map(), restoredFrom: new Map() })
     }
   }
 
@@ -311,36 +334,55 @@ export function SkillPackPage() {
     }
   }
 
-  const restorePackMembers = async (requestedIds: string[]) => {
+  const startPackCopy = (skillId: string) => {
+    if (packImportBusy || !packImport || !conflictingPins.has(skillId)) return
+    const base = `${skillId}-restored`
+    let destinationId = base
+    for (let suffix = 2; occupiedSkillIds.has(destinationId.toLowerCase()); suffix += 1) {
+      destinationId = `${base}-${suffix}`
+    }
+    setPackImport({ ...packImport, acceptLocalCopies: false, copyDraft: { skillId, destinationId } })
+  }
+
+  const restorePackMembers = async (requestedIds: string[], copyId?: string) => {
     if (packImportBusy || !packImport?.reviewed) return
     const { manifest, runtime } = packImport
     if (!isPackRuntimeCurrent(runtime) || restoreRuntime.current?.selectionRevision === runtime.selectionRevision) return
-    const eligible = new Set(restorableIds)
+    if (copyId && (requestedIds.length !== 1 || occupiedSkillIds.has(copyId.toLowerCase()))) return
+    const eligible = copyId ? conflictingPins : new Set(restorableIds)
     const skillIds = requestedIds.filter((id) => eligible.has(id))
     if (!skillIds.length) return
     restoreRuntime.current = runtime
     setPackImportError(null)
     const restoreErrors = new Map(packImport.restoreErrors)
+    let nextImport = packImport
     try {
       for (const skillId of skillIds) {
         if (!isPackRuntimeCurrent(runtime)) return
         setRestoringMember({ runtime, skillId })
         try {
-          await skillApiV2.restorePackMember(manifest, skillId, runtime.selectedEnvironmentId)
+          const restoreManifest = copyId ? replacePackMemberId(manifest, skillId, copyId) : manifest
+          await skillApiV2.restorePackMember(restoreManifest, copyId ?? skillId, runtime.selectedEnvironmentId)
           restoreErrors.delete(skillId)
+          if (copyId) {
+            const restoredFrom = new Map(packImport.restoredFrom)
+            restoredFrom.set(copyId, restoredFrom.get(skillId) ?? skillId)
+            restoredFrom.delete(skillId)
+            nextImport = { ...packImport, manifest: restoreManifest, restoredFrom, copyDraft: undefined }
+          }
         } catch (error) {
           restoreErrors.set(skillId, String(error))
         }
       }
       if (!isPackRuntimeCurrent(runtime)) return
-      const reviewed = await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
+      const reviewed = await skillApiV2.getPackFingerprints(nextImport.manifest.skillIds, runtime.selectedEnvironmentId)
       if (isPackRuntimeCurrent(runtime)) {
-        setPackImport({ ...packImport, reviewed, restoreErrors, acceptLocalCopies: false })
+        setPackImport({ ...nextImport, reviewed, restoreErrors, acceptLocalCopies: false })
         await state.loadOverview(true)
       }
     } catch (error) {
       if (isPackRuntimeCurrent(runtime)) {
-        setPackImport({ ...packImport, reviewed: null, restoreErrors, acceptLocalCopies: false })
+        setPackImport({ ...nextImport, reviewed: null, restoreErrors, acceptLocalCopies: false })
         setPackImportError(String(error))
       }
     } finally {
@@ -725,11 +767,17 @@ export function SkillPackPage() {
             <ul className="sm2__pack-manifest-members">
               {packImport.manifest.skillIds.map((id) => {
                 const status = packMemberStatuses.get(id)
-                const source = status === 'missing' ? pinnedSources.get(id) : undefined
+                const canRestoreCopy = conflictingPins.has(id)
+                const source = status === 'missing' || canRestoreCopy ? pinnedSources.get(id) : undefined
+                const copyDraft = canRestoreCopy && packImport.copyDraft?.skillId === id ? packImport.copyDraft : undefined
+                const copyId = copyDraft?.destinationId.trim() ?? ''
+                const copyIdTaken = occupiedSkillIds.has(copyId.toLowerCase())
+                const originalId = packImport.restoredFrom.get(id)
                 const restoreError = status === 'match' ? undefined : packImport.restoreErrors.get(id)
                 return (
                   <li key={id} className="sm2__change">
                     <code>{id}</code>
+                    {originalId && <span className="sm2__muted">{t('skills.packManifest.restoredFrom', { name: originalId })}</span>}
                     {status && (
                       <span className={status === 'match' ? 'sm2__tag' : 'sm2__tag sm2__tag--warn'}>
                         {t(`skills.packManifest.${status}`)}
@@ -738,15 +786,38 @@ export function SkillPackPage() {
                     {source && (
                       <div className="sm2__pack-manifest-source">
                         <code title={source.commit}>{source.repository}@{source.commit.slice(0, 12)} · {source.skillPath}</code>
-                        <button
-                          className="sm2__btn"
-                          type="button"
-                          aria-label={t('skills.packManifest.restoreMember', { name: id })}
-                          disabled={packImportBusy}
-                          onClick={() => void restorePackMembers([id])}
-                        >
-                          {t(activeRestore?.skillId === id ? 'skills.packManifest.restoring' : 'skills.packManifest.restore')}
+                        {status === 'missing' && (
+                          <button className="sm2__btn" type="button" aria-label={t('skills.packManifest.restoreMember', { name: id })}
+                            disabled={packImportBusy} onClick={() => void restorePackMembers([id])}>
+                            {t(activeRestore?.skillId === id ? 'skills.packManifest.restoring' : 'skills.packManifest.restore')}
+                          </button>
+                        )}
+                        {canRestoreCopy && !copyDraft && (
+                          <button className="sm2__btn" type="button" aria-label={t('skills.packManifest.restoreCopyOf', { name: id })}
+                            disabled={packImportBusy} onClick={() => startPackCopy(id)}>
+                            {t('skills.packManifest.restoreAsCopy')}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {copyDraft && (
+                      <div className="sm2__pack-manifest-copy">
+                        <label className="sm2__field">
+                          <span>{t('skills.packManifest.copyId')}</span>
+                          <input autoFocus value={copyDraft.destinationId} disabled={packImportBusy} aria-invalid={copyIdTaken || undefined}
+                            onChange={(event) => setPackImport({ ...packImport, copyDraft: { skillId: id, destinationId: event.target.value } })} />
+                        </label>
+                        <button className="sm2__btn" type="button" disabled={packImportBusy || !copyId || copyIdTaken}
+                          onClick={() => void restorePackMembers([id], copyId)}>
+                          {t(activeRestore?.skillId === id ? 'skills.packManifest.restoring' : 'skills.packManifest.restoreCopy')}
                         </button>
+                        <button className="sm2__btn" type="button" disabled={packImportBusy}
+                          onClick={() => setPackImport({ ...packImport, copyDraft: undefined })}>
+                          {t('settings.cancel')}
+                        </button>
+                        {copyIdTaken && (
+                          <div className="sm2__error sm2__pack-manifest-member-error" role="alert">{t('skills.packManifest.copyIdInUse')}</div>
+                        )}
                       </div>
                     )}
                     {restoreError && <div className="sm2__error sm2__pack-manifest-member-error" role="alert">{restoreError}</div>}

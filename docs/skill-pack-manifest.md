@@ -8,6 +8,8 @@ Use **Export with GitHub sources** to check the recorded repository paths and co
 
 In the import preview, **Restore missing Skills** restores the missing members that have a recorded source, then compares the library again. You can also restore individual members. If one Skill fails, the preview shows its error and lets you retry it. Select **Create Skill Pack** when the reviewed members are ready.
 
+If a pinned member has different content from the Skill with the same ID in the selected library, choose **Restore as a copy** and confirm a new Skill ID. Both versions stay in the library. The imported Pack uses the new copy at the original member's position and retains its verified fingerprint and source when exported.
+
 ```json
 {
   "format": "agentbro-skill-pack",
