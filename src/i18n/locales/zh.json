@@ -750,6 +750,7 @@
       "pinnedReview": "可按记录的 GitHub 来源恢复缺失技能，核对内容后再导入。",
       "restore": "恢复",
       "restoreMember": "恢复 {{name}}",
+      "restoreMissing": "恢复 {{count}} 个缺失技能",
       "restoring": "恢复中…",
       "match": "内容一致",
       "different": "内容不同",

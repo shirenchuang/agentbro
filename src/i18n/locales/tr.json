@@ -604,6 +604,7 @@
       "pinnedReview": "Eksik becerileri kayıtlı GitHub kaynaklarından geri yükleyin ve içe aktarmadan önce sonucu gözden geçirin.",
       "restore": "Geri yükle",
       "restoreMember": "{{name}} becerisini geri yükle",
+      "restoreMissing": "{{count}} eksik beceriyi geri yükle",
       "restoring": "Geri yükleniyor…",
       "match": "İçerik eşleşiyor",
       "different": "Farklı içerik",

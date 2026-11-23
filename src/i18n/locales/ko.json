@@ -710,6 +710,7 @@
       "pinnedReview": "기록된 GitHub 소스에서 누락된 스킬을 복원하고 결과를 확인한 뒤 가져오세요.",
       "restore": "복원",
       "restoreMember": "{{name}} 복원",
+      "restoreMissing": "누락된 스킬 {{count}}개 복원",
       "restoring": "복원 중…",
       "match": "내용 일치",
       "different": "내용이 다름",

@@ -709,6 +709,7 @@
       "pinnedReview": "Restore missing Skills from their recorded GitHub sources, then review the result before importing.",
       "restore": "Restore",
       "restoreMember": "Restore {{name}}",
+      "restoreMissing": "Restore {{count}} missing Skills",
       "restoring": "Restoring…",
       "match": "Content matches",
       "different": "Different content",
