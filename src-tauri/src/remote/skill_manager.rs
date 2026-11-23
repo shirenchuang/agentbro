@@ -2363,6 +2363,102 @@ os.fsync = retarget_after_staging"#,
     }
 
     #[test]
+    fn remote_opencode_mcp_inventory_reads_both_formats_from_user_config() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("test home");
+        let config = std::fs::canonicalize(home.path())
+            .unwrap()
+            .join("xdg/opencode");
+        std::fs::create_dir_all(&config).expect("config directory");
+        let json = config.join("opencode.json");
+        let jsonc = config.join("opencode.jsonc");
+        let legacy = r#"{
+            "mcpServers": {"phantom": {"command": "wrong-format"}},
+            "mcp": {
+                "demo": {"type": "local", "command": ["fixture", "secret-in-arguments"], "enabled": false},
+                "override": {"type": "local", "command": ["old"]}
+            }
+        }"#;
+        let native = r#"{
+            // These settings belong to OpenCode.
+            "mcp": {"servers": {
+                "override": {"type": "remote", "url": "https://example.invalid/mcp?token=secret-in-url",
+                    "headers": {"Auth": "secret-in-header"}, "disabled": true,
+                },
+            }},
+        }"#;
+        std::fs::write(&json, legacy).expect("legacy config");
+        std::fs::write(&jsonc, native).expect("native config");
+
+        let xdg_script = |command: &str, args| {
+            render_script(command, args).unwrap().replace(
+                "HOME = pathlib.Path.home().resolve()",
+                "HOME = pathlib.Path.home().resolve()\nos.environ['XDG_CONFIG_HOME'] = str(HOME / 'xdg')",
+            )
+        };
+        let listed = run_rendered_script(
+            home.path(),
+            &xdg_script(
+                "list_mcp_inventory_cmd",
+                serde_json::json!({"agent": "opencode"}),
+            ),
+        );
+        assert_eq!(listed["capabilities"]["editable"], false);
+        let servers = listed["servers"].as_array().expect("server list");
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0]["name"], "demo");
+        assert_eq!(servers[0]["command"], "fixture");
+        assert_eq!(servers[0]["transport"], "stdio");
+        assert_eq!(servers[0]["enabled"], false);
+        assert_eq!(servers[0]["configPath"], json.to_string_lossy().as_ref());
+        assert_eq!(servers[1]["name"], "override");
+        assert_eq!(servers[1]["transport"], "http");
+        assert_eq!(servers[1]["enabled"], false);
+        assert_eq!(servers[1]["configPath"], jsonc.to_string_lossy().as_ref());
+        assert!(!listed.to_string().contains("secret-in-"));
+        let detail = run_rendered_script(
+            home.path(),
+            &xdg_script(
+                "get_agent_detail_v2",
+                serde_json::json!({"agentId": "opencode"}),
+            ),
+        );
+        assert_eq!(detail["mcpConfigPath"], listed["configPath"]);
+        assert_eq!(detail["mcpServers"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(json).expect("legacy config"),
+            legacy
+        );
+        assert_eq!(
+            std::fs::read_to_string(jsonc).expect("native config"),
+            native
+        );
+    }
+
+    #[test]
+    fn remote_opencode_mcp_rejects_generic_config_writes() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("test home");
+        let path = home.path().join(".config/opencode/opencode.json");
+        std::fs::create_dir_all(path.parent().expect("config parent")).expect("config directory");
+        let before = r#"{"mcp":{"demo":{"type":"local","command":["fixture"]}}}"#;
+        std::fs::write(&path, before).expect("original config");
+        let listed = run_script(
+            home.path(),
+            "list_mcp_inventory_cmd",
+            serde_json::json!({"agent": "opencode"}),
+        );
+        let error = run_script_error(
+            home.path(),
+            "save_mcp_server_cmd",
+            serde_json::json!({"agent":"opencode", "revision":listed["revision"],
+                "server":{"name":"extra","transport":"stdio","command":"fixture"}}),
+        );
+        assert!(error.contains("read-only"), "{error}");
+        assert_eq!(std::fs::read_to_string(path).expect("config"), before);
+    }
+
+    #[test]
     fn remote_mcp_mutations_reject_stale_revisions() {
         let home =
             std::env::temp_dir().join(format!("agentbro-remote-mcp-{}", uuid::Uuid::new_v4()));
@@ -3523,6 +3619,7 @@ try:
             .stderr(Stdio::piped())
             .env("HOME", home)
             .env("TMPDIR", home)
+            .env_remove("XDG_CONFIG_HOME")
             .env("PATH", "/usr/bin:/bin")
             .spawn()
             .expect("start remote script");
