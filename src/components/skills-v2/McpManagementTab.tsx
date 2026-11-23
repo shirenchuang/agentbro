@@ -16,9 +16,15 @@ import { McpInspectorDrawer, type McpInspectorTarget } from './McpInspectorDrawe
 import { PreviewDialog } from './PreviewDialog'
 import { SlideOver } from './SlideOver'
 
+type ConfigValueRow = McpConfigValue & { rowId: number }
+type McpEditorDraft = Omit<McpServerDraft, 'env' | 'headers'> & {
+  env: ConfigValueRow[]
+  headers: ConfigValueRow[]
+}
+
 interface EditorState {
   originalName: string | null
-  draft: McpServerDraft
+  draft: McpEditorDraft
 }
 
 const SECRET_PLACEHOLDER = '••••••••'
@@ -119,10 +125,10 @@ function McpManagementView({ detail, environmentId, runtimeRevision, agentRevisi
         transport: server.transport,
         command: server.command,
         args: [...server.args],
-        env: server.env.map((value) => ({ ...value })),
+        env: server.env.map((value, rowId) => ({ ...value, rowId })),
         cwd: server.cwd,
         url: server.url,
-        headers: server.headers.map((value) => ({ ...value })),
+        headers: server.headers.map((value, rowId) => ({ ...value, rowId })),
       },
     })
   }
@@ -469,7 +475,7 @@ function McpEditor({
 }) {
   const { t } = useTranslation()
   const draft = editor.draft
-  const setDraft = (patch: Partial<McpServerDraft>) =>
+  const setDraft = (patch: Partial<McpEditorDraft>) =>
     onChange({ ...editor, draft: { ...draft, ...patch } })
   const transports = useMemo(() => ([
     capabilities.supportsStdio && 'stdio',
@@ -502,7 +508,7 @@ function McpEditor({
                 type="button"
                 aria-pressed={draft.transport === transport}
                 disabled={busy}
-                onClick={() => setDraft(transportDraft(draft, transport))}
+                onClick={() => setDraft({ transport })}
               >
                 {t(`skills.mcpManagement.editor.transportShortOptions.${transport}`)}
               </button>
@@ -653,9 +659,9 @@ function ConfigValueEditor({
 }: {
   label: string
   addLabel: string
-  values: McpConfigValue[]
+  values: ConfigValueRow[]
   disabled: boolean
-  onChange: (values: McpConfigValue[]) => void
+  onChange: (values: ConfigValueRow[]) => void
 }) {
   const { t } = useTranslation()
   const update = (index: number, patch: Partial<McpConfigValue>) =>
@@ -664,7 +670,7 @@ function ConfigValueEditor({
     <div className="sm2__mcp-repeat-field">
       <label>{label}</label>
       {values.map((item, index) => (
-        <div className="sm2__mcp-kv-row" key={`${index}-${item.key}`}>
+        <div className="sm2__mcp-kv-row" key={item.rowId}>
           <input
             value={item.key}
             disabled={disabled}
@@ -681,8 +687,7 @@ function ConfigValueEditor({
               ? t('skills.mcpManagement.editor.secretConfigured')
               : t('skills.mcpManagement.editor.value')}
             onChange={(event) => update(index, {
-              value: event.target.value || null,
-              configured: Boolean(event.target.value),
+              value: event.target.value || (item.secret && item.configured ? null : ''),
             })}
           />
           <button
@@ -701,6 +706,7 @@ function ConfigValueEditor({
         type="button"
         disabled={disabled}
         onClick={() => onChange([...values, {
+          rowId: (values.at(-1)?.rowId ?? -1) + 1,
           key: '',
           value: '',
           secret: false,
@@ -713,7 +719,7 @@ function ConfigValueEditor({
   )
 }
 
-function emptyDraft(transport: McpTransport): McpServerDraft {
+function emptyDraft(transport: McpTransport): McpEditorDraft {
   return {
     name: '',
     transport,
@@ -732,25 +738,20 @@ function firstSupportedTransport(inventory: McpInventory): McpTransport {
   return 'sse'
 }
 
-function transportDraft(draft: McpServerDraft, transport: McpTransport): Partial<McpServerDraft> {
-  return transport === 'stdio'
-    ? { transport, command: draft.command || '', url: null, headers: [] }
-    : { transport, command: null, args: [], env: [], cwd: null, url: draft.url || '' }
-}
-
-function normalizeDraft(draft: McpServerDraft): McpServerDraft {
-  const normalizeValues = (values: McpConfigValue[]) => values
-    .map((item) => ({
-      ...item,
-      key: item.key.trim(),
-      value: item.value === SECRET_PLACEHOLDER ? null : item.value,
+function normalizeDraft(draft: McpEditorDraft): McpServerDraft {
+  const normalizeValues = (values: ConfigValueRow[]): McpConfigValue[] => values
+    .map(({ key, value, secret, configured }) => ({
+      key: key.trim(),
+      value: value === SECRET_PLACEHOLDER ? null : value,
+      secret,
+      configured: configured || value !== null,
     }))
     .filter((item) => item.key)
   return {
     ...draft,
     name: draft.name.trim(),
     command: draft.transport === 'stdio' ? draft.command?.trim() || null : null,
-    args: draft.transport === 'stdio' ? draft.args.filter((value) => value.length > 0) : [],
+    args: draft.transport === 'stdio' ? draft.args : [],
     env: draft.transport === 'stdio' ? normalizeValues(draft.env) : [],
     cwd: draft.transport === 'stdio' ? draft.cwd?.trim() || null : null,
     url: draft.transport === 'stdio' ? null : draft.url?.trim() || null,
