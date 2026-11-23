@@ -267,7 +267,7 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
     let rel = match agent {
         "openclaw" => return Some(openclaw_workspace_dir(home).join("skills")),
         "agents" => ".agents/skills",
-        "claude-code" => ".claude/skills",
+        "claude-code" => return Some(agent_paths::claude_code_home_for(home).join("skills")),
         "codex" => ".codex/skills",
         "gemini" => ".gemini/skills",
         "antigravity" => ".gemini/config/skills",

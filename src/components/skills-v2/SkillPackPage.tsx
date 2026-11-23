@@ -1843,6 +1843,7 @@ function PackSyncConflictDialog({
           {change.action === 'create'
             ? `新增 ${change.agentId} / ${change.skillId} (${skillModeLabel(t, change.actualMode)})`
             : `复用 ${change.agentId} / ${change.skillId}`}
+          <div className="sm2-distribute__path-row"><code>{change.targetPath}</code></div>
         </div>
       ))}
       {preview.blockers.map((blocker, index) => (
@@ -2120,6 +2121,7 @@ function ApplyPackDialog({
           {change.action === 'create'
             ? `新增 ${change.agentId} / ${change.skillId} (${skillModeLabel(t, change.actualMode)})`
             : `复用 ${change.agentId} / ${change.skillId}`}
+          <div className="sm2-distribute__path-row"><code>{change.targetPath}</code></div>
         </div>
       ))}
       {preview.blockers.map((blocker, index) => (

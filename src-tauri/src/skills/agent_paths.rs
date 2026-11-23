@@ -11,6 +11,15 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(std::env::temp_dir)
 }
 
+pub fn claude_code_home_for(home: &Path) -> PathBuf {
+    if home == crate::skills::v2::fsutil::home() {
+        if let Some(configured) = crate::agents::claude_code::configured_config_root() {
+            return configured;
+        }
+    }
+    home.join(".claude")
+}
+
 pub fn kimi_code_home() -> PathBuf {
     let h = home();
     kimi_code_home_for(&h)
@@ -88,11 +97,15 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             mcp_config: None,
             settings_file: None,
         },
-        "claude-code" => SkillPaths {
-            skill_dirs: vec![h.join(".claude").join("skills")],
-            mcp_config: Some(h.join(".claude").join("settings.json")),
-            settings_file: Some(h.join(".claude").join("settings.json")),
-        },
+        "claude-code" => {
+            let root = crate::agents::claude_code::default_config_root();
+            let settings = root.join("settings.json");
+            SkillPaths {
+                skill_dirs: vec![root.join("skills")],
+                mcp_config: Some(settings.clone()),
+                settings_file: Some(settings),
+            }
+        }
         "codex" => SkillPaths {
             skill_dirs: vec![
                 h.join(".codex").join("skills"),
@@ -343,7 +356,9 @@ pub fn legacy_agentbro_skills_dir() -> PathBuf {
 pub fn plugin_cache_dir(agent: &str) -> Option<PathBuf> {
     let h = home();
     match agent {
-        "claude-code" => Some(h.join(".claude").join("plugins").join("cache")),
+        "claude-code" => {
+            Some(crate::agents::claude_code::default_config_root().join("plugins/cache"))
+        }
         "codex" => Some(h.join(".codex").join("plugins").join("cache")),
         "kimi" | "kimi-code-cli" => Some(kimi_code_home_for(&h).join("plugins").join("managed")),
         "workbuddy" | "workbuddy-ai" => WorkBuddyEdition::from_agent_id(agent)

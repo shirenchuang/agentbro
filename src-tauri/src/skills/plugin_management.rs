@@ -554,7 +554,10 @@ fn binary_plugin_file(path: String, size: u64) -> PluginFileContent {
 fn config_for_agent(home: &Path, agent_id: &str) -> Option<PluginConfig> {
     let (path, kind) = match agent_id {
         "codex" => (home.join(".codex/config.toml"), PluginConfigKind::Codex),
-        "claude-code" => (home.join(".claude/settings.json"), PluginConfigKind::Json),
+        "claude-code" => (
+            crate::skills::agent_paths::claude_code_home_for(home).join("settings.json"),
+            PluginConfigKind::Json,
+        ),
         "workbuddy" | "workbuddy-ai" => (
             home.join(
                 crate::agents::workbuddy::WorkBuddyEdition::from_agent_id(agent_id)?.profile_dir(),

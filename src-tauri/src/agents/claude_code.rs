@@ -12,14 +12,15 @@ use std::path::PathBuf;
 /// GUI apps don't inherit the user's interactive shell env, so an absolute
 /// `CLAUDE_CONFIG_DIR` set in `.zshrc` is also picked up via the login shell.
 pub fn default_config_root() -> PathBuf {
-    if let Some(dir) = config_dir_from_env(|key| std::env::var(key).ok()) {
-        return dir;
-    }
-    if let Some(dir) = config_dir_from_login_shell() {
-        return dir;
-    }
-    let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-    home.join(".claude")
+    configured_config_root().unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".claude")
+    })
+}
+
+pub(crate) fn configured_config_root() -> Option<PathBuf> {
+    config_dir_from_env(|key| std::env::var(key).ok()).or_else(config_dir_from_login_shell)
 }
 
 /// Extract a usable config root from a `CLAUDE_CONFIG_DIR` value, if any.
@@ -47,8 +48,10 @@ fn config_dir_from_login_shell() -> Option<PathBuf> {
 
 #[cfg(not(target_os = "windows"))]
 fn config_dir_from_login_shell() -> Option<PathBuf> {
-    let value = super::executable::login_shell_var("CLAUDE_CONFIG_DIR")?;
-    config_dir_from_env(|_| Some(value.clone()))
+    static LOGIN_CONFIG_ROOT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    LOGIN_CONFIG_ROOT
+        .get_or_init(|| config_dir_from_env(super::executable::login_shell_var))
+        .clone()
 }
 
 /// Claude Code adapter implementation

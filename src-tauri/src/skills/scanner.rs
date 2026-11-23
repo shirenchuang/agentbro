@@ -569,10 +569,10 @@ fn scan_plugins(agent: &str, results: &mut Vec<ScannedSkill>) {
         return;
     };
     let roots = match agent {
-        "claude-code" => vec![
-            home.join(".claude").join("plugins").join("marketplaces"),
-            home.join(".claude").join("plugins").join("cache"),
-        ],
+        "claude-code" => {
+            let plugins = crate::agents::claude_code::default_config_root().join("plugins");
+            vec![plugins.join("marketplaces"), plugins.join("cache")]
+        }
         "codex" => vec![
             home.join(".codex").join("plugins").join("marketplaces"),
             home.join(".codex").join("plugins").join("cache"),
