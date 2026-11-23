@@ -186,6 +186,72 @@ describe('ApprovalBar composer gating', () => {
     }
   })
 
+  it.each(['settled', 'stale result'])('recovers the same Windows approval button after a new focus loss: %s', async (firstAttempt) => {
+    vi.mocked(isWindowsPlatform).mockReturnValue(true)
+    let finishFirst!: (restored: boolean) => void
+    if (firstAttempt === 'stale result') {
+      vi.mocked(restoreNotchWebviewFocus).mockReturnValueOnce(new Promise((resolve) => { finishFirst = resolve }))
+    }
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const onDeny = vi.fn()
+    try {
+      renderBar(session({
+        phase: 'waiting_approval',
+        pendingPermission: { toolName: 'Edit', toolInput: 'review.md' },
+      }), { onDeny })
+      const deny = screen.getByRole('button', { name: 'Deny' })
+      deny.focus()
+      fireEvent.blur(window)
+      await waitFor(() => expect(restoreNotchWebviewFocus).toHaveBeenCalledOnce())
+
+      hasFocus.mockReturnValue(true)
+      fireEvent.focus(window)
+      expect(deny).toHaveFocus()
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      hasFocus.mockReturnValue(false)
+      fireEvent.blur(window)
+      await waitFor(() => expect(restoreNotchWebviewFocus).toHaveBeenCalledTimes(2))
+
+      if (firstAttempt === 'stale result') {
+        finishFirst(false)
+        await Promise.resolve()
+      }
+      fireEvent.blur(window)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(restoreNotchWebviewFocus).toHaveBeenCalledTimes(2)
+      expect(onDeny).not.toHaveBeenCalled()
+      await userEvent.setup().keyboard(' ')
+      expect(onDeny).toHaveBeenCalledOnce()
+    } finally {
+      hasFocus.mockRestore()
+    }
+  })
+
+  it('ignores rapid Windows window focus changes during one recovery', async () => {
+    vi.mocked(isWindowsPlatform).mockReturnValue(true)
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    try {
+      renderBar(session({
+        phase: 'waiting_approval',
+        pendingPermission: { toolName: 'Edit', toolInput: 'review.md' },
+      }))
+      screen.getByRole('button', { name: 'Deny' }).focus()
+      fireEvent.blur(window)
+      await waitFor(() => expect(restoreNotchWebviewFocus).toHaveBeenCalledOnce())
+
+      for (let change = 0; change < 3; change += 1) {
+        hasFocus.mockReturnValue(true)
+        fireEvent.focus(window)
+        hasFocus.mockReturnValue(false)
+        fireEvent.blur(window)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+      expect(restoreNotchWebviewFocus).toHaveBeenCalledOnce()
+    } finally {
+      hasFocus.mockRestore()
+    }
+  })
+
   it('ignores secondary and middle mouse presses on permission buttons', () => {
     const onAllow = vi.fn()
     renderBar(

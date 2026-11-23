@@ -5890,17 +5890,41 @@ impl Service {
 
         let applied_packs = self.applied_packs_for_agent(agent_id)?;
         let available_packs = self.list_skill_packs()?;
-        let mcp_servers = crate::skills::v2::diagnosis::read_mcp_servers(self, agent_id);
         let plugins = crate::skills::v2::diagnosis::read_plugins(self, agent_id);
         let health = crate::skills::v2::diagnosis::agent_health(self, agent_id);
         let agent_paths = crate::skills::agent_paths::paths_for_agent(agent_id);
         let kimi_home = (agent_id == "kimi")
             .then(|| crate::skills::agent_paths::kimi_code_home_for(&self.home));
-        let mcp_config_path = kimi_home
-            .as_ref()
-            .map(|home| home.join("mcp.json"))
-            .or(agent_paths.mcp_config)
-            .map(|path| path.display().to_string());
+        let (mcp_servers, mcp_config_path) = if agent_id == "opencode" {
+            crate::skills::mcp_management::list_opencode_mcp(&self.home)
+                .map(|inventory| {
+                    let servers = inventory
+                        .servers
+                        .into_iter()
+                        .map(|server| McpServerStatus {
+                            name: server.draft.name,
+                            command: server
+                                .draft
+                                .command
+                                .or(server.draft.url)
+                                .unwrap_or_default(),
+                            args: server.draft.args,
+                            valid: server.valid,
+                            message: server.message,
+                        })
+                        .collect();
+                    (servers, inventory.config_path)
+                })
+                .unwrap_or_default()
+        } else {
+            let servers = crate::skills::v2::diagnosis::read_mcp_servers(self, agent_id);
+            let path = kimi_home
+                .as_ref()
+                .map(|home| home.join("mcp.json"))
+                .or(agent_paths.mcp_config)
+                .map(|path| path.display().to_string());
+            (servers, path)
+        };
         let config_path = kimi_home
             .as_ref()
             .map(|home| home.join("config.toml"))

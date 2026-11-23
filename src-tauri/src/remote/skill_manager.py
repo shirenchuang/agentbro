@@ -485,6 +485,10 @@ def agent_mcp_path(agent_id):
     spec = agent_spec(agent_id)
     if not spec:
         raise ValueError("Unknown Agent: " + str(agent_id))
+    if agent_id == "opencode":
+        directory = opencode_config_directory()
+        jsonc = directory / "opencode.jsonc"
+        return jsonc if jsonc.exists() else directory / "opencode.json"
     return agent_config_path(agent_id) if agent_id in ("openclaw", "codex") else HOME / spec["mcp"]
 
 
@@ -2306,6 +2310,22 @@ def agent_detail_from_inventory(
     for pack_id in applied_pack_ids(agent_id):
         detail = pack_detail(pack_id, skills, agents)
         applied.extend(item for item in detail["appliedAgents"] if item["agentId"] == agent_id)
+    mcp_config_path = str(agent_mcp_path(agent_id))
+    mcp_servers = []
+    if agent_id == "opencode":
+        try:
+            mcp = opencode_mcp_inventory()
+        except (OSError, ValueError):
+            pass
+        else:
+            mcp_config_path = mcp["configPath"]
+            mcp_servers = [{
+                "name": server["name"],
+                "command": server["command"] or server["url"] or "",
+                "args": server["args"],
+                "valid": server["valid"],
+                "message": server["message"],
+            } for server in mcp["servers"]]
     return {
         "id": agent_id,
         "displayName": spec["displayName"],
@@ -2314,7 +2334,7 @@ def agent_detail_from_inventory(
         "latestVersion": agent["latestVersion"],
         "skillsDir": agent["skillsDir"],
         "configPath": str(agent_config_path(agent_id)),
-        "mcpConfigPath": str(agent_mcp_path(agent_id)),
+        "mcpConfigPath": mcp_config_path,
         "pluginDir": str(agent_plugin_path(agent_id)),
         "agentDir": str(spec.get("configDir") or agent_skills_path(agent_id).parent),
         "skills": [item for item in targets.values() if item["agentId"] == agent_id],
@@ -2328,7 +2348,7 @@ def agent_detail_from_inventory(
             unmanaged,
             targets,
         )["packs"],
-        "mcpServers": [],
+        "mcpServers": mcp_servers,
         "plugins": plugin_inventory(agent_id)["plugins"],
         "health": [],
     }
@@ -2846,7 +2866,130 @@ def resolve_mcp_config_values(draft, previous):
     return values
 
 
+def opencode_config_directory():
+    config_home = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", ""))
+    return (config_home if config_home.is_absolute() else HOME / ".config") / "opencode"
+
+
+def parse_opencode_jsonc(content, path):
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeError as error:
+        raise ValueError("Failed to parse OpenCode configuration: " + str(path)) from error
+    text = re.sub(
+        r'("(?:\\.|[^"\\])*")|//[^\r\n]*|/\*.*?\*/',
+        lambda match: match[1] if match[1] is not None else "".join(
+            char if char in "\r\n" else " " for char in match[0]
+        ),
+        text,
+        flags=re.S,
+    )
+
+    def strip_trailing_comma(match):
+        if match[1] is None:
+            return match[0]
+        before = match.start() - 1
+        while before >= 0 and text[before].isspace():
+            before -= 1
+        if before >= 0 and text[before] not in "{[:,":
+            return match[1]
+        return match[0]
+
+    try:
+        normalized = re.sub(r'"(?:\\.|[^"\\])*"|,(\s*[}\]])', strip_trailing_comma, text)
+        parsed = json.loads(normalized) if normalized.strip() else {}
+    except ValueError as error:
+        raise ValueError("Failed to parse OpenCode configuration: " + str(path)) from error
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("mcp", {}), dict):
+        raise ValueError("OpenCode MCP configuration must be an object: " + str(path))
+    return parsed
+
+
+def opencode_mcp_entry(name, value, path, native):
+    if not isinstance(value, dict) or value.get("type") not in ("local", "remote"):
+        return None
+    local = value["type"] == "local"
+    command, url = None, None
+    if local:
+        args = value.get("command")
+        if isinstance(args, list) and args and isinstance(args[0], str) and args[0].strip():
+            command = args[0]
+        valid = command is not None and all(isinstance(arg, str) for arg in args)
+    else:
+        raw_url = value.get("url")
+        if not isinstance(raw_url, str):
+            raw_url = ""
+        try:
+            parts = urllib.parse.urlsplit(raw_url)
+            if parts.scheme in ("http", "https") and parts.hostname:
+                authority = "[" + parts.hostname + "]" if ":" in parts.hostname else parts.hostname
+                if parts.port is not None:
+                    authority += ":" + str(parts.port)
+                url = urllib.parse.urlunsplit((parts.scheme, authority, "", "", ""))
+        except ValueError:
+            pass
+        valid = url is not None or re.search(r"\{(?:env|file):[^}]+\}", raw_url) is not None
+    return {
+        "name": name,
+        "transport": "stdio" if local else "http",
+        "command": command,
+        "args": [],
+        "env": [],
+        "cwd": None,
+        "url": url,
+        "headers": [],
+        "enabled": value.get("disabled") is not True if native else value.get("enabled") is not False,
+        "disabledByAgentbro": False,
+        "valid": valid,
+        "message": "Configured in OpenCode" if valid else "An OpenCode MCP command or HTTP URL is required",
+        "warnings": [],
+        "configPath": str(path),
+        "editable": False,
+        "sourceKind": "configured",
+    }
+
+
+def opencode_mcp_inventory():
+    directory = opencode_config_directory()
+    config_path = directory / "opencode.json"
+    servers = {}
+    revision = hashlib.sha256()
+    for filename in ("opencode.json", "opencode.jsonc"):
+        path = directory / filename
+        try:
+            content = path.read_bytes()
+        except FileNotFoundError:
+            continue
+        mcp = parse_opencode_jsonc(content, path).get("mcp", {})
+        native = mcp.get("servers")
+        for entries, is_native in ((mcp, False), (native, True)):
+            if not isinstance(entries, dict):
+                continue
+            for name, value in entries.items():
+                entry = opencode_mcp_entry(name, value, path, is_native)
+                if entry is not None:
+                    servers[name] = entry
+        revision.update(filename.encode() + b"\0")
+        revision.update(content)
+        config_path = path
+    return {
+        "agentId": "opencode",
+        "configPath": str(config_path),
+        "revision": "sha256:" + revision.hexdigest(),
+        "capabilities": {
+            "editable": False,
+            "supportsStdio": False,
+            "supportsHttp": False,
+            "supportsSse": False,
+            "supportsNativeToggle": False,
+        },
+        "servers": [servers[name] for name in sorted(servers)],
+    }
+
+
 def mcp_inventory(agent_id, include_sensitive=False):
+    if agent_id == "opencode":
+        return opencode_mcp_inventory()
     path = agent_mcp_path(agent_id)
     content = read_config_bytes(path)
     revision = hashlib.sha256(content).hexdigest()
@@ -2925,7 +3068,7 @@ def write_mcp_inventory(
     agent_id, revision, server=None, original_name=None, delete_name=None, toggle=None
 ):
     path = agent_mcp_path(agent_id)
-    if agent_id == "codex" or path.suffix != ".json":
+    if agent_id in ("codex", "opencode") or path.suffix != ".json":
         raise ValueError("This remote Agent MCP format is read-only")
     target = path.resolve()
     content = read_config_bytes(target)
@@ -2994,6 +3137,8 @@ def replace_remote_config(path, target, content, updated, conflict):
 
 
 def mcp_server(agent_id, server_name):
+    if agent_id == "opencode":
+        raise ValueError("OpenCode MCP connections are managed by OpenCode")
     inventory_value = mcp_inventory(agent_id, include_sensitive=True)
     server = next(
         (item for item in inventory_value["servers"] if item["name"] == server_name),
@@ -4474,6 +4619,8 @@ def dispatch():
     if command == "list_mcp_inventory_cmd":
         return mcp_inventory(args["agent"])
     if command == "validate_mcp_server_draft_cmd":
+        if args["agent"] == "opencode":
+            raise ValueError("This remote Agent MCP format is read-only")
         server = args["server"]
         valid = bool(server.get("command") or server.get("url"))
         return {

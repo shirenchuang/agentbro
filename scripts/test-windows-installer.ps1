@@ -12,6 +12,7 @@ param(
     [switch]$CloseStartupSettings,
     [switch]$AutomationFocusPermission,
     [switch]$VerifyStartupStackSampler,
+    [switch]$VerifyStartupLock,
     [switch]$VerifyAgentPackageConsole,
     [switch]$VerifyRegisteredAgentApp
 )
@@ -322,6 +323,49 @@ Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue
 
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
+
+function Test-DuplicateStartup([string]$State) {
+    $launchLog = Join-Path $stage "duplicate-$State.stdout.log"
+    $launchError = Join-Path $stage "duplicate-$State.stderr.log"
+    $duplicate = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+        -RedirectStandardOutput $launchLog -RedirectStandardError $launchError
+    try {
+        if (-not $duplicate.WaitForExit(10000)) {
+            throw "Duplicate AgentBro launch stayed alive during $State."
+        }
+        if ($duplicate.ExitCode -ne 0 -or
+            (Select-String -LiteralPath $launchLog -SimpleMatch 'Startup: creating configured windows' -Quiet)) {
+            throw "Duplicate AgentBro launch did not exit before window creation during $State."
+        }
+        Write-Output "Duplicate Windows launch exited before WebView2 during $State."
+    } catch {
+        Get-Content -LiteralPath $launchLog, $launchError -Tail 20 -ErrorAction SilentlyContinue
+        throw
+    } finally {
+        if (-not $duplicate.HasExited) {
+            Stop-Process -Id $duplicate.Id -ErrorAction SilentlyContinue
+            $null = $duplicate.WaitForExit(3000)
+        }
+        $duplicate.Dispose()
+    }
+}
+
+if ($VerifyStartupLock) {
+    $lockDirectory = Join-Path $env:USERPROFILE '.agentbro'
+    $null = New-Item -ItemType Directory -Path $lockDirectory -Force
+    $startupLockPath = Join-Path $lockDirectory "windows-startup-$port.lock"
+    $fixtureLock = [IO.File]::Open($startupLockPath, 'OpenOrCreate', 'Write', 'ReadWrite')
+    try {
+        $fixtureLock.Lock(0, 1)
+        if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
+            throw 'The cold-start exclusion fixture requires an unoccupied Hook port.'
+        }
+        Test-DuplicateStartup 'cold-start'
+    } finally {
+        $fixtureLock.Dispose()
+    }
+}
+
 if ($VerifyDrag) { $env:AGENTBRO_TRACE_ISLAND_DRAG = '1' }
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
@@ -527,6 +571,9 @@ try {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
     }
     $hookReady = $true
+    if ($VerifyStartupLock) {
+        Test-DuplicateStartup 'active-primary'
+    }
     if ($VerifyStartupStackSampler) {
         Write-StartupStacks
         Write-Output 'Local stack sampler resolved AgentBro frames before the installed desktop check.'

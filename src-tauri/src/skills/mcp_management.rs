@@ -15,6 +15,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdout};
 use tokio::sync::Notify;
 
+mod opencode;
+
+pub(crate) use opencode::list_opencode_mcp;
+
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_PROTOCOL_FALLBACKS: [&str; 2] = ["2025-06-18", "2024-11-05"];
 const MCP_TEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -252,6 +256,9 @@ enum ConfigKind {
 }
 
 pub fn list_mcp_servers(agent_id: &str) -> Result<McpInventory, String> {
+    if agent_id == "opencode" {
+        return list_opencode_mcp(&super::v2::fsutil::home());
+    }
     let Some(config) = config_for_agent(agent_id) else {
         return Ok(McpInventory {
             agent_id: agent_id.to_string(),

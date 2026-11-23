@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   skillApiV2,
@@ -16,26 +16,44 @@ import { McpInspectorDrawer, type McpInspectorTarget } from './McpInspectorDrawe
 import { PreviewDialog } from './PreviewDialog'
 import { SlideOver } from './SlideOver'
 
-interface EditorState {
-  originalName: string | null
-  draft: McpServerDraft
-  selection: ReturnType<typeof readMcpEditorSelection>
+type ConfigValueRow = McpConfigValue & { rowId: number }
+type McpEditorDraft = Omit<McpServerDraft, 'env' | 'headers'> & {
+  env: ConfigValueRow[]
+  headers: ConfigValueRow[]
 }
 
-function readMcpEditorSelection() {
-  const runtime = useRuntimeEnvironmentStore.getState()
-  const skill = useSkillStoreV2.getState()
-  return {
-    environmentId: runtime.selectedEnvironmentId,
-    runtimeRevision: runtime.selectionRevision,
-    agentId: skill.selectedAgentId,
-    agentRevision: skill.agentSelectionRevision,
-  }
+interface EditorState {
+  originalName: string | null
+  draft: McpEditorDraft
 }
 
 const SECRET_PLACEHOLDER = '••••••••'
 
 export function McpManagementTab({ detail }: { detail: AgentDetail }) {
+  const environmentId = useRuntimeEnvironmentStore((state) => state.selectedEnvironmentId)
+  const runtimeRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
+  const detailEnvironmentId = useSkillStoreV2((state) => state.runtimeEnvironmentId)
+  const agentId = useSkillStoreV2((state) => state.selectedAgentId)
+  const agentRevision = useSkillStoreV2((state) => state.agentSelectionRevision)
+  if (detailEnvironmentId !== environmentId || agentId !== detail.id) return null
+
+  return (
+    <McpManagementView
+      key={`${environmentId}:${runtimeRevision}:${agentRevision}:${agentId}`}
+      detail={detail}
+      environmentId={environmentId}
+      runtimeRevision={runtimeRevision}
+      agentRevision={agentRevision}
+    />
+  )
+}
+
+function McpManagementView({ detail, environmentId, runtimeRevision, agentRevision }: {
+  detail: AgentDetail
+  environmentId: string
+  runtimeRevision: number
+  agentRevision: number
+}) {
   const { t } = useTranslation()
   const [inventory, setInventory] = useState<McpInventory>(() => legacyInventory(detail))
   const [loading, setLoading] = useState(true)
@@ -44,32 +62,41 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
   const [notice, setNotice] = useState<string | null>(null)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [editorError, setEditorError] = useState<string | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<McpServerEntry | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<{ server: McpServerEntry; revision: string } | null>(null)
   const [inspectorTarget, setInspectorTarget] = useState<McpInspectorTarget | null>(null)
   const [inspectionResults, setInspectionResults] = useState<Record<string, McpInspectionReport>>({})
+  const latestScan = useRef(0)
+
+  const isCurrentSelection = () => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    const skill = useSkillStoreV2.getState()
+    return runtime.selectedEnvironmentId === environmentId
+      && runtime.selectionRevision === runtimeRevision
+      && skill.runtimeEnvironmentId === environmentId
+      && skill.selectedAgentId === detail.id
+      && skill.agentSelectionRevision === agentRevision
+  }
 
   const load = async () => {
+    if (!isCurrentSelection()) return
+    const scan = ++latestScan.current
+    const isCurrentScan = () => scan === latestScan.current && isCurrentSelection()
     setLoading(true)
     setError(null)
     try {
-      const next = await skillApiV2.listMcpInventory(detail.id)
-      setInventory(mergeLegacyInventory(next, detail))
+      const next = await skillApiV2.listMcpInventory(detail.id, environmentId)
+      if (isCurrentScan()) setInventory(mergeLegacyInventory(next, detail))
     } catch (nextError) {
-      setError(String(nextError))
+      if (isCurrentScan()) setError(String(nextError))
     } finally {
-      setLoading(false)
+      if (isCurrentScan()) setLoading(false)
     }
   }
 
+  const loadOnMount = useEffectEvent(() => { void load() })
   useEffect(() => {
-    setInventory(legacyInventory(detail))
-    setEditor(null)
-    setDeleteTarget(null)
-    setInspectorTarget(null)
-    setInspectionResults({})
-    void load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail.id])
+    loadOnMount()
+  }, [])
 
   useEffect(() => {
     if (!notice) return
@@ -85,7 +112,6 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
     setEditorError(null)
     setEditor({
       originalName: null,
-      selection: readMcpEditorSelection(),
       draft: emptyDraft(firstSupportedTransport(inventory)),
     })
   }
@@ -94,39 +120,26 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
     setEditorError(null)
     setEditor({
       originalName: server.name,
-      selection: readMcpEditorSelection(),
       draft: {
         name: server.name,
         transport: server.transport,
         command: server.command,
         args: [...server.args],
-        env: server.env.map((value) => ({ ...value })),
+        env: server.env.map((value, rowId) => ({ ...value, rowId })),
         cwd: server.cwd,
         url: server.url,
-        headers: server.headers.map((value) => ({ ...value })),
+        headers: server.headers.map((value, rowId) => ({ ...value, rowId })),
       },
     })
   }
 
   const startInspection = (server: McpServerEntry) => {
-    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
-    setInspectorTarget({ server, environmentId: selectedEnvironmentId, selectionRevision })
+    if (!isCurrentSelection()) return
+    setInspectorTarget({ server, environmentId, selectionRevision: runtimeRevision })
   }
 
   const save = async () => {
-    if (!editor) return
-    const matchesSelection = () => {
-      const current = readMcpEditorSelection()
-      const reviewed = editor.selection
-      if (current.environmentId === reviewed.environmentId
-        && current.runtimeRevision === reviewed.runtimeRevision
-        && current.agentId === reviewed.agentId
-        && current.agentRevision === reviewed.agentRevision) return true
-
-      setEditor((active) => active?.selection === reviewed ? null : active)
-      return false
-    }
-    if (!matchesSelection()) return
+    if (!editor || !isCurrentSelection()) return
     const draft = normalizeDraft(editor.draft)
     setBusyAction('save')
     setEditorError(null)
@@ -135,8 +148,9 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         detail.id,
         draft,
         editor.originalName,
+        environmentId,
       )
-      if (!matchesSelection()) return
+      if (!isCurrentSelection()) return
       if (!validation.valid) {
         setEditorError(validation.message)
         return
@@ -146,20 +160,22 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         draft,
         inventory.revision,
         editor.originalName,
+        environmentId,
       )
-      if (!matchesSelection()) return
+      if (!isCurrentSelection()) return
       setInventory(next)
       setEditor(null)
       setNotice(t('skills.mcpManagement.saved', { name: draft.name }))
       setError(null)
     } catch (nextError) {
-      if (matchesSelection()) setEditorError(String(nextError))
+      if (isCurrentSelection()) setEditorError(String(nextError))
     } finally {
-      setBusyAction(null)
+      if (isCurrentSelection()) setBusyAction(null)
     }
   }
 
   const toggle = async (server: McpServerEntry) => {
+    if (!isCurrentSelection()) return
     const action = `toggle:${server.name}`
     setBusyAction(action)
     setError(null)
@@ -169,42 +185,47 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         server.name,
         inventory.revision,
         !server.enabled,
+        environmentId,
       )
+      if (!isCurrentSelection()) return
       setInventory(next)
       setNotice(t(
         server.enabled ? 'skills.mcpManagement.disabled' : 'skills.mcpManagement.enabled',
         { name: server.name },
       ))
     } catch (nextError) {
-      setError(String(nextError))
+      if (isCurrentSelection()) setError(String(nextError))
     } finally {
-      setBusyAction(null)
+      if (isCurrentSelection()) setBusyAction(null)
     }
   }
 
   const remove = async () => {
-    if (!deleteTarget) return
-    const action = `delete:${deleteTarget.name}`
+    if (!deleteTarget || !isCurrentSelection()) return
+    const { server, revision } = deleteTarget
+    const action = `delete:${server.name}`
     setBusyAction(action)
     setError(null)
     try {
       const next = await skillApiV2.deleteMcpServer(
         detail.id,
-        deleteTarget.name,
-        inventory.revision,
+        server.name,
+        revision,
+        environmentId,
       )
+      if (!isCurrentSelection()) return
       setInventory(next)
       setInspectionResults((current) => {
         const nextResults = { ...current }
-        delete nextResults[deleteTarget.name]
+        delete nextResults[server.name]
         return nextResults
       })
-      setNotice(t('skills.mcpManagement.deleted', { name: deleteTarget.name }))
+      setNotice(t('skills.mcpManagement.deleted', { name: server.name }))
       setDeleteTarget(null)
     } catch (nextError) {
-      setError(String(nextError))
+      if (isCurrentSelection()) setError(String(nextError))
     } finally {
-      setBusyAction(null)
+      if (isCurrentSelection()) setBusyAction(null)
     }
   }
 
@@ -262,13 +283,14 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
             <McpServerRow
               key={server.name}
               server={server}
+              sourcePath={server.configPath !== inventory.configPath ? server.configPath : undefined}
               result={inspectionResults[server.name]}
               toggleBusy={busyAction === `toggle:${server.name}`}
               actionsDisabled={actionsDisabled}
               onToggle={() => void toggle(server)}
               onInspect={() => startInspection(server)}
               onEdit={() => startEdit(server)}
-              onDelete={() => setDeleteTarget(server)}
+              onDelete={() => setDeleteTarget({ server, revision: inventory.revision })}
             />
           ))}
         </section>
@@ -309,19 +331,19 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
 
       {deleteTarget && (
         <PreviewDialog
-          title={t('skills.mcpManagement.deleteTitle', { name: deleteTarget.name })}
+          title={t('skills.mcpManagement.deleteTitle', { name: deleteTarget.server.name })}
           confirmLabel={t('skills.mcpManagement.deleteConfirm')}
           busyLabel={t('skills.mcpManagement.deleting')}
           destructive
-          busy={busyAction === `delete:${deleteTarget.name}`}
+          busy={busyAction === `delete:${deleteTarget.server.name}`}
           onCancel={() => setDeleteTarget(null)}
           onConfirm={() => void remove()}
         >
           <p>{t('skills.mcpManagement.deleteDescription', {
-            name: deleteTarget.name,
+            name: deleteTarget.server.name,
             agent: detail.displayName,
           })}</p>
-          <code>{deleteTarget.configPath}</code>
+          <code>{deleteTarget.server.configPath}</code>
         </PreviewDialog>
       )}
     </div>
@@ -347,6 +369,7 @@ function McpStat({
 
 function McpServerRow({
   server,
+  sourcePath,
   result,
   toggleBusy,
   actionsDisabled,
@@ -356,6 +379,7 @@ function McpServerRow({
   onDelete,
 }: {
   server: McpServerEntry
+  sourcePath?: string
   result?: McpInspectionReport
   toggleBusy: boolean
   actionsDisabled: boolean
@@ -388,6 +412,7 @@ function McpServerRow({
           )}
         </div>
         <code className="sm2__mcp-command">{connection}</code>
+        {sourcePath && <code className="sm2__mcp-command" title={sourcePath}>{sourcePath}</code>}
         <span className="sm2__mcp-message">{server.message}</span>
         {server.warnings.length > 0 && (
           <span className="sm2__mcp-warning">{server.warnings.join('；')}</span>
@@ -454,7 +479,7 @@ function McpEditor({
 }) {
   const { t } = useTranslation()
   const draft = editor.draft
-  const setDraft = (patch: Partial<McpServerDraft>) =>
+  const setDraft = (patch: Partial<McpEditorDraft>) =>
     onChange({ ...editor, draft: { ...draft, ...patch } })
   const transports = useMemo(() => ([
     capabilities.supportsStdio && 'stdio',
@@ -487,7 +512,7 @@ function McpEditor({
                 type="button"
                 aria-pressed={draft.transport === transport}
                 disabled={busy}
-                onClick={() => setDraft(transportDraft(draft, transport))}
+                onClick={() => setDraft({ transport })}
               >
                 {t(`skills.mcpManagement.editor.transportShortOptions.${transport}`)}
               </button>
@@ -638,9 +663,9 @@ function ConfigValueEditor({
 }: {
   label: string
   addLabel: string
-  values: McpConfigValue[]
+  values: ConfigValueRow[]
   disabled: boolean
-  onChange: (values: McpConfigValue[]) => void
+  onChange: (values: ConfigValueRow[]) => void
 }) {
   const { t } = useTranslation()
   const update = (index: number, patch: Partial<McpConfigValue>) =>
@@ -649,7 +674,7 @@ function ConfigValueEditor({
     <div className="sm2__mcp-repeat-field">
       <label>{label}</label>
       {values.map((item, index) => (
-        <div className="sm2__mcp-kv-row" key={`${index}-${item.key}`}>
+        <div className="sm2__mcp-kv-row" key={item.rowId}>
           <input
             value={item.key}
             disabled={disabled}
@@ -666,8 +691,7 @@ function ConfigValueEditor({
               ? t('skills.mcpManagement.editor.secretConfigured')
               : t('skills.mcpManagement.editor.value')}
             onChange={(event) => update(index, {
-              value: event.target.value || null,
-              configured: Boolean(event.target.value),
+              value: event.target.value || (item.secret && item.configured ? null : ''),
             })}
           />
           <button
@@ -686,6 +710,7 @@ function ConfigValueEditor({
         type="button"
         disabled={disabled}
         onClick={() => onChange([...values, {
+          rowId: (values.at(-1)?.rowId ?? -1) + 1,
           key: '',
           value: '',
           secret: false,
@@ -698,7 +723,7 @@ function ConfigValueEditor({
   )
 }
 
-function emptyDraft(transport: McpTransport): McpServerDraft {
+function emptyDraft(transport: McpTransport): McpEditorDraft {
   return {
     name: '',
     transport,
@@ -717,25 +742,20 @@ function firstSupportedTransport(inventory: McpInventory): McpTransport {
   return 'sse'
 }
 
-function transportDraft(draft: McpServerDraft, transport: McpTransport): Partial<McpServerDraft> {
-  return transport === 'stdio'
-    ? { transport, command: draft.command || '', url: null, headers: [] }
-    : { transport, command: null, args: [], env: [], cwd: null, url: draft.url || '' }
-}
-
-function normalizeDraft(draft: McpServerDraft): McpServerDraft {
-  const normalizeValues = (values: McpConfigValue[]) => values
-    .map((item) => ({
-      ...item,
-      key: item.key.trim(),
-      value: item.value === SECRET_PLACEHOLDER ? null : item.value,
+function normalizeDraft(draft: McpEditorDraft): McpServerDraft {
+  const normalizeValues = (values: ConfigValueRow[]): McpConfigValue[] => values
+    .map(({ key, value, secret, configured }) => ({
+      key: key.trim(),
+      value: value === SECRET_PLACEHOLDER ? null : value,
+      secret,
+      configured: configured || value !== null,
     }))
     .filter((item) => item.key)
   return {
     ...draft,
     name: draft.name.trim(),
     command: draft.transport === 'stdio' ? draft.command?.trim() || null : null,
-    args: draft.transport === 'stdio' ? draft.args.filter((value) => value.length > 0) : [],
+    args: draft.transport === 'stdio' ? draft.args : [],
     env: draft.transport === 'stdio' ? normalizeValues(draft.env) : [],
     cwd: draft.transport === 'stdio' ? draft.cwd?.trim() || null : null,
     url: draft.transport === 'stdio' ? null : draft.url?.trim() || null,
@@ -777,6 +797,7 @@ function legacyInventory(detail: AgentDetail): McpInventory {
 }
 
 function mergeLegacyInventory(inventory: McpInventory, detail: AgentDetail): McpInventory {
+  if (inventory.agentId === 'opencode') return inventory
   const configuredNames = new Set(inventory.servers.map((server) => server.name))
   const supplemental = legacyInventory(detail).servers.filter(
     (server) => !configuredNames.has(server.name),
