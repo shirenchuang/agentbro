@@ -429,11 +429,8 @@ function Test-InstalledPinnedPackManifest(
         @($paths | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }).Count -eq 0 -and
             -not (Find-PackControl $settings '执行应用')
     }
-    $heroClass = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::ClassNameProperty, 'sm2__pack-detail-hero')
-    $null = Wait-IslandValue 'the Pack header refreshed with one applied Agent' {
-        $header = $settings.FindFirst([Windows.Automation.TreeScope]::Descendants, $heroClass)
-        if ($header) { Find-PackControl $header '1 Agents' }
+    $null = Wait-IslandValue 'the refreshed Pack with one applied Agent' {
+        Find-PackControl $settings '已应用 Agent 1' ([Windows.Automation.ControlType]::TabItem)
     }
     foreach ($id in $importedIds) {
         $target = Join-Path $agentSkillRoot $id
