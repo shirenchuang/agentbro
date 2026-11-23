@@ -490,6 +490,32 @@ describe('McpManagementTab', () => {
     expect(toggle).toHaveBeenCalledExactlyOnceWith('codex', 'context7', 'sha256:rescanned', false, LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
 
+  it('shows the OpenCode source and drops removed entries on rescan', async () => {
+    const configPath = '/Users/me/.config/opencode/opencode.json'
+    const opencode = {
+      ...inventory([server({ name: 'demo', configPath, editable: false })]),
+      agentId: 'opencode',
+      configPath: configPath + 'c',
+      capabilities: { ...inventory().capabilities, editable: false },
+    }
+    vi.spyOn(skillApiV2, 'listMcpInventory')
+      .mockResolvedValueOnce(opencode)
+      .mockResolvedValue({ ...opencode, servers: [] })
+    useSkillStoreV2.setState({ selectedAgentId: 'opencode' })
+
+    render(<McpManagementTab detail={{
+      ...detail,
+      id: 'opencode',
+      mcpServers: [{ name: 'demo', command: 'npx', args: [], valid: true, message: 'configured' }],
+    }} />)
+    expect(await screen.findByText(configPath)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '新增 MCP' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '删除' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重新扫描' }))
+    await screen.findByText('还没有 MCP 服务器')
+    expect(screen.queryByText('demo')).not.toBeInTheDocument()
+  })
+
   it.each(['switch hosts', 'switch hosts and back'])('discards a reviewed MCP deletion after %s', async (change) => {
     const runtime = useRuntimeEnvironmentStore.getState()
     const tauriInvoke = vi.mocked(invoke)

@@ -283,6 +283,7 @@ function McpManagementView({ detail, environmentId, runtimeRevision, agentRevisi
             <McpServerRow
               key={server.name}
               server={server}
+              sourcePath={server.configPath !== inventory.configPath ? server.configPath : undefined}
               result={inspectionResults[server.name]}
               toggleBusy={busyAction === `toggle:${server.name}`}
               actionsDisabled={actionsDisabled}
@@ -368,6 +369,7 @@ function McpStat({
 
 function McpServerRow({
   server,
+  sourcePath,
   result,
   toggleBusy,
   actionsDisabled,
@@ -377,6 +379,7 @@ function McpServerRow({
   onDelete,
 }: {
   server: McpServerEntry
+  sourcePath?: string
   result?: McpInspectionReport
   toggleBusy: boolean
   actionsDisabled: boolean
@@ -409,6 +412,7 @@ function McpServerRow({
           )}
         </div>
         <code className="sm2__mcp-command">{connection}</code>
+        {sourcePath && <code className="sm2__mcp-command" title={sourcePath}>{sourcePath}</code>}
         <span className="sm2__mcp-message">{server.message}</span>
         {server.warnings.length > 0 && (
           <span className="sm2__mcp-warning">{server.warnings.join('；')}</span>
@@ -793,6 +797,7 @@ function legacyInventory(detail: AgentDetail): McpInventory {
 }
 
 function mergeLegacyInventory(inventory: McpInventory, detail: AgentDetail): McpInventory {
+  if (inventory.agentId === 'opencode') return inventory
   const configuredNames = new Set(inventory.servers.map((server) => server.name))
   const supplemental = legacyInventory(detail).servers.filter(
     (server) => !configuredNames.has(server.name),
