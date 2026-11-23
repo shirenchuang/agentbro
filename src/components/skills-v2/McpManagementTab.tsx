@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   skillApiV2,
@@ -19,23 +19,35 @@ import { SlideOver } from './SlideOver'
 interface EditorState {
   originalName: string | null
   draft: McpServerDraft
-  selection: ReturnType<typeof readMcpEditorSelection>
-}
-
-function readMcpEditorSelection() {
-  const runtime = useRuntimeEnvironmentStore.getState()
-  const skill = useSkillStoreV2.getState()
-  return {
-    environmentId: runtime.selectedEnvironmentId,
-    runtimeRevision: runtime.selectionRevision,
-    agentId: skill.selectedAgentId,
-    agentRevision: skill.agentSelectionRevision,
-  }
 }
 
 const SECRET_PLACEHOLDER = '••••••••'
 
 export function McpManagementTab({ detail }: { detail: AgentDetail }) {
+  const environmentId = useRuntimeEnvironmentStore((state) => state.selectedEnvironmentId)
+  const runtimeRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
+  const detailEnvironmentId = useSkillStoreV2((state) => state.runtimeEnvironmentId)
+  const agentId = useSkillStoreV2((state) => state.selectedAgentId)
+  const agentRevision = useSkillStoreV2((state) => state.agentSelectionRevision)
+  if (detailEnvironmentId !== environmentId || agentId !== detail.id) return null
+
+  return (
+    <McpManagementView
+      key={`${environmentId}:${runtimeRevision}:${agentRevision}:${agentId}`}
+      detail={detail}
+      environmentId={environmentId}
+      runtimeRevision={runtimeRevision}
+      agentRevision={agentRevision}
+    />
+  )
+}
+
+function McpManagementView({ detail, environmentId, runtimeRevision, agentRevision }: {
+  detail: AgentDetail
+  environmentId: string
+  runtimeRevision: number
+  agentRevision: number
+}) {
   const { t } = useTranslation()
   const [inventory, setInventory] = useState<McpInventory>(() => legacyInventory(detail))
   const [loading, setLoading] = useState(true)
@@ -44,32 +56,41 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
   const [notice, setNotice] = useState<string | null>(null)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [editorError, setEditorError] = useState<string | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<McpServerEntry | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<{ server: McpServerEntry; revision: string } | null>(null)
   const [inspectorTarget, setInspectorTarget] = useState<McpInspectorTarget | null>(null)
   const [inspectionResults, setInspectionResults] = useState<Record<string, McpInspectionReport>>({})
+  const latestScan = useRef(0)
+
+  const isCurrentSelection = () => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    const skill = useSkillStoreV2.getState()
+    return runtime.selectedEnvironmentId === environmentId
+      && runtime.selectionRevision === runtimeRevision
+      && skill.runtimeEnvironmentId === environmentId
+      && skill.selectedAgentId === detail.id
+      && skill.agentSelectionRevision === agentRevision
+  }
 
   const load = async () => {
+    if (!isCurrentSelection()) return
+    const scan = ++latestScan.current
+    const isCurrentScan = () => scan === latestScan.current && isCurrentSelection()
     setLoading(true)
     setError(null)
     try {
-      const next = await skillApiV2.listMcpInventory(detail.id)
-      setInventory(mergeLegacyInventory(next, detail))
+      const next = await skillApiV2.listMcpInventory(detail.id, environmentId)
+      if (isCurrentScan()) setInventory(mergeLegacyInventory(next, detail))
     } catch (nextError) {
-      setError(String(nextError))
+      if (isCurrentScan()) setError(String(nextError))
     } finally {
-      setLoading(false)
+      if (isCurrentScan()) setLoading(false)
     }
   }
 
+  const loadOnMount = useEffectEvent(() => { void load() })
   useEffect(() => {
-    setInventory(legacyInventory(detail))
-    setEditor(null)
-    setDeleteTarget(null)
-    setInspectorTarget(null)
-    setInspectionResults({})
-    void load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail.id])
+    loadOnMount()
+  }, [])
 
   useEffect(() => {
     if (!notice) return
@@ -85,7 +106,6 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
     setEditorError(null)
     setEditor({
       originalName: null,
-      selection: readMcpEditorSelection(),
       draft: emptyDraft(firstSupportedTransport(inventory)),
     })
   }
@@ -94,7 +114,6 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
     setEditorError(null)
     setEditor({
       originalName: server.name,
-      selection: readMcpEditorSelection(),
       draft: {
         name: server.name,
         transport: server.transport,
@@ -109,24 +128,12 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
   }
 
   const startInspection = (server: McpServerEntry) => {
-    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
-    setInspectorTarget({ server, environmentId: selectedEnvironmentId, selectionRevision })
+    if (!isCurrentSelection()) return
+    setInspectorTarget({ server, environmentId, selectionRevision: runtimeRevision })
   }
 
   const save = async () => {
-    if (!editor) return
-    const matchesSelection = () => {
-      const current = readMcpEditorSelection()
-      const reviewed = editor.selection
-      if (current.environmentId === reviewed.environmentId
-        && current.runtimeRevision === reviewed.runtimeRevision
-        && current.agentId === reviewed.agentId
-        && current.agentRevision === reviewed.agentRevision) return true
-
-      setEditor((active) => active?.selection === reviewed ? null : active)
-      return false
-    }
-    if (!matchesSelection()) return
+    if (!editor || !isCurrentSelection()) return
     const draft = normalizeDraft(editor.draft)
     setBusyAction('save')
     setEditorError(null)
@@ -135,8 +142,9 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         detail.id,
         draft,
         editor.originalName,
+        environmentId,
       )
-      if (!matchesSelection()) return
+      if (!isCurrentSelection()) return
       if (!validation.valid) {
         setEditorError(validation.message)
         return
@@ -146,20 +154,22 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         draft,
         inventory.revision,
         editor.originalName,
+        environmentId,
       )
-      if (!matchesSelection()) return
+      if (!isCurrentSelection()) return
       setInventory(next)
       setEditor(null)
       setNotice(t('skills.mcpManagement.saved', { name: draft.name }))
       setError(null)
     } catch (nextError) {
-      if (matchesSelection()) setEditorError(String(nextError))
+      if (isCurrentSelection()) setEditorError(String(nextError))
     } finally {
-      setBusyAction(null)
+      if (isCurrentSelection()) setBusyAction(null)
     }
   }
 
   const toggle = async (server: McpServerEntry) => {
+    if (!isCurrentSelection()) return
     const action = `toggle:${server.name}`
     setBusyAction(action)
     setError(null)
@@ -169,42 +179,47 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         server.name,
         inventory.revision,
         !server.enabled,
+        environmentId,
       )
+      if (!isCurrentSelection()) return
       setInventory(next)
       setNotice(t(
         server.enabled ? 'skills.mcpManagement.disabled' : 'skills.mcpManagement.enabled',
         { name: server.name },
       ))
     } catch (nextError) {
-      setError(String(nextError))
+      if (isCurrentSelection()) setError(String(nextError))
     } finally {
-      setBusyAction(null)
+      if (isCurrentSelection()) setBusyAction(null)
     }
   }
 
   const remove = async () => {
-    if (!deleteTarget) return
-    const action = `delete:${deleteTarget.name}`
+    if (!deleteTarget || !isCurrentSelection()) return
+    const { server, revision } = deleteTarget
+    const action = `delete:${server.name}`
     setBusyAction(action)
     setError(null)
     try {
       const next = await skillApiV2.deleteMcpServer(
         detail.id,
-        deleteTarget.name,
-        inventory.revision,
+        server.name,
+        revision,
+        environmentId,
       )
+      if (!isCurrentSelection()) return
       setInventory(next)
       setInspectionResults((current) => {
         const nextResults = { ...current }
-        delete nextResults[deleteTarget.name]
+        delete nextResults[server.name]
         return nextResults
       })
-      setNotice(t('skills.mcpManagement.deleted', { name: deleteTarget.name }))
+      setNotice(t('skills.mcpManagement.deleted', { name: server.name }))
       setDeleteTarget(null)
     } catch (nextError) {
-      setError(String(nextError))
+      if (isCurrentSelection()) setError(String(nextError))
     } finally {
-      setBusyAction(null)
+      if (isCurrentSelection()) setBusyAction(null)
     }
   }
 
@@ -268,7 +283,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
               onToggle={() => void toggle(server)}
               onInspect={() => startInspection(server)}
               onEdit={() => startEdit(server)}
-              onDelete={() => setDeleteTarget(server)}
+              onDelete={() => setDeleteTarget({ server, revision: inventory.revision })}
             />
           ))}
         </section>
@@ -309,19 +324,19 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
 
       {deleteTarget && (
         <PreviewDialog
-          title={t('skills.mcpManagement.deleteTitle', { name: deleteTarget.name })}
+          title={t('skills.mcpManagement.deleteTitle', { name: deleteTarget.server.name })}
           confirmLabel={t('skills.mcpManagement.deleteConfirm')}
           busyLabel={t('skills.mcpManagement.deleting')}
           destructive
-          busy={busyAction === `delete:${deleteTarget.name}`}
+          busy={busyAction === `delete:${deleteTarget.server.name}`}
           onCancel={() => setDeleteTarget(null)}
           onConfirm={() => void remove()}
         >
           <p>{t('skills.mcpManagement.deleteDescription', {
-            name: deleteTarget.name,
+            name: deleteTarget.server.name,
             agent: detail.displayName,
           })}</p>
-          <code>{deleteTarget.configPath}</code>
+          <code>{deleteTarget.server.configPath}</code>
         </PreviewDialog>
       )}
     </div>
