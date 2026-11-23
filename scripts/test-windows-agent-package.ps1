@@ -238,6 +238,35 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     $update = Wait-IslandValue 'the Claude Code update action' {
         Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }
     }
+    $npm = Join-Path $fixtureStage 'bin\npm.cmd'
+    $savedNpm = Join-Path $fixtureStage 'npm.saved.cmd'
+    $invalidNpm = Join-Path $fixtureStage 'bin\npm.exe'
+    Move-Item -LiteralPath $npm -Destination $savedNpm
+    try {
+        Set-Content -LiteralPath $invalidNpm -Value 'Not a Windows executable' -Encoding ascii
+        Invoke-PackControl $update
+        $null = Wait-IslandValue 'the Windows package launch error' {
+            (Test-PackVisibleText $settings '(os error 193)') -or
+                (Test-PackVisibleText $settings '(os error 216)')
+        }
+        Write-Output 'Agent Management received the Windows package launch error.'
+        $null = Wait-IslandValue 'the package launch error in the retained transcript' {
+            Test-PackVisibleText $settings '! Could not start package command'
+        }
+        Write-Output 'The package transcript retained the terminal launch error.'
+    } finally {
+        Remove-Item -LiteralPath $invalidNpm -ErrorAction SilentlyContinue
+        Move-Item -LiteralPath $savedNpm -Destination $npm
+    }
+    $refresh = Wait-IslandValue 'the enabled version refresh after restoring npm' {
+        $button = Find-PackControl $settings '获取版本'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Invoke-PackControl $refresh
+    $update = Wait-IslandValue 'the enabled update after restoring npm' {
+        $button = Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
     Invoke-PackControl $update
     try {
         $null = Wait-IslandValue 'the running fixture update' {
