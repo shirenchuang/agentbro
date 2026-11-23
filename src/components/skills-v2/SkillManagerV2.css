@@ -664,6 +664,20 @@
   gap: 6px;
 }
 
+.sm2__pack-manifest-copy {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.sm2__pack-manifest-copy .sm2__field {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+}
+
 .sm2__pack-manifest-members .sm2__pack-manifest-member-error {
   flex-basis: 100%;
   margin: 0;

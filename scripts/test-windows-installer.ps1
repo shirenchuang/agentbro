@@ -242,7 +242,7 @@ if ($VerifyPinnedPackManifest) {
         throw 'The pinned Git checkout fixture requires an isolated GitHub-hosted runner'
     }
     $repo = Join-Path $stage 'Pinned Pack Git fixture'
-    $members = @('review', 'release')
+    $members = @('review', 'release', 'support')
     $recorded = @{}
     foreach ($member in $members) {
         $relativePath = "skills/$member/SKILL.md"
@@ -276,6 +276,9 @@ if ($VerifyPinnedPackManifest) {
     $skillIds = foreach ($member in $members) {
         $id = "windows-pinned-$member-$suffix"
         $packFixtures += Join-Path $profileDirectory ".agentbro\skills\$id"
+        if ($member -eq $members[0]) {
+            $packFixtures += Join-Path $profileDirectory ".agentbro\skills\${id}-restored"
+        }
         $content = $recorded[$member]
         $bytes = [Text.Encoding]::UTF8.GetBytes("SKILL.md`0$([Text.Encoding]::UTF8.GetByteCount($content))`0$content")
         $fingerprints[$id] = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
