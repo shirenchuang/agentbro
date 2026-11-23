@@ -243,7 +243,7 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
             -not (Find-PackControl $settings '确认卸载')
     }
     Write-Output 'The uninstall confirmation focused Cancel and restored focus after native Escape.'
-    Invoke-PackControl $uninstall
+    [AgentBroSmokeInput]::PressKeyInWindow($handle, 0x20)
     $confirm = Wait-IslandValue 'the uninstall confirmation' { Find-PackControl $settings '确认卸载' }
     Invoke-PackControl $confirm
     $null = Wait-IslandValue 'the Agent still detected after the first uninstall' {
