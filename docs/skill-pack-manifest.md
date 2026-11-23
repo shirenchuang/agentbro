@@ -4,7 +4,9 @@ Use **Export Skill Pack** in a pack’s more-actions menu to save its definition
 
 Use **Import Skill Pack** on the Skill Packs page to open the file. The preview lists the exact Skill IDs in order and compares recorded fingerprints with files in the selected local or SSH center library. Install missing Skills and select **Recheck Skills**. If the library has a different copy or the manifest omits a fingerprint, you can confirm that you want to use the copy in the selected library. Confirming creates a new pack that you can apply to Agents through the usual Skill Packs workflow.
 
-Use **Export with GitHub sources** to include available repository paths and exact commits. In the import preview, **Restore missing Skills** restores the missing members that have a recorded source, then compares the library again. You can also restore individual members. If one Skill fails, the preview shows its error and lets you retry it. Select **Create Skill Pack** when the reviewed members are ready.
+Use **Export with GitHub sources** to check the recorded repository paths and commits against the current library files. The export keeps the current fingerprints and includes only sources that can reproduce them. The result reports how many sources were verified. Use **Export Skill Pack** to save the definition and fingerprints offline.
+
+In the import preview, **Restore missing Skills** restores the missing members that have a recorded source, then compares the library again. You can also restore individual members. If one Skill fails, the preview shows its error and lets you retry it. Select **Create Skill Pack** when the reviewed members are ready.
 
 ```json
 {

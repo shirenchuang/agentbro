@@ -366,6 +366,18 @@ function Test-InstalledPinnedPackManifest(
     $null = Wait-IslandValue 'the imported pinned Skill Pack notice' {
         Find-PackControl $settings "Imported $($manifest.name) as a new Skill Pack."
     }
+    $editedId = $manifest.skillIds[0]
+    $editedPath = Join-Path $skillRoot "$editedId\SKILL.md"
+    $editedContent = (Get-Content -LiteralPath $editedPath -Encoding UTF8 -Raw) -replace '\r\n', "`n"
+    $editedContent += "`nEdited on this machine.`n"
+    [IO.File]::WriteAllText($editedPath, $editedContent, [Text.UTF8Encoding]::new($false))
+    $editedBytes = [Text.Encoding]::UTF8.GetBytes("SKILL.md`0$([Text.Encoding]::UTF8.GetByteCount($editedContent))`0$editedContent")
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $editedHash = [BitConverter]::ToString($sha256.ComputeHash($editedBytes)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
     $menu = Wait-IslandValue 'the new pinned pack actions menu' { Find-PackControl $settings '更多操作' }
     Invoke-PackControl $menu
     $export = Wait-IslandValue 'the Export with GitHub sources action' {
@@ -379,13 +391,21 @@ function Test-InstalledPinnedPackManifest(
         throw 'The exported Pack did not retain the version and member order.'
     }
     foreach ($skillId in $manifest.skillIds) {
+        $pinProperty = $saved.skillSources.PSObject.Properties[$skillId]
+        $hash = $saved.skillFingerprints.PSObject.Properties[$skillId].Value
+        if ($skillId -ceq $editedId) {
+            if ($pinProperty -or $hash -cne $editedHash) {
+                throw "The exported Pack did not preserve the edited fingerprint separately from the old source for $skillId."
+            }
+            continue
+        }
         $expected = $manifest.skillSources.PSObject.Properties[$skillId].Value
-        $pin = $saved.skillSources.PSObject.Properties[$skillId].Value
+        $pin = $pinProperty.Value
         if ($pin.repository -cne $expected.repository -or $pin.commit -cne $expected.commit -or
             $pin.skillPath -cne $expected.skillPath -or
-            $saved.skillFingerprints.PSObject.Properties[$skillId].Value -cne $manifest.skillFingerprints.PSObject.Properties[$skillId].Value) {
+            $hash -cne $manifest.skillFingerprints.PSObject.Properties[$skillId].Value) {
             throw "The exported Pack did not retain the verified GitHub source and fingerprint for $skillId."
         }
     }
-    Write-Output 'The installed app batch restored both Skills from the recorded Git commit, matched their fingerprints, and exported both pinned sources through native dialogs.'
+    Write-Output 'The installed app restored both Skills from the recorded Git commit, exported the edited fingerprint without its old pin, and retained the unchanged Skill source.'
 }

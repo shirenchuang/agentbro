@@ -8426,22 +8426,30 @@ describe('Skill detail slider + agent page render without crashing', () => {
     })
   })
 
-  it('exports pinned GitHub sources only when explicitly requested', async () => {
-    const { skill } = await renderPackPage()
+  it('exports the verified GitHub sources and keeps fingerprints for edited Skills', async () => {
+    const { pack, skill } = await renderPackPage()
     const file = '/Team/pinned.agentbro-pack.json'
     const source = { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' }
+    const edited = 'edited-review'
+    act(() => useSkillStoreV2.setState({ selectedPackDetail: {
+      ...pack,
+      members: [...pack.members, { ...pack.members[0], skillId: edited, sortOrder: 1 }],
+    } }))
     vi.mocked(saveDialog).mockResolvedValueOnce(file)
     const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints').mockResolvedValue([
       { skillId: skill.id, missing: false, fingerprint: 'a'.repeat(64), source },
+      { skillId: edited, missing: false, fingerprint: 'c'.repeat(64) },
     ])
     const write = vi.spyOn(skillApiV2, 'writePackManifest').mockResolvedValue(undefined)
     fireEvent.click(screen.getByLabelText('更多操作'))
     fireEvent.click(screen.getByRole('menuitem', { name: '导出并包含 GitHub 来源' }))
+    expect(await screen.findByText('技能包已导出。2 个技能中，1 个的 GitHub 来源已核实。')).toBeInTheDocument()
     await waitFor(() => expect(write).toHaveBeenCalledWith(file, expect.objectContaining({
       version: 3,
       skillSources: { [skill.id]: source },
+      skillFingerprints: { [skill.id]: 'a'.repeat(64), [edited]: 'c'.repeat(64) },
     })))
-    expect(fingerprints).toHaveBeenCalledWith([skill.id], LOCAL_RUNTIME_ENVIRONMENT_ID, true)
+    expect(fingerprints).toHaveBeenCalledWith([skill.id, edited], LOCAL_RUNTIME_ENVIRONMENT_ID, true)
   })
 
   it('reports a failed individual restore and requires a fresh comparison before creating the Pack', async () => {
