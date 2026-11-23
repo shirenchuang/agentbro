@@ -592,6 +592,7 @@ export interface DistributionChange {
   actualMode?: 'link' | 'copy'
   reason?: string
   targetPath: string
+  sourceFingerprint?: string
   targetFingerprint?: string
 }
 
