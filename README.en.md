@@ -118,9 +118,12 @@ If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Doubao, Qoder, OpenCode
 - Install and repair hooks per agent, inspect bridge commands and config paths, and control approval, notification, lifecycle, and activity events separately.
 - Scan skills scattered across agent folders, adopt them into a center library, and distribute them to agents or projects by symlink or copy. Batch jobs, conflict decisions, and diagnostics stay visible.
 - Group common skills into reusable packs, apply them to several agents, and safely revoke them later.
-- Manage stdio, HTTP, and SSE MCP servers. Inspect tools, resources, prompts, and connection logs, with arguments and a risk confirmation before tool calls.
+- [Import and export Skill Pack manifests](docs/skill-pack-manifest.md) to share and maintain pack definitions in your own Git repository.
+- Manage stdio, HTTP, and SSE MCP servers. Inspect tools, resources, prompts, and connection logs, with arguments and a risk confirmation before tool calls. Cancelling closes AgentBro's connection. Actions the server has already performed can still take effect.
+- Over SSH, list and inspect stdio and HTTP MCP servers from the remote Codex TOML configuration. Reading the file requires Python 3.11 or later, or an existing `tomli` installation on older Python. Credentials are read and used on the SSH host.
 - Browse plugins for Codex, Claude Code, WorkBuddy, ZCode, Kimi, and other supported agents. Search, enable or disable supported plugins, inspect manifests and packaged capabilities, and preview files.
 - Edit supported JSON or text config files with validation. The Projects view imports repositories and checks project-level instructions, skills, MCP servers, and plugins.
+- Preview skills.sh project lock files and select missing GitHub Skills to restore to the project's .agents/skills directory. Restoration verifies the v2 content hash and preserves existing entries. [skills.sh lock format](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
 
 <table>
   <tr>
@@ -159,16 +162,19 @@ AgentBro supports agents at two levels. Runtime hook adapters send session event
 
 | Scope | Agents |
 | --- | --- |
-| Island / hook integration | Claude Code, Codex, Gemini CLI, Cursor / Cursor CLI, GitHub Copilot, Cline, Qoder / Qoder CLI, CodeBuddy / CodeBuddy CN, Qwen, Kimi, DeepSeek, OpenCode, Factory Droid, StepFun, AntiGravity, WorkBuddy, Hermes, Pi, Kiro, ZCode |
+| Island / hook integration | Claude Code, Codex, Gemini CLI, Cursor / Cursor CLI, GitHub Copilot, Cline, Qoder / Qoder CLI, CodeBuddy / CodeBuddy CN, Qwen, Kimi, DeepSeek, OpenCode, Factory Droid, StepFun, AntiGravity, WorkBuddy / WorkBuddy AI, Hermes, Pi, Kiro, ZCode |
 | Agent Management scan | Everything above, plus Doubao, the `.agents` shared folder, Junie, Windsurf, Augment, KiloCode, OB1, Amp, Aider, OpenClaw / QClaw / EasyClaw / AutoClaw, and custom agents |
 | Project-level scan | Currently focused on common Claude Code and Codex project config: project-level skills, MCP servers, plugins, and instruction files |
 
-On macOS, Agent Management recognizes DeepSeek Harness and QwenWork CN as separate desktop apps and manages skill folders under `~/.dsh/skills` and `~/.qwenworkcn/skills`. DeepSeek Harness also shows inherited skills from the default `~/.agents/skills` directory.
+On macOS and Windows, Agent Management recognizes DeepSeek Harness and QwenWork CN as separate desktop apps and manages skill folders under `~/.dsh/skills` and `~/.qwenworkcn/skills`. DeepSeek Harness also shows inherited skills from the default `~/.agents/skills` directory.
 
 - **DeepSeek Harness**. Open the desktop app once to initialize its profile, then quit it completely. Install the DeepSeek Harness Hook in AgentBro's Island integration settings and reopen the desktop app. The Island displays turn activity and eligible approvals. Choose Allow once or Deny in the Island. If AgentBro is unavailable, handle the prompt in the desktop app.
-- **QwenWork CN**. The Island observes the desktop app's recorded task phases through read-only access, including queued, running, finished, and waiting for interaction. Handle prompts and approvals in QwenWork.
+- **QwenWork CN**. The Island observes the desktop app's recorded task phases through read-only access, including queued, running, finished, and waiting for interaction. Open QwenWork from the session to handle prompts and approvals in the desktop app.
+- **WorkBuddy / WorkBuddy AI**. Agent Management installs hooks in each edition’s profile, `~/.workbuddy` or `~/.workbuddy-ai`. The Island shows WorkBuddy AI activity and prompts that need attention. Open the desktop app to handle those confirmations.
 
 Doubao support on macOS detects `/Applications/Doubao.app`, manages `~/Doubao/skills`, and continues to cover Doubao's compatible `~/.agents/skills` through the central library. Doubao does not currently expose a public hook, so island activity is a best-effort inference from local processes and read-only metadata for two task-state directories; conversation contents are never read, and page synchronization can cause a brief false positive.
+
+On Windows, open Island → Integration → WSL Hooks and select a distribution to connect Claude Code or Codex CLI. Hooks use the distribution’s default user configuration and call the Windows bridge through WSL interop. The Island labels each distribution and can open a terminal in the session’s Linux working directory.
 
 ## Roadmap
 

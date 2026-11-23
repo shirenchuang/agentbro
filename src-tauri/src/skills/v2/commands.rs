@@ -10,7 +10,7 @@ use crate::skills::v2::service::{
     AdoptBatchItem, AdoptBatchResult, ClaimOrigin, DeleteSkillTargetDistributionsResult,
     DeleteUnmanagedAgentSkillsResult, Service, UpsertPackInput,
 };
-use crate::skills::v2::{diagnosis, snapshot};
+use crate::skills::v2::{diagnosis, fsutil, snapshot};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -79,6 +79,23 @@ pub fn list_center_skills_v2() -> Result<Vec<SkillSummary>, String> {
 #[tauri::command(async)]
 pub fn get_skill_detail_v2(skill_id: String) -> Result<SkillDetail, String> {
     Ok(svc()?.get_skill_detail(&skill_id)?)
+}
+
+#[tauri::command(async)]
+pub fn check_skill_source_update(
+    skill_id: String,
+    github_token: Option<String>,
+) -> Result<SkillSourceUpdateCheck, String> {
+    svc()?.check_skill_source_update(&skill_id, github_token.as_deref())
+}
+
+#[tauri::command(async)]
+pub fn apply_skill_source_update(
+    skill_id: String,
+    expected: SkillSourceUpdateCheck,
+    github_token: Option<String>,
+) -> Result<SkillDetail, String> {
+    svc()?.apply_skill_source_update(&skill_id, expected, github_token.as_deref())
 }
 
 // `(async)` runs the blocking body on a worker thread instead of the main
@@ -168,74 +185,68 @@ fn run_marketplace_skill_batch(
             }
         };
 
-    let install_result = (|| {
-        let service = svc()?;
-        let mut items = Vec::with_capacity(total);
-        for skill in skills {
-            if cancel.load(Ordering::Relaxed) {
-                break;
+    let checkout_commit = temp_root
+        .as_ref()
+        .and_then(|root| crate::skills::installer::read_checkout_commit(&root.path().join("repo")));
+    let service = svc()?;
+    let mut items = Vec::with_capacity(total);
+    for skill in skills {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        emit_progress("installing", Some(skill.item_id.clone()), items.len(), None);
+        let result =
+            crate::skills::installer::locate_skillssh_skill_dir(&repo_root, &skill.skill_id)
+                .and_then(|source_dir| {
+                    service.execute_add_center_skill_with_commit(
+                        AddCenterSkillInput {
+                            source_path: source_dir.display().to_string(),
+                            source_type: "skillssh".to_string(),
+                            source_uri: Some(skill.source_uri.clone()),
+                            imported_from_agent: None,
+                            imported_from_path: None,
+                            multi: Some(false),
+                            import_mode: Some("copy".to_string()),
+                        },
+                        Vec::new(),
+                        checkout_commit.as_deref(),
+                    )
+                });
+        match result {
+            Ok(installed) => {
+                let installed_id = installed
+                    .skill_ids
+                    .first()
+                    .or_else(|| installed.updated.first())
+                    .cloned()
+                    .unwrap_or_else(|| skill.skill_id.clone());
+                items.push(MarketplaceBatchItemResult {
+                    item_id: skill.item_id.clone(),
+                    skill_id: installed_id,
+                    success: true,
+                    error: None,
+                });
+                emit_progress("success", Some(skill.item_id), items.len(), None);
             }
-            emit_progress("installing", Some(skill.item_id.clone()), items.len(), None);
-            let result =
-                crate::skills::installer::locate_skillssh_skill_dir(&repo_root, &skill.skill_id)
-                    .and_then(|source_dir| {
-                        service.execute_add_center_skill(
-                            AddCenterSkillInput {
-                                source_path: source_dir.display().to_string(),
-                                source_type: "skillssh".to_string(),
-                                source_uri: Some(skill.source_uri.clone()),
-                                imported_from_agent: None,
-                                imported_from_path: None,
-                                multi: Some(false),
-                                import_mode: Some("copy".to_string()),
-                            },
-                            Vec::new(),
-                        )
-                    });
-            match result {
-                Ok(installed) => {
-                    let installed_id = installed
-                        .skill_ids
-                        .first()
-                        .or_else(|| installed.updated.first())
-                        .cloned()
-                        .unwrap_or_else(|| skill.skill_id.clone());
-                    items.push(MarketplaceBatchItemResult {
-                        item_id: skill.item_id.clone(),
-                        skill_id: installed_id,
-                        success: true,
-                        error: None,
-                    });
-                    emit_progress("success", Some(skill.item_id), items.len(), None);
-                }
-                Err(error) => {
-                    items.push(MarketplaceBatchItemResult {
-                        item_id: skill.item_id.clone(),
-                        skill_id: skill.skill_id,
-                        success: false,
-                        error: Some(error.clone()),
-                    });
-                    emit_progress("failed", Some(skill.item_id), items.len(), Some(error));
-                }
+            Err(error) => {
+                items.push(MarketplaceBatchItemResult {
+                    item_id: skill.item_id.clone(),
+                    skill_id: skill.skill_id,
+                    success: false,
+                    error: Some(error.clone()),
+                });
+                emit_progress("failed", Some(skill.item_id), items.len(), Some(error));
             }
         }
-        let cancelled = cancel.load(Ordering::Relaxed);
-        emit_progress(
-            if cancelled { "cancelled" } else { "completed" },
-            None,
-            items.len(),
-            None,
-        );
-        Ok::<MarketplaceBatchInstallResult, String>(MarketplaceBatchInstallResult {
-            items,
-            cancelled,
-        })
-    })();
-
-    if let Some(root) = temp_root {
-        let _ = std::fs::remove_dir_all(root);
     }
-    install_result
+    let cancelled = cancel.load(Ordering::Relaxed);
+    emit_progress(
+        if cancelled { "cancelled" } else { "completed" },
+        None,
+        items.len(),
+        None,
+    );
+    Ok(MarketplaceBatchInstallResult { items, cancelled })
 }
 
 #[tauri::command(async)]
@@ -396,6 +407,48 @@ pub fn get_skill_pack_detail(pack_id: String) -> Result<SkillPackDetail, String>
 }
 
 #[tauri::command(async)]
+pub fn read_skill_pack_manifest(path: String) -> Result<SkillPackManifest, String> {
+    super::pack_manifest::read(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+pub async fn read_skill_pack_manifest_link(
+    link: String,
+) -> Result<LinkedSkillPackManifest, String> {
+    super::pack_manifest::read_link(&link).await
+}
+
+#[tauri::command(async)]
+pub fn write_skill_pack_manifest(path: String, manifest: SkillPackManifest) -> Result<(), String> {
+    super::pack_manifest::write(std::path::Path::new(&path), &manifest)
+}
+
+#[tauri::command(async)]
+pub fn get_skill_pack_fingerprints(
+    skill_ids: Vec<String>,
+    include_sources: Option<bool>,
+) -> Result<Vec<SkillPackFingerprint>, String> {
+    svc()?.skill_pack_fingerprints(&skill_ids, include_sources.unwrap_or(false))
+}
+
+#[tauri::command(async)]
+pub fn restore_skill_pack_member(
+    manifest: SkillPackManifest,
+    skill_id: String,
+) -> Result<(), String> {
+    svc()?.restore_pack_skill(&manifest, &skill_id)
+}
+
+#[tauri::command(async)]
+pub fn execute_import_skill_pack_manifest(
+    manifest: SkillPackManifest,
+    reviewed: Vec<SkillPackFingerprint>,
+    accept_local_copies: bool,
+) -> Result<SkillPackDetail, String> {
+    svc()?.import_reviewed_skill_pack(manifest, &reviewed, accept_local_copies)
+}
+
+#[tauri::command(async)]
 pub fn execute_upsert_skill_pack(
     pack: UpsertPackInput,
     defer_sync: Option<bool>,
@@ -435,13 +488,19 @@ pub fn execute_apply_skill_pack(
     target_agents: Vec<String>,
     requested_mode: String,
     blocker_decisions: Option<Vec<DistributionBlockerDecision>>,
+    reviewed_preview: Option<DistributionPreview>,
 ) -> Result<DistributionPreview, String> {
-    svc()?.apply_skill_pack_with_decisions(
-        &pack_id,
-        target_agents,
-        requested_mode,
-        blocker_decisions.unwrap_or_default(),
-    )
+    let svc = svc()?;
+    let decisions = blocker_decisions.unwrap_or_default();
+    if let Some(preview) = reviewed_preview {
+        if preview.target_agents != target_agents || preview.requested_mode != requested_mode {
+            return Err(
+                "Skill Pack targets or mode changed. Preview the application again.".into(),
+            );
+        }
+        return svc.apply_reviewed_skill_pack(&pack_id, preview, decisions);
+    }
+    svc.apply_skill_pack_with_decisions(&pack_id, target_agents, requested_mode, decisions)
 }
 
 #[tauri::command(async)]
@@ -618,6 +677,31 @@ pub fn scan_skill_project_v2(project_id: String) -> Result<ProjectDetail, String
     svc()?.scan_project(&project_id)
 }
 
+#[tauri::command]
+pub async fn restore_project_skill_lock_v2(
+    project_id: String,
+    revision: String,
+    skill_names: Vec<String>,
+) -> Result<Vec<ProjectSkillRestoreResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        svc()?.restore_project_skill_lock(&project_id, &revision, skill_names)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn verify_project_skill_lock_v2(
+    project_id: String,
+    revision: String,
+) -> Result<std::collections::BTreeMap<String, ProjectLockedSkillStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        svc()?.verify_project_skill_lock(&project_id, &revision)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command(async)]
 pub fn install_center_skills_to_project_v2(
     project_id: String,
@@ -690,14 +774,18 @@ pub fn skill_manager_get_snapshot() -> Result<Snapshot, String> {
     snapshot::export(&svc)
 }
 
-#[tauri::command(async)]
-pub fn open_skill_path(path: String) -> Result<(), String> {
-    crate::skills::v2::fsutil::open_path(&path)
+#[tauri::command]
+pub async fn open_skill_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || fsutil::open_path(&path))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
-#[tauri::command(async)]
-pub fn reveal_skill_path(path: String) -> Result<(), String> {
-    crate::skills::v2::fsutil::reveal_path(&path)
+#[tauri::command]
+pub async fn reveal_skill_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || fsutil::reveal_path(&path))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 fn pack_members(svc: &Service, pack_id: &str) -> Result<Vec<String>, String> {

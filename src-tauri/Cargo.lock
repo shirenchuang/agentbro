@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "agentbro"
-version = "3.2.2"
+version = "3.3.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -41,6 +41,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rodio",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -57,6 +58,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "uuid",
+ "windows 0.61.3",
  "windows-sys 0.61.2",
  "zip 2.4.2",
 ]

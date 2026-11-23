@@ -1,7 +1,37 @@
 // CopilotAdapter — Agent adapter for GitHub Copilot CLI
 
 use super::{profiles, AdapterStatus, AgentAdapter, AgentEvent};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+pub(crate) fn installed_executable() -> Option<PathBuf> {
+    // "gh copilot" can download and install Copilot during a probe.
+    super::executable::find_binary("copilot").or_else(|| {
+        let data_dir = std::env::var_os("XDG_DATA_HOME")
+            .filter(|path| !path.is_empty())
+            .map(|root| PathBuf::from(root).join("gh"));
+        #[cfg(target_os = "windows")]
+        let data_dir = data_dir.or_else(|| {
+            std::env::var_os("LOCALAPPDATA")
+                .filter(|path| !path.is_empty())
+                .map(|root| PathBuf::from(root).join("GitHub CLI"))
+        });
+        let data_dir =
+            data_dir.or_else(|| dirs::home_dir().map(|home| home.join(".local/share/gh")))?;
+        installed_in_github_cli(&data_dir)
+    })
+}
+
+fn installed_in_github_cli(data_dir: &Path) -> Option<PathBuf> {
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let extension = data_dir.join("extensions/gh-copilot");
+    [
+        data_dir.join("copilot").join(format!("copilot{suffix}")),
+        extension.join(format!("gh-copilot{suffix}")),
+        extension.join("gh-copilot"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
 
 pub struct CopilotAdapter {
     config_root: PathBuf,
@@ -12,7 +42,7 @@ impl CopilotAdapter {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".config").join("github-copilot");
-        let status = if Self::is_installed() {
+        let status = if installed_executable().is_some() {
             AdapterStatus::Available
         } else {
             AdapterStatus::Unavailable
@@ -21,18 +51,6 @@ impl CopilotAdapter {
             config_root,
             status,
         }
-    }
-
-    fn is_installed() -> bool {
-        // Check for gh CLI with copilot extension
-        if let Some(gh_path) = super::executable::find_binary("gh") {
-            return crate::platform::process::background_command(gh_path)
-                .args(["copilot", "--version"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-        }
-        false
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -68,7 +86,7 @@ impl AgentAdapter for CopilotAdapter {
     }
 
     fn detect_status_now(&self) -> AdapterStatus {
-        if Self::is_installed() {
+        if installed_executable().is_some() {
             AdapterStatus::Available
         } else {
             AdapterStatus::Unavailable
@@ -265,6 +283,26 @@ fn string_field<'a>(raw: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_local_copilot_installations() {
+        let root =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let extension = root.path().join("extensions/gh-copilot");
+        let current = root.path().join("copilot");
+        std::fs::create_dir_all(&extension).unwrap();
+        std::fs::create_dir(&current).unwrap();
+        assert!(installed_in_github_cli(root.path()).is_none());
+
+        let suffix = std::env::consts::EXE_SUFFIX;
+        let legacy = extension.join(format!("gh-copilot{suffix}"));
+        std::fs::write(&legacy, b"fixture").unwrap();
+        assert_eq!(installed_in_github_cli(root.path()), Some(legacy));
+
+        let executable = current.join(format!("copilot{suffix}"));
+        std::fs::write(&executable, b"fixture").unwrap();
+        assert_eq!(installed_in_github_cli(root.path()), Some(executable));
+    }
 
     fn adapter() -> CopilotAdapter {
         CopilotAdapter {

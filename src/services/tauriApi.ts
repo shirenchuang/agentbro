@@ -125,6 +125,7 @@ export interface BackendSession {
     }>
   } | null
   pendingPlan: {
+    requestId?: string | null
     title: string
     content: string
     permissions: string[]
@@ -136,6 +137,7 @@ export interface BackendSession {
   sessionTitle: string | null
   remoteHostId?: string | null
   remoteHostName?: string | null
+  wslDistribution?: string | null
   pid: number | null
   tty: string | null
   termProgram: string | null
@@ -400,6 +402,24 @@ export async function getSessions(): Promise<BackendSession[]> {
   return invoke<BackendSession[]>('get_sessions')
 }
 
+export interface WslHookStatus {
+  agentId: 'claude-code' | 'codex'
+  installed: boolean
+  error: string | null
+}
+
+export function listWslDistributions(): Promise<string[]> {
+  return invoke<string[]>('list_wsl_distributions')
+}
+
+export function getWslHookStatus(distribution: string): Promise<WslHookStatus[]> {
+  return invoke<WslHookStatus[]>('get_wsl_hook_status', { distribution })
+}
+
+export function setWslHook(distribution: string, agentId: WslHookStatus['agentId'], install: boolean): Promise<void> {
+  return invoke('set_wsl_hook', { distribution, agentId, install })
+}
+
 export async function getUsageRateLimits(): Promise<RateLimitInfo | null> {
   if (!isTauri()) return null
   return invoke<RateLimitInfo | null>('get_usage_rate_limits')
@@ -502,36 +522,36 @@ export async function removeClaudeWrapper(): Promise<ClaudeWrapperStatus> {
   return invoke<ClaudeWrapperStatus>('remove_claude_wrapper')
 }
 
-export async function respondPermission(sessionId: string, allowed: boolean, always?: boolean): Promise<void> {
+export async function respondPermission(sessionId: string, allowed: boolean, always?: boolean, toolUseId?: string): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] respondPermission(${sessionId}, ${allowed}, always=${always})`)
     return
   }
-  return invoke('respond_permission', { sessionId, allowed, always: always ?? false })
+  return invoke('respond_permission', { sessionId, allowed, always: always ?? false, toolUseId: toolUseId ?? null })
 }
 
-export async function respondQuestion(sessionId: string, answer: string): Promise<void> {
+export async function respondQuestion(sessionId: string, answer: string, toolUseId?: string): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] respondQuestion(${sessionId}, "${answer}")`)
     return
   }
-  return invoke('respond_question', { sessionId, answer })
+  return invoke('respond_question', { sessionId, answer, toolUseId: toolUseId ?? null })
 }
 
-export async function respondPlan(sessionId: string, mode: string, message?: string): Promise<void> {
+export async function respondPlan(sessionId: string, mode: string, message?: string, requestId?: string): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] respondPlan(${sessionId}, "${mode}", "${message ?? ''}")`)
     return
   }
-  return invoke('respond_plan', { sessionId, mode, message: message ?? null })
+  return invoke('respond_plan', { sessionId, mode, message: message ?? null, requestId: requestId ?? null })
 }
 
-export async function respondAutoApprove(sessionId: string): Promise<void> {
+export async function respondAutoApprove(sessionId: string, toolUseId?: string): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] respondAutoApprove(${sessionId})`)
     return
   }
-  return invoke('respond_auto_approve', { sessionId })
+  return invoke('respond_auto_approve', { sessionId, toolUseId: toolUseId ?? null })
 }
 
 export async function sendMessage(sessionId: string, message: string): Promise<void> {
@@ -1149,6 +1169,10 @@ export async function setNotchFocusable(focusable: boolean): Promise<void> {
   return invoke('set_notch_focusable', { focusable })
 }
 
+export async function restoreNotchWebviewFocus(): Promise<boolean> {
+  return isTauri() ? invoke<boolean>('restore_notch_webview_focus') : false
+}
+
 export async function setNotchIgnoreCursorEvents(
   ignore: boolean,
   windowLabel?: 'notch' | 'pet',
@@ -1235,14 +1259,15 @@ export async function startNotchDrag(
   width: number,
   height: number,
   displayId?: string,
-): Promise<boolean> {
-  if (!isTauri()) return false
-  return invoke<boolean>('start_notch_drag', { horizontalOffset, width, height, displayId })
+  trackMouseButton = false,
+): Promise<number | null> {
+  if (!isTauri()) return null
+  return invoke<number | null>('start_notch_drag', { horizontalOffset, width, height, displayId, trackMouseButton })
 }
 
-export async function endNotchDrag(): Promise<number | null> {
+export async function endNotchDrag(gestureId: number): Promise<number | null> {
   if (!isTauri()) return null
-  return invoke<number | null>('end_notch_drag')
+  return invoke<number | null>('end_notch_drag', { gestureId })
 }
 
 export async function startPetDrag(

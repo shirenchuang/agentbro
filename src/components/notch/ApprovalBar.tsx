@@ -1,11 +1,13 @@
 /* ApprovalBar — AgentBro style: warning card + 4 colored buttons, plan approval bar */
-import { useEffect, useRef, useCallback, useState, type MouseEvent } from 'react'
+import { useEffect, useRef, useCallback, useState, type FocusEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
-import { useSessionStore } from '../../stores/sessionStore'
-import { setNotchFocusable } from '../../services/tauriApi'
+import { planKey, questionKey, useSessionStore } from '../../stores/sessionStore'
+import { restoreNotchWebviewFocus, setNotchFocusable } from '../../services/tauriApi'
+import { islandActionProps, runIslandAction } from '../../utils/islandActions'
+import { isWindowsPlatform } from '../../utils/platform'
 import { getToolActivityLabel } from '../../utils/toolLabels'
-import { getComposerCapability, supportsPersistentPermissionActions, type ComposerLockReason } from '../../utils/sessionCapabilities'
+import { composerHints, getComposerCapability, supportsPersistentPermissionActions, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import './ApprovalBar.css'
 
 interface ApprovalBarProps {
@@ -13,30 +15,62 @@ interface ApprovalBarProps {
   onAllow: () => void
   onAllowAlways: () => void
   onDeny: () => void
+  restorePermissionFocus?: () => void
   onAutoApprove?: () => void
   onSendMessage: (msg: string) => void
   onDraftStateChange?: (hasDraft: boolean) => void
   onJumpToHostApp?: () => void
 }
 
-export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp }: ApprovalBarProps) {
+export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePermissionFocus, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp }: ApprovalBarProps) {
   const { t } = useTranslation()
   const codexAppServerLive = useSessionStore((state) => state.codexAppServerLive)
   const inputRef = useRef<HTMLInputElement>(null)
+  const permissionButtonsRef = useCallback((buttons: HTMLDivElement | null) => {
+    if (!buttons) return
+    const document = buttons.ownerDocument
+    const view = document.defaultView
+    const recoverOnBlur = isWindowsPlatform()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let attemptedButton: Element | null = null
+
+    const onBlur = () => {
+      if (timer !== undefined) return
+      timer = setTimeout(() => {
+        timer = undefined
+        const active = document.activeElement
+        if (!active || !buttons.contains(active) || active === attemptedButton || document.hasFocus()) return
+        attemptedButton = active
+        const retry = () => {
+          if (attemptedButton === active) attemptedButton = null
+        }
+        restoreNotchWebviewFocus().then((restored) => {
+          if (!restored) retry()
+        }, retry)
+      }, 0)
+    }
+    if (recoverOnBlur) view?.addEventListener('blur', onBlur)
+    return () => {
+      if (recoverOnBlur) view?.removeEventListener('blur', onBlur)
+      clearTimeout(timer)
+      if (buttons.contains(document.activeElement)) restorePermissionFocus?.()
+    }
+  }, [restorePermissionFocus])
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [draftState, setDraftState] = useState({ sessionId: session.id, value: '' })
+  const hasPlan = Boolean(session.planTitle || session.planContent)
+  const pendingQuestionKey = session.pendingQuestion ? questionKey(session.pendingQuestion) : ''
+  const questionScope = `${session.id}:${pendingQuestionKey}`
+  const draftScope = hasPlan ? `${session.id}:plan:${planKey(session)}` : pendingQuestionKey ? questionScope : session.id
+  const [draftState, setDraftState] = useState({ scope: draftScope, value: '' })
   const [questionState, setQuestionState] = useState<{
     key: string
     selected: number[]
     answers: Record<number, number | number[]>
   }>({ key: '', selected: [], answers: {} })
-  const draft = draftState.sessionId === session.id ? draftState.value : ''
+  const draft = draftState.scope === draftScope ? draftState.value : ''
   const hasDraft = draft.trim().length > 0
-  const questionKey = session.pendingQuestion
-    ? `${session.id}:${session.pendingQuestion.question}:${session.pendingQuestion.options.join('|')}:${session.pendingQuestion.questions?.length ?? 0}`
-    : ''
-  const selected = questionState.key === questionKey ? questionState.selected : []
-  const answers = questionState.key === questionKey ? questionState.answers : {}
+  const selected = questionState.key === questionScope ? questionState.selected : []
+  const answers = questionState.key === questionScope ? questionState.answers : {}
   const supportsPersistentActions = supportsPersistentPermissionActions(session.agentType)
 
   useEffect(() => {
@@ -47,7 +81,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     return () => onDraftStateChange?.(false)
   }, [onDraftStateChange])
 
-  const handleInputFocus = useCallback(() => {
+  const handleComposerFocus = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return
     if (blurTimerRef.current) {
       clearTimeout(blurTimerRef.current)
       blurTimerRef.current = null
@@ -55,7 +90,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     setNotchFocusable(true).catch(() => {})
   }, [])
 
-  const handleInputBlur = useCallback(() => {
+  const handleComposerBlur = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return
     blurTimerRef.current = setTimeout(() => {
       blurTimerRef.current = null
       setNotchFocusable(false).catch(() => {})
@@ -66,21 +102,25 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     const val = draft.trim()
     if (!val) return
     onSendMessage(draft)
-    setDraftState({ sessionId: session.id, value: '' })
-  }, [draft, onSendMessage, session.id])
+    if (!hasPlan && !pendingQuestionKey) setDraftState({ scope: draftScope, value: '' })
+  }, [draft, draftScope, hasPlan, onSendMessage, pendingQuestionKey])
 
-  const runActionOnMouseDown = useCallback((event: MouseEvent<HTMLButtonElement>, action: () => void) => {
-    event.preventDefault()
-    event.stopPropagation()
-    action()
-  }, [])
+  const handleSendButton = useCallback((event: MouseEvent<HTMLButtonElement>) => {
+    runIslandAction(event, () => {
+      if (blurTimerRef.current) {
+        clearTimeout(blurTimerRef.current)
+        blurTimerRef.current = null
+      }
+      sendDraft()
+    })
+  }, [sendDraft])
 
   // Plan approval uses the same waiting_approval phase as permissions, so it
   // must be checked first. Otherwise the detail composer labels it as a normal
   // deny/allow/always permission request.
-  if (session.planContent || session.planTitle) {
+  if (hasPlan) {
     return (
-      <div className="approval-bar approval-bar--plan">
+      <div className="approval-bar approval-bar--plan" onFocus={handleComposerFocus} onBlur={handleComposerBlur}>
         <div className="approval-bar__input-row">
           <input
             ref={inputRef}
@@ -88,9 +128,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
             data-has-draft={hasDraft ? 'true' : 'false'}
             placeholder={t('notch.planFeedback', { defaultValue: '\u544A\u8BC9 Claude \u9700\u8981\u4FEE\u6539\u4EC0\u4E48...' })}
             value={draft}
-            onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
-            onFocus={handleInputFocus}
-            onBlur={handleInputBlur}
+            onChange={(e) => setDraftState({ scope: draftScope, value: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 sendDraft()
@@ -99,13 +137,13 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           />
         </div>
         <div className="approval-bar__buttons">
-          <button className="approval-bar__btn approval-bar__btn--deny" onMouseDown={(event) => runActionOnMouseDown(event, onDeny)}>
+          <button className="approval-bar__btn approval-bar__btn--deny" {...islandActionProps(onDeny)}>
             {t('notch.manualReview', { defaultValue: '\u624B\u52A8\u5BA1\u6279' })}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--accept-edits" onMouseDown={(event) => runActionOnMouseDown(event, onAllow)}>
+          <button className="approval-bar__btn approval-bar__btn--accept-edits" {...islandActionProps(onAllow)}>
             {t('notch.acceptEdits', { defaultValue: '\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91' })}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--auto" onMouseDown={(event) => runActionOnMouseDown(event, () => onAutoApprove?.())}>
+          <button className="approval-bar__btn approval-bar__btn--auto" {...islandActionProps(() => onAutoApprove?.())}>
             {t('notch.autoApprovePerms', { defaultValue: '\u81EA\u52A8\u6279\u51C6\u6743\u9650' })}
           </button>
         </div>
@@ -138,20 +176,20 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
         </div>
 
         {/* 4 action buttons */}
-        <div className="approval-bar__buttons">
-          <button className="approval-bar__btn approval-bar__btn--deny" onMouseDown={(event) => runActionOnMouseDown(event, onDeny)}>
+        <div className="approval-bar__buttons" ref={permissionButtonsRef}>
+          <button className="approval-bar__btn approval-bar__btn--deny" {...islandActionProps(onDeny)}>
             {t('notch.deny')}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--allow" onMouseDown={(event) => runActionOnMouseDown(event, onAllow)}>
+          <button className="approval-bar__btn approval-bar__btn--allow" {...islandActionProps(onAllow)}>
             {t('notch.allowOnce')}
           </button>
           {supportsPersistentActions && (
-            <button className="approval-bar__btn approval-bar__btn--always" onMouseDown={(event) => runActionOnMouseDown(event, onAllowAlways)}>
+            <button className="approval-bar__btn approval-bar__btn--always" {...islandActionProps(onAllowAlways)}>
               {t('notch.allowAlways')}
             </button>
           )}
           {supportsPersistentActions && onAutoApprove && (
-            <button className="approval-bar__btn approval-bar__btn--auto" onMouseDown={(event) => runActionOnMouseDown(event, onAutoApprove)}>
+            <button className="approval-bar__btn approval-bar__btn--auto" {...islandActionProps(onAutoApprove)}>
               {t('notch.autoApprove')}
             </button>
           )}
@@ -166,7 +204,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     const hasMultipleQuestions = nestedQuestions.length > 1
     const toggleSingleQuestionOption = (index: number) => {
       setQuestionState((current) => {
-        const base = current.key === questionKey ? current : { key: questionKey, selected: [], answers: {} }
+        const base = current.key === questionScope ? current : { key: questionScope, selected: [], answers: {} }
         const next = base.selected.includes(index)
           ? base.selected.filter((item) => item !== index)
           : [...base.selected, index]
@@ -175,7 +213,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     }
     const toggleNestedQuestionOption = (questionIndex: number, optionIndex: number, multiSelect?: boolean) => {
       setQuestionState((current) => {
-        const base = current.key === questionKey ? current : { key: questionKey, selected: [], answers: {} }
+        const base = current.key === questionScope ? current : { key: questionScope, selected: [], answers: {} }
         if (!multiSelect) return { ...base, answers: { ...base.answers, [questionIndex]: optionIndex } }
 
         const existing = Array.isArray(base.answers[questionIndex])
@@ -210,7 +248,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     }
 
     return (
-      <div className="approval-bar">
+      <div className="approval-bar" onFocus={handleComposerFocus} onBlur={handleComposerBlur}>
         {hasMultipleQuestions ? (
           <div className="approval-bar__question-set">
             <div className="approval-bar__question-title">
@@ -230,7 +268,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
                       <button
                         key={`${questionIndex}-${optionIndex}-${opt.label}`}
                         className={`approval-bar__btn approval-bar__btn--option ${selectedSet.has(optionIndex) ? 'approval-bar__btn--selected' : ''}`}
-                        onMouseDown={(event) => runActionOnMouseDown(event, () => toggleNestedQuestionOption(questionIndex, optionIndex, question.multiSelect))}
+                        {...islandActionProps(() => toggleNestedQuestionOption(questionIndex, optionIndex, question.multiSelect))}
                       >
                         {question.multiSelect && selectedSet.has(optionIndex) ? '✓ ' : ''}
                         {opt.label}
@@ -243,7 +281,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
             <button
               className="approval-bar__btn approval-bar__btn--confirm"
               disabled={!allNestedAnswered}
-              onMouseDown={(event) => runActionOnMouseDown(event, submitNestedQuestions)}
+              {...islandActionProps(submitNestedQuestions)}
             >
               {t('notch.submitAll', { defaultValue: 'Submit All' })}
             </button>
@@ -254,7 +292,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
               <button
                 key={i}
                 className={`approval-bar__btn approval-bar__btn--option ${selected.includes(i) ? 'approval-bar__btn--selected' : ''}`}
-                onMouseDown={(event) => runActionOnMouseDown(event, () => {
+                {...islandActionProps(() => {
                   if (pendingQuestion.multiSelect) toggleSingleQuestionOption(i)
                   else onSendMessage(opt)
                 })}
@@ -268,7 +306,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
               <button
                 className="approval-bar__btn approval-bar__btn--confirm"
                 disabled={selected.length === 0}
-                onMouseDown={(event) => runActionOnMouseDown(event, submitSingleMultiSelect)}
+                {...islandActionProps(submitSingleMultiSelect)}
               >
                 {t('notch.confirmSelection', { defaultValue: 'Confirm' })} ({selected.length})
               </button>
@@ -281,9 +319,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
             data-has-draft={hasDraft ? 'true' : 'false'}
             placeholder={t('notch.typeReply')}
             value={draft}
-            onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
-            onFocus={handleInputFocus}
-            onBlur={handleInputBlur}
+            onChange={(e) => setDraftState({ scope: draftScope, value: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 sendDraft()
@@ -309,7 +345,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
   }
 
   return (
-    <div className="approval-bar">
+    <div className="approval-bar" onFocus={handleComposerFocus} onBlur={handleComposerBlur}>
       <div className="approval-bar__input-row">
         <input
           ref={inputRef}
@@ -317,9 +353,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           data-has-draft={hasDraft ? 'true' : 'false'}
           placeholder={t('notch.typeMessage')}
           value={draft}
-          onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
-          onFocus={handleInputFocus}
-          onBlur={handleInputBlur}
+          onChange={(e) => setDraftState({ scope: draftScope, value: e.target.value })}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               sendDraft()
@@ -328,14 +362,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
         />
         <button
           className="approval-bar__send"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            if (blurTimerRef.current) {
-              clearTimeout(blurTimerRef.current)
-              blurTimerRef.current = null
-            }
-            sendDraft()
-          }}
+          onMouseDown={handleSendButton}
+          onClick={handleSendButton}
           aria-label={t('notch.send')}
         >
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
@@ -354,8 +382,7 @@ interface ComposerHintProps {
 
 function ComposerHint({ reason, onJumpToHostApp }: ComposerHintProps) {
   const { t } = useTranslation()
-  const messageKey = composerHintMessageKey(reason)
-  const ctaKey = composerHintCtaKey(reason)
+  const { messageKey, actionKey: ctaKey } = composerHints[reason]
   return (
     <div className="approval-bar__hint" role="note">
       <span className="approval-bar__hint-text">{t(messageKey)}</span>
@@ -363,35 +390,11 @@ function ComposerHint({ reason, onJumpToHostApp }: ComposerHintProps) {
         <button
           className="approval-bar__hint-cta"
           type="button"
-          onMouseDown={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            onJumpToHostApp()
-          }}
+          {...islandActionProps(onJumpToHostApp)}
         >
           {t(ctaKey)}
         </button>
       )}
     </div>
   )
-}
-
-function composerHintMessageKey(reason: ComposerLockReason): string {
-  switch (reason) {
-    case 'codex-app': return 'notch.composerHintCodexApp'
-    case 'qoder-app': return 'notch.composerHintQoderApp'
-    case 'remote': return 'notch.composerHintRemote'
-    case 'no-terminal': return 'notch.composerHintNoTerminal'
-  }
-}
-
-function composerHintCtaKey(reason: ComposerLockReason): string | null {
-  switch (reason) {
-    case 'codex-app':
-    case 'qoder-app':
-      return 'notch.openHostApp'
-    case 'remote':
-    case 'no-terminal':
-      return null
-  }
 }

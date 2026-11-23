@@ -3,7 +3,7 @@
 
 use crate::skills::v2::fsutil;
 use crate::skills::v2::models::{Snapshot, SCHEMA_VERSION};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -180,36 +180,23 @@ impl Db {
         }
         // Migrate from old flat location (~/.agentbro/skill-manager.db)
         let old_db = crate::data_dir::agentbro_home().join("skill-manager.db");
-        crate::data_dir::migrate_sqlite(&old_db, path);
-        // Detect incompatible legacy schema and nuke the file if needed.
-        if path.exists() {
-            if let Ok(probe) = Connection::open(path) {
-                let is_legacy: bool = probe
-                    .prepare("SELECT skill_type FROM skills LIMIT 0")
-                    .is_err();
-                drop(probe);
-                if is_legacy {
-                    let _ = std::fs::remove_file(path);
-                    let _ = std::fs::remove_file(path.with_extension("db-wal"));
-                    let _ = std::fs::remove_file(path.with_extension("db-shm"));
-                }
-            }
-        }
-        let conn = Connection::open(path).map_err(|e| format!("open db: {}", e))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .map_err(|e| format!("pragma: {}", e))?;
-        for sql in MIGRATIONS {
-            conn.execute_batch(sql)
-                .map_err(|e| format!("migration: {}", e))?;
-        }
-        ensure_skill_pack_sync_schema(&conn)?;
-        // record applied version (idempotent)
-        let now = now_iso();
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
-            params![SCHEMA_VERSION, now],
-        )
-        .map_err(|e| format!("record migration: {}", e))?;
+        crate::data_dir::migrate_sqlite(&old_db, path).map_err(|error| format!("{error:#}"))?;
+        Self::open_at(path)
+    }
+
+    fn open_at(path: &Path) -> Result<Self, String> {
+        let mut conn = Connection::open(path).map_err(|e| {
+            format!(
+                "Could not open Skill Manager database {}: {e}",
+                path.display()
+            )
+        })?;
+        initialize_schema(&mut conn).map_err(|e| {
+            format!(
+                "Could not initialize Skill Manager database {}: {e}",
+                path.display()
+            )
+        })?;
         Ok(Db {
             conn: Mutex::new(conn),
         })
@@ -244,6 +231,35 @@ impl Db {
             .map_err(|e| e.to_string())
         })
     }
+}
+
+fn initialize_schema(conn: &mut Connection) -> Result<(), String> {
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+        .map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    for sql in MIGRATIONS {
+        tx.execute_batch(sql).map_err(|e| e.to_string())?;
+    }
+    tx.prepare(
+        "SELECT id, name, description, center_path, current_hash, frontmatter_json,
+                created_at, updated_at, last_scanned_at FROM skills LIMIT 0",
+    )
+    .map_err(|e| format!("Incompatible skills table: {e}"))?;
+    ensure_column(
+        &tx,
+        "skills",
+        "skill_type",
+        "ALTER TABLE skills ADD COLUMN skill_type TEXT NOT NULL DEFAULT 'skill'",
+    )?;
+    ensure_skill_pack_sync_schema(&tx)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
+        params![SCHEMA_VERSION, now_iso()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 fn ensure_skill_pack_sync_schema(conn: &Connection) -> Result<(), String> {
@@ -405,4 +421,87 @@ mod hex {
 // helper for migration: read legacy metadata.json
 pub fn legacy_metadata_path() -> PathBuf {
     fsutil::home().join(".agentbro").join("metadata.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::installer::TempInstallDir;
+
+    #[test]
+    fn preserves_an_unreadable_database() {
+        let dir = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = dir.path().join("skills.db");
+        let original = b"unreadable skill database fixture";
+        std::fs::write(&path, original).unwrap();
+
+        assert!(Db::open_at(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn adds_the_skill_type_to_existing_rows_without_replacing_the_database() {
+        let dir = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = dir.path().join("skills.db");
+        let legacy = Connection::open(&path).unwrap();
+        legacy.execute_batch(MIGRATIONS[0]).unwrap();
+        legacy
+            .execute_batch(
+                "ALTER TABLE skills DROP COLUMN skill_type;
+                 INSERT INTO skills (id, name, center_path, current_hash, created_at, updated_at)
+                 VALUES ('review', 'Review', 'existing/review', 'hash', 'date', 'date');
+                 INSERT INTO skill_sources (skill_id, source_type, installed_via, created_at, updated_at)
+                 VALUES ('review', 'local_folder', 'manual', 'date', 'date');",
+            )
+            .unwrap();
+        drop(legacy);
+
+        let db = Db::open_at(&path).unwrap();
+        let (name, skill_type, source): (String, String, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT s.name, s.skill_type, src.source_type
+                     FROM skills s JOIN skill_sources src ON s.id = src.skill_id
+                     WHERE s.id = 'review'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(
+            (name.as_str(), skill_type.as_str(), source.as_str()),
+            ("Review", "skill", "local_folder")
+        );
+        assert_eq!(db.applied_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn leaves_an_incompatible_schema_and_its_existing_rows_intact() {
+        let dir = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = dir.path().join("skills.db");
+        let existing = Connection::open(&path).unwrap();
+        existing
+            .execute_batch(
+                "CREATE TABLE skills (id TEXT PRIMARY KEY);
+                 INSERT INTO skills (id) VALUES ('retained');",
+            )
+            .unwrap();
+        drop(existing);
+
+        assert!(Db::open_at(&path).is_err());
+        let existing = Connection::open(&path).unwrap();
+        let id: String = existing
+            .query_row("SELECT id FROM skills", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(id, "retained");
+        let tables: i64 = existing
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 1);
+    }
 }

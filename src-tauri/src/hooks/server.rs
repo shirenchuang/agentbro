@@ -154,10 +154,17 @@ pub struct PermissionResponse {
 
 /// A pending permission waiting for UI response
 pub(crate) struct PendingPermissionEntry {
-    pub(crate) session_id: String,
     pub(crate) received_at_ms: u64,
     pub(crate) tx: oneshot::Sender<PermissionReply>,
 }
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct PendingPermissionKey {
+    session_id: String,
+    tool_use_id: String,
+}
+
+type PendingPermissions = HashMap<PendingPermissionKey, Vec<PendingPermissionEntry>>;
 
 pub(crate) struct PermissionReply {
     pub(crate) response: PermissionResponse,
@@ -181,7 +188,14 @@ pub struct QuestionResponse {
 
 /// A pending question waiting for UI response
 pub(crate) struct PendingQuestionEntry {
-    pub(crate) tx: oneshot::Sender<QuestionResponse>,
+    tool_use_id: String,
+    tx: oneshot::Sender<QuestionReply>,
+}
+
+struct QuestionReply {
+    response: QuestionResponse,
+    ack: oneshot::Sender<Result<(), String>>,
+    deadline: tokio::time::Instant,
 }
 
 /// Plan response sent back to hook script
@@ -193,13 +207,20 @@ pub struct PlanResponse {
 
 /// A pending plan waiting for UI response
 pub(crate) struct PendingPlanEntry {
-    pub(crate) tx: oneshot::Sender<PlanResponse>,
+    request_id: String,
+    tx: oneshot::Sender<PlanReply>,
+}
+
+struct PlanReply {
+    response: PlanResponse,
+    ack: oneshot::Sender<Result<(), String>>,
+    deadline: tokio::time::Instant,
 }
 
 /// The HookServer manages incoming connections from agent hook scripts
 pub struct HookServer {
-    /// Pending permission requests: tool/request key -> waiting hook connections
-    pending_permissions: Arc<Mutex<HashMap<String, Vec<PendingPermissionEntry>>>>,
+    /// Pending permission requests grouped by session and tool call.
+    pending_permissions: Arc<Mutex<PendingPermissions>>,
     /// Pending question requests: session_id -> sender
     pending_questions: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
     /// Pending plan approvals: session_id -> sender
@@ -225,7 +246,7 @@ pub struct HookServer {
 
 #[derive(Clone)]
 struct HookConnectionContext {
-    pending: Arc<Mutex<HashMap<String, Vec<PendingPermissionEntry>>>>,
+    pending: Arc<Mutex<PendingPermissions>>,
     pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
     pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
     store: Arc<SessionStore>,
@@ -244,11 +265,10 @@ enum PendingWebhookCheck {
         tool_name: String,
     },
     Question {
-        question: String,
+        tool_use_id: String,
     },
     Plan {
-        title: String,
-        content: String,
+        request_id: String,
     },
 }
 
@@ -442,11 +462,10 @@ impl HookServer {
         };
 
         let raw_tool_use_id = Self::raw_tool_use_id(raw);
-        let same_tool_use_id = raw_tool_use_id
-            .as_deref()
-            .is_some_and(|id| pending.tool_use_id.as_deref() == Some(id));
-        if same_tool_use_id || Self::is_permission_resolution_event(raw) {
-            store.set_pending_permission(session_id, None);
+        if let Some(id) = raw_tool_use_id.as_deref() {
+            store.clear_matching_permission(session_id, Some(id));
+        } else if Self::is_permission_resolution_event(raw) {
+            store.clear_matching_permission(session_id, pending.tool_use_id.as_deref());
         }
     }
 
@@ -811,14 +830,14 @@ impl HookServer {
                     pending.tool_name == *tool_name
                 }
             }),
-            PendingWebhookCheck::Question { question } => session
+            PendingWebhookCheck::Question { tool_use_id } => session
                 .pending_question
                 .as_ref()
-                .is_some_and(|pending| pending.question == *question),
-            PendingWebhookCheck::Plan { title, content } => session
+                .is_some_and(|pending| pending.tool_use_id.as_ref() == Some(tool_use_id)),
+            PendingWebhookCheck::Plan { request_id } => session
                 .pending_plan
                 .as_ref()
-                .is_some_and(|pending| pending.title == *title && pending.content == *content),
+                .is_some_and(|pending| pending.request_id.as_ref() == Some(request_id)),
         }
     }
 
@@ -859,13 +878,8 @@ impl HookServer {
         .any(|p| lower.contains(p))
     }
 
-    /// Start listening on both Unix socket and TCP
-    pub async fn start(&self) -> anyhow::Result<()> {
-        let endpoint = self.endpoint.clone();
-        let tcp_addr = endpoint.tcp_addr();
-        let tcp_listener = TcpListener::bind(&tcp_addr).await?;
-
-        let context = HookConnectionContext {
+    fn connection_context(&self) -> HookConnectionContext {
+        HookConnectionContext {
             pending: self.pending_permissions.clone(),
             pending_q: self.pending_questions.clone(),
             pending_plan: self.pending_plans.clone(),
@@ -876,7 +890,15 @@ impl HookServer {
             raw_events: self.raw_events.clone(),
             config_store: self.config_store.clone(),
             recent_tools: self.recent_tools.clone(),
-        };
+        }
+    }
+
+    /// Start listening on both Unix socket and TCP
+    pub async fn start(&self) -> anyhow::Result<()> {
+        let endpoint = self.endpoint.clone();
+        let tcp_addr = endpoint.tcp_addr();
+        let tcp_listener = TcpListener::bind(&tcp_addr).await?;
+        let context = self.connection_context();
 
         #[cfg(unix)]
         {
@@ -995,7 +1017,8 @@ impl HookServer {
         }
 
         // Parse the raw JSON
-        let raw: serde_json::Value = serde_json::from_str(line)?;
+        let mut raw: serde_json::Value = serde_json::from_str(line)?;
+        namespace_wsl_event(&mut raw);
 
         // Try to find a matching adapter and parse the event
         let event = Self::parse_with_adapters(&adapters, &raw);
@@ -1047,19 +1070,32 @@ impl HookServer {
                     &raw,
                 )
                 .await
-                .unwrap_or_else(|| format!("permission:{}:{}", session_id, current_time_ms()));
+                .unwrap_or_else(|| format!("permission:{}", uuid::Uuid::new_v4()));
 
-                // Set pending permission on session
-                store.set_pending_permission(
-                    session_id,
-                    Some(PendingPermission {
-                        tool_use_id: Some(resolved_tool_use_id.clone()),
-                        tool_name: tool_name.clone(),
-                        tool_input: Self::permission_tool_input_from_raw(&raw),
-                        diff: diff.clone(),
-                        options: options.clone(),
-                    }),
-                );
+                let (tx, rx) = oneshot::channel();
+                let pending_key = PendingPermissionKey {
+                    session_id: session_id.clone(),
+                    tool_use_id: resolved_tool_use_id.clone(),
+                };
+                {
+                    let mut pending_map = pending.lock().await;
+                    pending_map.entry(pending_key.clone()).or_default().push(
+                        PendingPermissionEntry {
+                            received_at_ms: current_time_ms(),
+                            tx,
+                        },
+                    );
+                    store.set_pending_permission(
+                        session_id,
+                        Some(PendingPermission {
+                            tool_use_id: Some(resolved_tool_use_id.clone()),
+                            tool_name: tool_name.clone(),
+                            tool_input: Self::permission_tool_input_from_raw(&raw),
+                            diff: diff.clone(),
+                            options: options.clone(),
+                        }),
+                    );
+                }
                 Self::update_session_metadata_from_raw(&store, &raw);
                 Self::dispatch_webhook_event(
                     &config_store,
@@ -1086,20 +1122,6 @@ impl HookServer {
                             );
                         }
                     }
-                }
-
-                // Create a oneshot channel for the permission response
-                let (tx, rx) = oneshot::channel();
-                {
-                    let mut pending_map = pending.lock().await;
-                    pending_map
-                        .entry(resolved_tool_use_id.clone())
-                        .or_default()
-                        .push(PendingPermissionEntry {
-                            session_id: session_id.clone(),
-                            received_at_ms: current_time_ms(),
-                            tx,
-                        });
                 }
 
                 // Wait for the UI to respond. Codex uses a longer hook timeout for AgentBro
@@ -1132,23 +1154,12 @@ impl HookServer {
                             }
                             Err(err) => Err(err.to_string()),
                         };
-                        let _ = reply.ack.send(write_result.clone());
-
-                        if write_result.is_ok() {
-                            // Play confirmation sound
-                            Self::play_sound(&sound, SoundEvent::TaskConfirmation);
-
-                            // Clear pending permission
-                            store.set_pending_permission(session_id, None);
-                            store.update_phase(session_id, SessionPhase::Processing);
-                        } else if let Err(err) = write_result {
-                            if harness {
-                                Self::clear_harness_permission(
-                                    &store,
-                                    session_id,
-                                    &resolved_tool_use_id,
-                                );
-                            }
+                        let delivered = write_result.is_ok();
+                        if delivered || harness {
+                            store
+                                .clear_matching_permission(session_id, Some(&resolved_tool_use_id));
+                        }
+                        if let Err(err) = &write_result {
                             log::warn!(
                                 "Permission response write failed for session {} tool {}: {}",
                                 session_id,
@@ -1156,19 +1167,26 @@ impl HookServer {
                                 err
                             );
                         }
+                        let _ = reply.ack.send(write_result);
+                        if delivered {
+                            let sound = Arc::clone(&sound);
+                            drop(tokio::task::spawn_blocking(move || {
+                                Self::play_sound(&sound, SoundEvent::TaskConfirmation);
+                            }));
+                        }
                     }
                     None => {
                         // Timeout or channel closed — let Claude Code handle it normally
                         let mut pending_map = pending.lock().await;
-                        pending_map.remove(&resolved_tool_use_id);
-                        if harness {
-                            Self::clear_harness_permission(
-                                &store,
-                                session_id,
-                                &resolved_tool_use_id,
-                            );
-                        } else {
-                            store.set_pending_permission(session_id, None);
+                        if let Some(entries) = pending_map.get_mut(&pending_key) {
+                            entries.retain(|entry| !entry.tx.is_closed());
+                            if entries.is_empty() {
+                                pending_map.remove(&pending_key);
+                                store.clear_matching_permission(
+                                    session_id,
+                                    Some(&resolved_tool_use_id),
+                                );
+                            }
                         }
                         log::warn!("Permission request timed out for session {}", session_id);
                     }
@@ -1201,36 +1219,48 @@ impl HookServer {
                     Self::play_sound(&sound, SoundEvent::NeedsApproval);
                 }
 
-                store.set_pending_question(
-                    session_id,
-                    Some(PendingQuestion {
-                        question: question.clone(),
-                        options: options.clone(),
-                        descriptions: descriptions.clone(),
-                        header: header.clone(),
-                        multi_select,
-                        questions: questions
-                            .iter()
-                            .map(|q| PendingQuestionItem {
-                                id: None,
-                                question: q.question.clone(),
-                                header: q.header.clone(),
-                                options: q
-                                    .options
-                                    .iter()
-                                    .map(|opt| PendingQuestionOption {
-                                        label: opt.label.clone(),
-                                        description: opt.description.clone(),
-                                    })
-                                    .collect(),
-                                multi_select: q.multi_select,
-                            })
-                            .collect(),
-                        tool_use_id: None,
-                        source: None,
-                        response_mode: None,
-                    }),
-                );
+                let tool_use_id = format!("question:{}", uuid::Uuid::new_v4());
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut pending_map = pending_q.lock().await;
+                    pending_map.insert(
+                        session_id.clone(),
+                        PendingQuestionEntry {
+                            tool_use_id: tool_use_id.clone(),
+                            tx,
+                        },
+                    );
+                    store.set_pending_question(
+                        session_id,
+                        Some(PendingQuestion {
+                            question: question.clone(),
+                            options: options.clone(),
+                            descriptions: descriptions.clone(),
+                            header: header.clone(),
+                            multi_select,
+                            questions: questions
+                                .iter()
+                                .map(|q| PendingQuestionItem {
+                                    id: None,
+                                    question: q.question.clone(),
+                                    header: q.header.clone(),
+                                    options: q
+                                        .options
+                                        .iter()
+                                        .map(|opt| PendingQuestionOption {
+                                            label: opt.label.clone(),
+                                            description: opt.description.clone(),
+                                        })
+                                        .collect(),
+                                    multi_select: q.multi_select,
+                                })
+                                .collect(),
+                            tool_use_id: Some(tool_use_id.clone()),
+                            source: None,
+                            response_mode: None,
+                        }),
+                    );
+                }
                 Self::update_session_metadata_from_raw(&store, &raw);
                 Self::dispatch_webhook_event(
                     &config_store,
@@ -1241,7 +1271,7 @@ impl HookServer {
                     Self::source_for_webhook(&store, &raw, session_id, None),
                     session_id.clone(),
                     Some(PendingWebhookCheck::Question {
-                        question: question.clone(),
+                        tool_use_id: tool_use_id.clone(),
                     }),
                 );
 
@@ -1257,33 +1287,48 @@ impl HookServer {
                     }
                 }
 
-                // Create a oneshot channel for the question response
-                let (tx, rx) = oneshot::channel();
-                {
-                    let mut pending_map = pending_q.lock().await;
-                    pending_map.insert(session_id.clone(), PendingQuestionEntry { tx });
-                }
-
                 let response =
                     tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
 
                 match response {
-                    Ok(Ok(resp)) => {
-                        let json = serde_json::to_string(&resp)?;
-                        writer.write_all(json.as_bytes()).await?;
-                        writer.write_all(b"\n").await?;
-                        writer.flush().await?;
-
-                        Self::play_sound(&sound, SoundEvent::TaskConfirmation);
-
-                        store.set_pending_question(session_id, None);
-                        store.update_phase(session_id, SessionPhase::Processing);
+                    Ok(Ok(reply)) => {
+                        let result = tokio::time::timeout_at(reply.deadline, async {
+                            let json = serde_json::to_vec(&reply.response)?;
+                            writer.write_all(&json).await?;
+                            writer.write_all(b"\n").await?;
+                            writer.flush().await?;
+                            Ok::<(), anyhow::Error>(())
+                        })
+                        .await
+                        .map_err(|_| {
+                            "The question Hook did not receive the response in time.".to_string()
+                        })
+                        .and_then(|result| {
+                            result.map_err(|error| {
+                                format!("Failed to write question response: {error}")
+                            })
+                        });
+                        let delivered = result.is_ok();
+                        if delivered {
+                            store.clear_matching_question(session_id, Some(&tool_use_id));
+                        }
+                        let _ = reply.ack.send(result);
+                        if delivered {
+                            drop(tokio::task::spawn_blocking(move || {
+                                Self::play_sound(&sound, SoundEvent::TaskConfirmation);
+                            }));
+                        }
                     }
                     _ => {
                         let mut pending_map = pending_q.lock().await;
-                        pending_map.remove(session_id);
-                        store.set_pending_question(session_id, None);
-                        log::warn!("Question request timed out for session {}", session_id);
+                        if pending_map
+                            .get(session_id)
+                            .is_some_and(|entry| entry.tool_use_id == tool_use_id)
+                        {
+                            pending_map.remove(session_id);
+                            store.clear_matching_question(session_id, Some(&tool_use_id));
+                            log::warn!("Question request timed out for session {}", session_id);
+                        }
                     }
                 }
             }
@@ -1309,14 +1354,27 @@ impl HookServer {
                     Self::play_sound(&sound, SoundEvent::PlanApproval);
                 }
 
-                store.set_pending_plan(
-                    session_id,
-                    Some(PendingPlan {
-                        title: title.clone(),
-                        content: content.clone(),
-                        permissions: permissions.clone(),
-                    }),
-                );
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut pending_map = pending_plan.lock().await;
+                    pending_map.insert(
+                        session_id.clone(),
+                        PendingPlanEntry {
+                            request_id: request_id.clone(),
+                            tx,
+                        },
+                    );
+                    store.set_pending_plan(
+                        session_id,
+                        Some(PendingPlan {
+                            request_id: Some(request_id.clone()),
+                            title: title.clone(),
+                            content: content.clone(),
+                            permissions: permissions.clone(),
+                        }),
+                    );
+                }
                 Self::update_session_metadata_from_raw(&store, &raw);
                 Self::dispatch_webhook_event(
                     &config_store,
@@ -1327,8 +1385,7 @@ impl HookServer {
                     Self::source_for_webhook(&store, &raw, session_id, None),
                     session_id.clone(),
                     Some(PendingWebhookCheck::Plan {
-                        title: title.clone(),
-                        content: content.clone(),
+                        request_id: request_id.clone(),
                     }),
                 );
 
@@ -1341,31 +1398,47 @@ impl HookServer {
                     }
                 }
 
-                let (tx, rx) = oneshot::channel();
-                {
-                    let mut pending_map = pending_plan.lock().await;
-                    pending_map.insert(session_id.clone(), PendingPlanEntry { tx });
-                }
-
                 let response =
                     tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
 
                 match response {
-                    Ok(Ok(resp)) => {
-                        let json = serde_json::to_string(&resp)?;
-                        writer.write_all(json.as_bytes()).await?;
-                        writer.write_all(b"\n").await?;
-                        writer.flush().await?;
-
-                        Self::play_sound(&sound, SoundEvent::TaskConfirmation);
-                        store.set_pending_plan(session_id, None);
-                        store.update_phase(session_id, SessionPhase::Processing);
+                    Ok(Ok(reply)) => {
+                        let result = tokio::time::timeout_at(reply.deadline, async {
+                            let json = serde_json::to_vec(&reply.response)?;
+                            writer.write_all(&json).await?;
+                            writer.write_all(b"\n").await?;
+                            writer.flush().await?;
+                            Ok::<(), anyhow::Error>(())
+                        })
+                        .await
+                        .map_err(|_| {
+                            "The plan Hook did not receive the response in time.".to_string()
+                        })
+                        .and_then(|result| {
+                            result
+                                .map_err(|error| format!("Failed to write plan response: {error}"))
+                        });
+                        let delivered = result.is_ok();
+                        if delivered {
+                            store.clear_matching_plan(session_id, &request_id);
+                        }
+                        let _ = reply.ack.send(result);
+                        if delivered {
+                            drop(tokio::task::spawn_blocking(move || {
+                                Self::play_sound(&sound, SoundEvent::TaskConfirmation);
+                            }));
+                        }
                     }
                     _ => {
                         let mut pending_map = pending_plan.lock().await;
-                        pending_map.remove(session_id);
-                        store.set_pending_plan(session_id, None);
-                        log::warn!("Plan approval timed out for session {}", session_id);
+                        if pending_map
+                            .get(session_id)
+                            .is_some_and(|entry| entry.request_id == request_id)
+                        {
+                            pending_map.remove(session_id);
+                            store.clear_matching_plan(session_id, &request_id);
+                            log::warn!("Plan approval timed out for session {}", session_id);
+                        }
                     }
                 }
             }
@@ -1380,22 +1453,6 @@ impl HookServer {
         }
 
         Ok(())
-    }
-
-    fn clear_harness_permission(store: &SessionStore, session_id: &str, tool_use_id: &str) {
-        store.update_session(session_id, |session| {
-            if session
-                .pending_permission
-                .as_ref()
-                .and_then(|permission| permission.tool_use_id.as_deref())
-                == Some(tool_use_id)
-            {
-                session.pending_permission = None;
-                if session.phase == SessionPhase::WaitingApproval {
-                    session.phase = SessionPhase::Processing;
-                }
-            }
-        });
     }
 
     /// Return recent raw hook events for a session, oldest first.
@@ -1826,7 +1883,9 @@ impl HookServer {
                     s.last_tool_name = Some(tool_name.clone());
                     s.last_tool_target = tool_target.clone();
                     s.last_tool_status = Some(status.clone());
-                    s.phase = SessionPhase::Processing;
+                    if s.pending_permission.is_none() {
+                        s.phase = SessionPhase::Processing;
+                    }
                 });
 
                 // Track TaskCreate/TaskUpdate tool payloads so the island task
@@ -2411,6 +2470,16 @@ impl HookServer {
         raw: &serde_json::Value,
         done_cleanup_secs: u64,
     ) {
+        if status.as_deref() == Some("waiting_for_approval")
+            && raw.get("agent").and_then(|agent| agent.as_str()) == Some("workbuddy-ai")
+        {
+            store.update_session(session_id, |session| {
+                session.phase = SessionPhase::WaitingInput;
+                session.description = Some(message.to_string());
+            });
+            Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskConfirmation);
+            return;
+        }
         let lower = message.to_lowercase();
         let notification_type = raw
             .get("notification_type")
@@ -2599,11 +2668,6 @@ impl HookServer {
         } else {
             crate::agents::project_name_from_path(cwd)
         };
-        let terminal = raw
-            .get("tty")
-            .or_else(|| raw.get("terminal"))
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
         let agent_type = match event {
             AgentEvent::SessionStart { agent_type, .. } => agent_type.as_str(),
             _ => raw
@@ -2611,6 +2675,15 @@ impl HookServer {
                 .and_then(|value| value.as_str())
                 .unwrap_or("claude-code"),
         };
+        let terminal = raw
+            .get("tty")
+            .or_else(|| raw.get("terminal"))
+            .and_then(|value| value.as_str())
+            .filter(|terminal| !terminal.is_empty())
+            .unwrap_or_else(|| {
+                crate::agents::workbuddy::WorkBuddyEdition::from_agent_id(agent_type)
+                    .map_or("", |edition| edition.display_name())
+            });
 
         store.get_or_create_session(session_id, agent_type, &project, cwd, terminal);
     }
@@ -2858,7 +2931,14 @@ impl HookServer {
             return;
         };
 
-        let pid = if Self::is_remote_hook_event(raw) {
+        let is_workbuddy = raw
+            .get("agent")
+            .and_then(|value| value.as_str())
+            .and_then(crate::agents::workbuddy::WorkBuddyEdition::from_agent_id)
+            .is_some();
+        // WorkBuddy's bridge is launched by a short-lived hook shell. It does not own the session.
+        let wsl_distribution = optional_nonempty_string(raw, "_wsl_distribution");
+        let pid = if Self::is_remote_hook_event(raw) || is_workbuddy || wsl_distribution.is_some() {
             None
         } else {
             raw.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32)
@@ -2900,6 +2980,7 @@ impl HookServer {
             && cmux_workspace_id.is_none()
             && remote_host_id.is_none()
             && remote_host_name.is_none()
+            && wsl_distribution.is_none()
             && model.is_none()
         {
             return;
@@ -2944,6 +3025,10 @@ impl HookServer {
             }
             if let Some(value) = remote_host_name {
                 s.remote_host_name = Some(value.to_string());
+            }
+            if let Some(value) = wsl_distribution {
+                s.wsl_distribution = Some(value.to_string());
+                s.terminal = "WSL".to_string();
             }
             if let Some(value) = model {
                 s.model = Some(value.to_string());
@@ -3118,6 +3203,7 @@ impl HookServer {
         session_id: &str,
         allowed: bool,
         always: bool,
+        tool_use_id: Option<&str>,
     ) -> anyhow::Result<()> {
         let response = PermissionResponse {
             decision: if allowed {
@@ -3132,20 +3218,48 @@ impl HookServer {
             },
             always: if allowed && always { Some(true) } else { None },
         };
-        self.send_pending_permission_response(session_id, response)
+        self.send_pending_permission_response(session_id, tool_use_id, response)
             .await
     }
 
     /// Respond to a pending question from the UI
-    pub async fn respond_question(&self, session_id: &str, answer: String) -> anyhow::Result<()> {
-        let mut pending_map = self.pending_questions.lock().await;
-        if let Some(entry) = pending_map.remove(session_id) {
-            let response = QuestionResponse { answer };
-            let _ = entry.tx.send(response);
-            Ok(())
-        } else {
-            anyhow::bail!("No pending question for session {}", session_id)
-        }
+    pub async fn respond_question(
+        &self,
+        session_id: &str,
+        answer: String,
+        tool_use_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let entry = {
+            let mut pending_map = self.pending_questions.lock().await;
+            if pending_map
+                .get(session_id)
+                .is_some_and(|entry| tool_use_id.is_some_and(|id| id != entry.tool_use_id))
+            {
+                anyhow::bail!("The original question is no longer waiting for an answer.")
+            }
+            pending_map.remove(session_id).ok_or_else(|| {
+                anyhow::anyhow!("The original question is no longer waiting for an answer.")
+            })?
+        };
+        let (ack, delivered) = oneshot::channel();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        entry
+            .tx
+            .send(QuestionReply {
+                response: QuestionResponse { answer },
+                ack,
+                deadline,
+            })
+            .map_err(|_| anyhow::anyhow!("The question Hook has stopped waiting for an answer."))?;
+        tokio::time::timeout_at(deadline + Duration::from_secs(1), delivered)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("The question Hook did not confirm the response in time.")
+            })?
+            .map_err(|_| {
+                anyhow::anyhow!("The question Hook disconnected before confirming the response.")
+            })?
+            .map_err(anyhow::Error::msg)
     }
 
     /// Respond to a pending plan approval from the UI
@@ -3154,38 +3268,82 @@ impl HookServer {
         session_id: &str,
         mode: String,
         message: Option<String>,
+        request_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        let mut pending_map = self.pending_plans.lock().await;
-        if let Some(entry) = pending_map.remove(session_id) {
-            let response = PlanResponse { mode, message };
-            let _ = entry.tx.send(response);
-            Ok(())
-        } else {
-            anyhow::bail!("No pending plan for session {}", session_id)
-        }
+        let request_id = request_id
+            .ok_or_else(|| anyhow::anyhow!("The plan decision is missing its request ID."))?;
+        let entry = {
+            let mut pending_map = self.pending_plans.lock().await;
+            if !pending_map
+                .get(session_id)
+                .is_some_and(|entry| entry.request_id == request_id)
+                || self
+                    .session_store
+                    .get_session(session_id)
+                    .and_then(|session| session.pending_plan)
+                    .and_then(|plan| plan.request_id)
+                    .as_deref()
+                    != Some(request_id)
+            {
+                anyhow::bail!("The original plan is no longer awaiting a decision.")
+            }
+            pending_map.remove(session_id).ok_or_else(|| {
+                anyhow::anyhow!("The original plan is no longer awaiting a decision.")
+            })?
+        };
+        let (ack, delivered) = oneshot::channel();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        entry
+            .tx
+            .send(PlanReply {
+                response: PlanResponse { mode, message },
+                ack,
+                deadline,
+            })
+            .map_err(|_| anyhow::anyhow!("The plan Hook has stopped waiting for a decision."))?;
+        tokio::time::timeout_at(deadline + Duration::from_secs(1), delivered)
+            .await
+            .map_err(|_| anyhow::anyhow!("The plan Hook did not confirm the decision in time."))?
+            .map_err(|_| {
+                anyhow::anyhow!("The plan Hook disconnected before confirming the decision.")
+            })?
+            .map_err(anyhow::Error::msg)
     }
 
-    pub async fn respond_auto_approve(&self, session_id: &str) -> anyhow::Result<()> {
+    pub async fn respond_auto_approve(
+        &self,
+        session_id: &str,
+        tool_use_id: Option<&str>,
+    ) -> anyhow::Result<()> {
         let response = PermissionResponse {
             decision: "auto".to_string(),
             reason: None,
             always: None,
         };
-        self.send_pending_permission_response(session_id, response)
+        self.send_pending_permission_response(session_id, tool_use_id, response)
             .await
     }
 
     async fn send_pending_permission_response(
         &self,
         session_id: &str,
+        tool_use_id: Option<&str>,
         response: PermissionResponse,
     ) -> anyhow::Result<()> {
         let entries = {
             let mut pending_map = self.pending_permissions.lock().await;
-            let Some(key) = Self::latest_pending_permission_key(&pending_map, session_id) else {
+            let key = if let Some(tool_use_id) = tool_use_id {
+                Some(PendingPermissionKey {
+                    session_id: session_id.to_string(),
+                    tool_use_id: tool_use_id.to_string(),
+                })
+            } else {
+                Self::latest_pending_permission_key(&pending_map, session_id).cloned()
+            };
+            let Some(entries) = key.and_then(|key| pending_map.remove(&key)) else {
                 anyhow::bail!("No pending permission for session {}", session_id);
             };
-            pending_map.remove(&key).unwrap_or_default()
+            entries
         };
 
         let mut ack_receivers = Vec::new();
@@ -3244,21 +3402,22 @@ impl HookServer {
         }
     }
 
-    fn latest_pending_permission_key(
-        pending_map: &HashMap<String, Vec<PendingPermissionEntry>>,
+    fn latest_pending_permission_key<'a>(
+        pending_map: &'a PendingPermissions,
         session_id: &str,
-    ) -> Option<String> {
+    ) -> Option<&'a PendingPermissionKey> {
         pending_map
             .iter()
+            .filter(|(key, _)| key.session_id == session_id)
             .filter_map(|(key, entries)| {
                 entries
                     .iter()
-                    .filter(|entry| entry.session_id == session_id)
-                    .map(|entry| (key, entry.received_at_ms))
-                    .max_by_key(|(_, received_at_ms)| *received_at_ms)
+                    .map(|entry| entry.received_at_ms)
+                    .max()
+                    .map(|received_at_ms| (key, received_at_ms))
             })
             .max_by_key(|(_, received_at_ms)| *received_at_ms)
-            .map(|(key, _)| key.clone())
+            .map(|(key, _)| key)
     }
 }
 
@@ -3269,6 +3428,22 @@ fn canonical_agent_id(agent: &str) -> &str {
         "openai.codex" => "codex",
         other => other,
     }
+}
+
+fn namespace_wsl_event(raw: &mut serde_json::Value) {
+    let Some(distribution) = optional_nonempty_string(raw, "_wsl_distribution") else {
+        return;
+    };
+    let Some(session) = optional_nonempty_string(raw, "session_id").filter(|id| *id != "unknown")
+    else {
+        return;
+    };
+    let agent = optional_nonempty_string(raw, "agent").unwrap_or("agent");
+    let session = format!(
+        "wsl:{}:{distribution}:{agent}:{session}",
+        distribution.len()
+    );
+    raw["session_id"] = session.into();
 }
 
 fn optional_nonempty_string<'a>(raw: &'a serde_json::Value, key: &str) -> Option<&'a str> {
@@ -3591,8 +3766,12 @@ mod tests {
                 .write_all(format!("{event}\n").as_bytes())
                 .await
                 .unwrap();
+            let key = PendingPermissionKey {
+                session_id: id.to_string(),
+                tool_use_id: tool_id.to_string(),
+            };
             tokio::time::timeout(Duration::from_secs(2), async {
-                while !pending.lock().await.contains_key(tool_id) {
+                while !pending.lock().await.contains_key(&key) {
                     tokio::task::yield_now().await;
                 }
             })
@@ -3603,7 +3782,7 @@ mod tests {
                 SessionPhase::WaitingApproval
             );
             if let Some(decision) = reply {
-                let mut entries = pending.lock().await.remove(tool_id).unwrap();
+                let mut entries = pending.lock().await.remove(&key).unwrap();
                 let (ack, acknowledged) = oneshot::channel();
                 entries
                     .pop()
@@ -3720,6 +3899,600 @@ mod tests {
         assert!(pending.tool_input.contains("AgentBro Windows smoke"));
 
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn permission_responses_stay_with_the_selected_session() {
+        let server = HookServer::new(
+            Arc::new(SessionStore::new()),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let mut requests = Vec::new();
+        for session_id in ["first", "first", "second"] {
+            let (mut client, connection) = tokio::io::duplex(4096);
+            let task = tokio::spawn(HookServer::handle_connection(
+                connection,
+                server.connection_context(),
+            ));
+            let event = serde_json::json!({
+                "agent": "claude-code",
+                "event": "PermissionRequest",
+                "session_id": session_id,
+                "cwd": "/workspace/project",
+                "tool_name": "Read",
+                "tool_use_id": "shared-tool-id",
+                "tool_input": {"file_path": "/workspace/project/example.txt"},
+            });
+            client
+                .write_all(format!("{event}\n").as_bytes())
+                .await
+                .unwrap();
+            requests.push((client, task));
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let queued = server
+                    .pending_permissions
+                    .lock()
+                    .await
+                    .values()
+                    .map(Vec::len)
+                    .sum::<usize>();
+                if queued == requests.len() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("all Hook requests should be queued before responding");
+
+        server
+            .respond_permission("first", false, false, None)
+            .await
+            .unwrap();
+        server
+            .respond_permission("second", true, false, None)
+            .await
+            .unwrap();
+
+        for ((client, task), expected) in requests.into_iter().zip(["deny", "deny", "allow"]) {
+            let mut text = String::new();
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                BufReader::new(client).read_line(&mut text),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let response: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(response["decision"], expected);
+            task.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_responses_preserve_newer_requests_in_the_same_session() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let mut requests = Vec::new();
+        for tool_id in ["first", "second"] {
+            let (mut client, connection) = tokio::io::duplex(4096);
+            let task = tokio::spawn(HookServer::handle_connection(
+                connection,
+                server.connection_context(),
+            ));
+            let event = serde_json::json!({
+                "agent": "claude-code",
+                "event": "PermissionRequest",
+                "session_id": "same-session",
+                "cwd": "/workspace/project",
+                "tool_name": "Read",
+                "tool_use_id": tool_id,
+                "tool_input": {"file_path": format!("{tool_id}.txt")},
+            });
+            client
+                .write_all(format!("{event}\n").as_bytes())
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if store
+                        .get_session("same-session")
+                        .and_then(|session| session.pending_permission)
+                        .and_then(|permission| permission.tool_use_id)
+                        .as_deref()
+                        == Some(tool_id)
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("request should become visible");
+            requests.push((client, task));
+        }
+
+        server
+            .respond_permission("same-session", false, false, Some("first"))
+            .await
+            .unwrap();
+        assert!(server
+            .respond_permission("same-session", true, false, Some("first"))
+            .await
+            .is_err());
+        HookServer::clear_pending_permission_after_tool_resolution(
+            &store,
+            "same-session",
+            &serde_json::json!({"event": "PermissionDenied", "tool_use_id": "first"}),
+        );
+        let session = store.get_session("same-session").unwrap();
+        assert_eq!(session.phase, SessionPhase::WaitingApproval);
+        assert_eq!(
+            session.pending_permission.unwrap().tool_use_id.as_deref(),
+            Some("second")
+        );
+        server
+            .respond_permission("same-session", true, false, Some("second"))
+            .await
+            .unwrap();
+        let session = store.get_session("same-session").unwrap();
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert!(session.pending_permission.is_none());
+
+        for ((client, task), expected) in requests.into_iter().zip(["deny", "allow"]) {
+            let mut text = String::new();
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                BufReader::new(client).read_line(&mut text),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let response: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(response["decision"], expected);
+            task.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn question_responses_preserve_replacement_and_reach_the_waiting_hook() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let mut requests = Vec::new();
+        for question in ["First question?", "Second question?"] {
+            let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (connection, _) = listener.accept().await.unwrap();
+            let task = tokio::spawn(HookServer::handle_connection(
+                connection,
+                server.connection_context(),
+            ));
+            let event = serde_json::json!({
+                "agent": "claude-code",
+                "event": "AskQuestion",
+                "session_id": "question-session",
+                "cwd": "/workspace/project",
+                "question": question,
+                "options": ["Yes", "No"],
+            });
+            client
+                .write_all(format!("{event}\n").as_bytes())
+                .await
+                .unwrap();
+            let tool_use_id = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if let Some(pending) = store
+                        .get_session("question-session")
+                        .and_then(|session| session.pending_question)
+                        .filter(|pending| pending.question == question)
+                    {
+                        break pending.tool_use_id.unwrap();
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("question should become visible");
+            requests.push((client, task, tool_use_id));
+        }
+
+        let (mut client, task, current_id) = requests.pop().unwrap();
+        let (old_client, old_task, old_id) = requests.pop().unwrap();
+        assert_ne!(old_id, current_id);
+        tokio::time::timeout(Duration::from_secs(2), old_task)
+            .await
+            .expect("replaced connection should finish")
+            .unwrap()
+            .unwrap();
+        assert!(server
+            .respond_question("question-session", "Yes".to_string(), Some(&old_id))
+            .await
+            .is_err());
+        let mut old_response = String::new();
+        assert_eq!(
+            BufReader::new(old_client)
+                .read_line(&mut old_response)
+                .await
+                .unwrap(),
+            0
+        );
+        server
+            .respond_question("question-session", "No".to_string(), Some(&current_id))
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            BufReader::new(&mut client).read_line(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&response).unwrap(),
+            serde_json::json!({"answer": "No"}),
+        );
+        task.await.unwrap().unwrap();
+        let session = store.get_session("question-session").unwrap();
+        assert!(session.pending_question.is_none());
+        assert_eq!(session.phase, SessionPhase::Processing);
+    }
+
+    #[tokio::test]
+    async fn question_responses_report_a_closed_hook_write() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let (mut client, connection) = tokio::io::duplex(4096);
+        let task = tokio::spawn(HookServer::handle_connection(
+            connection,
+            server.connection_context(),
+        ));
+        client.write_all(b"{\"agent\":\"claude-code\",\"event\":\"AskQuestion\",\"session_id\":\"closed\",\"question\":\"Continue?\"}\n")
+            .await.unwrap();
+        let tool_use_id = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(pending) = store
+                    .get_session("closed")
+                    .and_then(|session| session.pending_question)
+                {
+                    break pending.tool_use_id.unwrap();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("question should become visible");
+        drop(client);
+        let error = server
+            .respond_question("closed", "Yes".to_string(), Some(&tool_use_id))
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("Failed to write question response:"));
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_responses_keep_replacement_available_after_original_hook_ends() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let mut requests = Vec::new();
+        let mut prior_request_id = None;
+        for _ in 0..2 {
+            let (mut client, connection) = tokio::io::duplex(4096);
+            let task = tokio::spawn(HookServer::handle_connection(
+                connection,
+                server.connection_context(),
+            ));
+            let event = serde_json::json!({
+                "agent": "claude-code",
+                "event": "PlanApproval",
+                "session_id": "planning",
+                "plan_title": "Review changes",
+                "plan_content": "Review the same changes",
+            });
+            client
+                .write_all(format!("{event}\n").as_bytes())
+                .await
+                .unwrap();
+            let request_id = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if let Some(id) = store
+                        .get_session("planning")
+                        .and_then(|session| session.pending_plan)
+                        .and_then(|plan| plan.request_id)
+                        .filter(|id| Some(id) != prior_request_id.as_ref())
+                    {
+                        break id;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("plan should become visible");
+            prior_request_id = Some(request_id.clone());
+            requests.push((client, task, request_id));
+        }
+
+        let (mut current, current_task, current_id) = requests.pop().unwrap();
+        let (_original, original_task, original_id) = requests.pop().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), original_task)
+            .await
+            .expect("superseded Hook should finish")
+            .unwrap()
+            .unwrap();
+        let pending = store
+            .get_session("planning")
+            .and_then(|session| session.pending_plan)
+            .expect("replacement plan should still be pending");
+        assert_eq!(pending.request_id.as_deref(), Some(current_id.as_str()));
+        for stale_id in [None, Some(original_id.as_str())] {
+            assert!(server
+                .respond_plan("planning", "manual".to_string(), None, stale_id)
+                .await
+                .is_err());
+        }
+        server
+            .respond_plan("planning", "manual".to_string(), None, Some(&current_id))
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            BufReader::new(&mut current).read_line(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&response).unwrap()["mode"],
+            "manual",
+        );
+        current_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_responses_fail_when_the_waiting_hook_closes() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let (mut client, connection) = tokio::io::duplex(4096);
+        let task = tokio::spawn(HookServer::handle_connection(
+            connection,
+            server.connection_context(),
+        ));
+        let event = serde_json::json!({
+            "agent": "claude-code",
+            "event": "PlanApproval",
+            "session_id": "plan-disconnected",
+            "plan_content": "Review changes",
+        });
+        client
+            .write_all(format!("{event}\n").as_bytes())
+            .await
+            .unwrap();
+        let request_id = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(id) = store
+                    .get_session("plan-disconnected")
+                    .and_then(|session| session.pending_plan)
+                    .and_then(|plan| plan.request_id)
+                {
+                    break id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("plan should become visible");
+
+        drop(client);
+        let error = server
+            .respond_plan(
+                "plan-disconnected",
+                "manual".to_string(),
+                None,
+                Some(&request_id),
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("Failed to write plan response:"));
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn permission_responses_do_not_wait_for_audio() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let (mut client, connection) = tokio::io::duplex(4096);
+        let handler = tokio::spawn(HookServer::handle_connection(
+            connection,
+            server.connection_context(),
+        ));
+        let event = serde_json::json!({
+            "agent": "claude-code",
+            "event": "PermissionRequest",
+            "session_id": "audio-busy",
+            "cwd": "/workspace/project",
+            "tool_name": "Read",
+            "tool_use_id": "read-file",
+            "tool_input": {"file_path": "/workspace/project/example.txt"},
+        });
+        client
+            .write_all(format!("{event}\n").as_bytes())
+            .await
+            .expect("send permission request");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !server
+                .pending_permissions
+                .lock()
+                .await
+                .keys()
+                .any(|key| key.session_id == "audio-busy")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("permission request should be queued");
+
+        let sound = server.sound_engine.clone();
+        let (locked, lock_ready) = oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let sound_holder = std::thread::spawn(move || {
+            let _guard = sound.lock().expect("lock sound engine");
+            locked.send(()).expect("report sound lock");
+            released.recv().expect("release sound lock");
+        });
+        lock_ready.await.expect("sound lock acquired");
+
+        let mut reply = String::new();
+        let mut reader = BufReader::new(client);
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            let (response, read) = tokio::join!(
+                server.respond_permission("audio-busy", false, false, Some("read-file")),
+                reader.read_line(&mut reply),
+            );
+            response.expect("acknowledge the delivered permission");
+            read.expect("read Hook decision");
+        })
+        .await;
+        let session = store.get_session("audio-busy").expect("active session");
+        release.send(()).expect("release held sound lock");
+        sound_holder.join().expect("finish sound holder");
+        result.expect("audio must not block the permission acknowledgement");
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert!(session.pending_permission.is_none());
+        let response: serde_json::Value =
+            serde_json::from_str(&reply).expect("valid Hook decision");
+        assert_eq!(response["decision"], "deny");
+        handler
+            .await
+            .expect("finish Hook task")
+            .expect("handle request");
+    }
+
+    #[tokio::test]
+    async fn workbuddy_ai_notification_waits_in_the_desktop_without_pending_permission() {
+        let store = Arc::new(SessionStore::new());
+        let adapter = crate::agents::workbuddy::WorkBuddyAdapter::for_edition(
+            crate::agents::workbuddy::WorkBuddyEdition::Global,
+        );
+        let context = HookConnectionContext {
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending_q: Arc::new(Mutex::new(HashMap::new())),
+            pending_plan: Arc::new(Mutex::new(HashMap::new())),
+            store: store.clone(),
+            adapters: Arc::new(vec![Arc::new(adapter)]),
+            sound: Arc::new(std::sync::Mutex::new(None)),
+            app: Arc::new(std::sync::Mutex::new(None)),
+            raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
+            config_store: Arc::new(std::sync::Mutex::new(None)),
+            recent_tools: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task =
+            tokio::spawn(async move { HookServer::handle_connection(server, context).await });
+        client
+            .write_all(br#"{"agent":"workbuddy-ai","event":"Notification","session_id":"workbuddy-ai-native","cwd":"C:\\WorkBuddy test\\project","status":"notification","notification_type":"permission_prompt"}"#)
+            .await
+            .unwrap();
+        client.write_all(b"\n").await.unwrap();
+        client.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let session = store.get_session("workbuddy-ai-native").unwrap();
+        assert_eq!(session.agent_type, "workbuddy-ai");
+        assert_eq!(session.terminal, "WorkBuddy AI");
+        assert_eq!(session.phase, SessionPhase::WaitingInput);
+        assert!(session.pending_permission.is_none());
+    }
+
+    #[test]
+    fn workbuddy_sessions_outlive_the_hook_shell() {
+        let store = SessionStore::new();
+        for agent in ["workbuddy", "workbuddy-ai"] {
+            store.get_or_create_session(agent, agent, "test-project", "/test-project", "WorkBuddy");
+            store.update_phase(agent, SessionPhase::Processing);
+            HookServer::update_session_metadata_from_raw(
+                &store,
+                &serde_json::json!({
+                    "session_id": agent,
+                    "agent": agent,
+                    "pid": u32::MAX,
+                }),
+            );
+        }
+
+        let sessions = store.get_all_sessions();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions
+            .iter()
+            .all(|session| session.phase == SessionPhase::Processing && session.pid.is_none()));
+    }
+
+    #[test]
+    fn wsl_hooks_isolate_sessions_and_ignore_windows_process_ids() {
+        let store = SessionStore::new();
+        let mut ids = std::collections::BTreeSet::new();
+        for distribution in [None, Some("Ubuntu"), Some("Debian")] {
+            let mut raw = serde_json::json!({
+                "agent": "claude-code",
+                "session_id": "same-session-id",
+                "_wsl_distribution": distribution,
+                "pid": u32::MAX,
+            });
+            namespace_wsl_event(&mut raw);
+            let id = raw["session_id"].as_str().unwrap();
+            assert!(ids.insert(id.to_string()));
+            store.get_or_create_session(id, "claude-code", "project", "/tmp/project", "");
+            HookServer::update_session_metadata_from_raw(&store, &raw);
+            let session = store.get_session(id).unwrap();
+            assert_eq!(session.wsl_distribution.as_deref(), distribution);
+            assert_eq!(session.pid, distribution.is_none().then_some(u32::MAX));
+        }
     }
 
     #[tokio::test]
@@ -3931,24 +4704,29 @@ mod tests {
         let (old_tx, _old_rx) = oneshot::channel();
         let (new_tx, _new_rx) = oneshot::channel();
         pending.insert(
-            "old-tool".to_string(),
-            vec![PendingPermissionEntry {
+            PendingPermissionKey {
                 session_id: "s1".to_string(),
+                tool_use_id: "old-tool".to_string(),
+            },
+            vec![PendingPermissionEntry {
                 received_at_ms: 10,
                 tx: old_tx,
             }],
         );
         pending.insert(
-            "new-tool".to_string(),
-            vec![PendingPermissionEntry {
+            PendingPermissionKey {
                 session_id: "s1".to_string(),
+                tool_use_id: "new-tool".to_string(),
+            },
+            vec![PendingPermissionEntry {
                 received_at_ms: 20,
                 tx: new_tx,
             }],
         );
 
         assert_eq!(
-            HookServer::latest_pending_permission_key(&pending, "s1").as_deref(),
+            HookServer::latest_pending_permission_key(&pending, "s1")
+                .map(|key| key.tool_use_id.as_str()),
             Some("new-tool")
         );
     }

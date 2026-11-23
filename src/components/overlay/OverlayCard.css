@@ -151,7 +151,12 @@
   line-height: 1.2;
   padding: 0;
   border-radius: 6px;
-  transition: background 0.15s, color 0.15s, transform 0.15s;
+  transition: background 0.15s, color 0.15s;
+}
+
+button.overlay-card__show-sessions {
+  min-height: 24px;
+  padding-inline: 6px;
 }
 
 .overlay-card__brand-logo-stack {
@@ -183,7 +188,6 @@
 
 .overlay-card__show-sessions:hover {
   color: var(--island-text);
-  transform: translateY(-1px);
 }
 
 .overlay-card__show-sessions--static {
@@ -192,7 +196,6 @@
 
 .overlay-card__show-sessions--static:hover {
   color: var(--island-brand-slogan, color-mix(in srgb, var(--island-text-secondary) 82%, var(--island-text) 18%));
-  transform: none;
 }
 
 .overlay-card__show-sessions span:last-child {

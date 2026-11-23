@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent, RefObject, UIEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { CopyTargetDiffPreview, SkillDetail, SkillSummary, FileTreeNode } from '../../services/skillApiV2'
+import type { CopyTargetDiffPreview, SkillDetail, SkillSummary, FileTreeNode, SkillSourceUpdateCheck } from '../../services/skillApiV2'
+import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { SlideOver } from './SlideOver'
 import { AgentIconBadge } from './AgentIconBadge'
 import { skillModeLabel, skillSourceTypeLabel, targetClaimLabel } from './skillLabels'
@@ -56,7 +58,16 @@ export function SkillDetailSlider({
   fallbackSkill?: SkillDetailFallback | null
 }) {
   const { t } = useTranslation()
-  const [detail, setDetail] = useState<SkillDetail | null>(null)
+  const environmentId = useRuntimeEnvironmentStore((state) => state.selectedEnvironmentId)
+  const selectionRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
+  const view = useMemo(() => ({ environmentId, selectionRevision, skillId, open, fallbackSkill }), [
+    environmentId, selectionRevision, skillId, open, fallbackSkill,
+  ])
+  const visibleView = useRef<typeof view | null>(null)
+  const fileRequest = useRef(0)
+  const documentRequest = useRef(0)
+  const [loadedDetail, setLoadedDetail] = useState<{ view: typeof view; detail: SkillDetail } | null>(null)
+  const detail = loadedDetail?.view === view ? loadedDetail.detail : null
   const [loading, setLoading] = useState(false)
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [fileContent, setFileContent] = useState('')
@@ -73,53 +84,54 @@ export function SkillDetailSlider({
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<DetailTab>('overview')
   const [fileViewMode, setFileViewMode] = useState<FileViewMode>('preview')
-  const [skillDocPath, setSkillDocPath] = useState<string | null>(null)
-  const [skillDocContent, setSkillDocContent] = useState('')
+  const [skillDocument, setSkillDocument] = useState<{ path: string; content: string; loading: boolean } | null>(null)
   const [copyMenu, setCopyMenu] = useState<CopyMenuState | null>(null)
   const readOnly = fallbackSkill?.readOnly === true
 
+  const isCurrentRuntime = () => {
+    const current = useRuntimeEnvironmentStore.getState()
+    return current.selectedEnvironmentId === environmentId && current.selectionRevision === selectionRevision
+  }
+  const isCurrentView = () => visibleView.current === view && open && isCurrentRuntime()
+  const setDetail = (next: SkillDetail) => {
+    if (isCurrentView()) setLoadedDetail({ view, detail: next })
+  }
+
+  useEffect(() => {
+    visibleView.current = view
+    return () => { visibleView.current = null }
+  }, [view])
+
   useEffect(() => {
     if (!open || !skillId) return
+    let cancelled = false
+    const isCurrentLoad = () => !cancelled && isCurrentView()
     setLoading(true)
     setError(null)
     setTab('overview')
-    setDetail(null)
+    setLoadedDetail(null)
     setActiveFile(null)
-    setSkillDocPath(null)
-    setSkillDocContent('')
+    setFileLoading(false)
+    setSkillDocument(null)
     setFileContent('')
     setDiffPreview(null)
+    setDiffLoadingTarget(null)
     setDiffError(null)
+    setSyncing(null)
+    setDeletingTarget(false)
     setDeleteTargetId(null)
     setBatchDeleteMode(false)
     setCopyMenu(null)
     setSelectedDeleteTargetIds(new Set())
     setBatchDeleteTargetIds(null)
     const loadFallbackDetail = async (fallback: SkillDetailFallback) => {
-      const d = fallbackToSkillDetail(fallback)
-      setDetail(d)
-      const fallbackDocPath = `${fallback.centerPath}/SKILL.md`
-      setSkillDocPath(fallbackDocPath)
-      try {
-        const files = await skillApiV2.readFileTree(fallback.centerPath)
-        const skillMd = findFile(files, 'SKILL.md') || fallbackDocPath
-        setDetail({ ...d, files })
-        setSkillDocPath(skillMd)
-        setActiveFile(skillMd)
-        const content = await skillApiV2.readFileContent(skillMd)
-        setSkillDocContent(content)
-        setFileContent(content)
-      } catch {
-        try {
-          const content = await skillApiV2.readFileContent(fallbackDocPath)
-          setActiveFile(fallbackDocPath)
-          setSkillDocContent(content)
-          setFileContent(content)
-        } catch {
-          setSkillDocContent('')
-          setFileContent('')
-        }
-      }
+      const files = await skillApiV2.readFileTree(fallback.centerPath, environmentId).catch(() => null)
+      if (!isCurrentLoad()) return
+      setDetail({ ...fallbackToSkillDetail(fallback), files })
+      const fallbackPath = /^(?:[a-z]:[\\/]|\\\\)/i.test(fallback.centerPath)
+        ? `${fallback.centerPath.replace(/[\\/]+$/, '')}\\SKILL.md`
+        : `${fallback.centerPath.replace(/\/+$/, '')}/SKILL.md`
+      await loadFile(findSkillDocument(files) || fallbackPath, { document: true, fallbackPath })
     }
     const loadDetail = async () => {
       if (readOnly && fallbackSkill) {
@@ -127,21 +139,12 @@ export function SkillDetailSlider({
         return
       }
       try {
-        const d = await skillApiV2.getSkillDetail(skillId)
+        const d = await skillApiV2.getSkillDetail(skillId, environmentId)
+        if (!isCurrentLoad()) return
         setDetail(d)
-        const skillMd = findFile(d.files, 'SKILL.md')
-        setSkillDocPath(skillMd)
-        if (skillMd) {
-          loadFile(skillMd)
-          try {
-            setSkillDocContent(await skillApiV2.readFileContent(skillMd))
-          } catch {
-            setSkillDocContent('')
-          }
-        } else {
-          setSkillDocContent('')
-        }
+        await loadFile(findSkillDocument(d.files), { document: true })
       } catch (e) {
+        if (!isCurrentLoad()) return
         if (!fallbackSkill) {
           setError(String(e))
           return
@@ -149,9 +152,12 @@ export function SkillDetailSlider({
         await loadFallbackDetail(fallbackSkill)
       }
     }
-    void loadDetail().finally(() => setLoading(false))
+    void loadDetail().finally(() => {
+      if (isCurrentLoad()) setLoading(false)
+    })
+    return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, skillId, fallbackSkill?.centerPath, readOnly])
+  }, [view])
 
   useEffect(() => {
     if (!copyMenu) return
@@ -169,66 +175,87 @@ export function SkillDetailSlider({
     }
   }, [copyMenu])
 
-  const loadFile = async (path: string) => {
+  const loadFile = async (path: string | null, { document, fallbackPath }: { document?: boolean; fallbackPath?: string } = {}) => {
+    if (!isCurrentView()) return
+    const request = ++fileRequest.current
+    const isCurrentDocument = () => document && request === documentRequest.current && isCurrentView()
+    if (document) {
+      documentRequest.current = request
+      setSkillDocument(path ? { path, content: '', loading: true } : null)
+    }
     setActiveFile(path)
-    setFileViewMode(isMarkdownPath(path) ? 'preview' : 'source')
-    setFileLoading(true)
-    try {
-      const content = await skillApiV2.readFileContent(path)
-      setFileContent(content)
-    } catch (e) {
-      setFileContent(`无法读取文件：${e}`)
-    } finally {
+    setFileContent('')
+    setFileViewMode(!path || isMarkdownPath(path) ? 'preview' : 'source')
+    setFileLoading(Boolean(path))
+    if (!path) return
+
+    const read = (file: string) => skillApiV2.readFileContent(file, environmentId).then(
+      (content) => ({ path: file, content, error: null }),
+      (error: unknown) => ({ path: file, content: '', error: String(error) }),
+    )
+    let result = await read(path)
+    if (result.error !== null && fallbackPath && fallbackPath !== path && isCurrentDocument()) {
+      result = await read(fallbackPath)
+    }
+    if (isCurrentDocument()) setSkillDocument({ path: result.path, content: result.content, loading: false })
+    if (request === fileRequest.current && isCurrentView()) {
+      setActiveFile(result.path)
+      setFileContent(result.error === null ? result.content : `无法读取文件：${result.error}`)
       setFileLoading(false)
     }
   }
 
+  const refreshUpdatedSource = async (updated: SkillDetail) => {
+    if (isCurrentRuntime()) void useSkillStoreV2.getState().loadOverview(true)
+    if (!isCurrentView() || skillId !== updated.id) return
+    setDetail(updated)
+    await loadFile(findSkillDocument(updated.files), { document: true })
+  }
+
   const doSync = async (targetId: string, action: string) => {
+    if (!isCurrentView()) return
     setSyncing(targetId)
     try {
       await skillApiV2.executeSyncCopy(targetId, action)
-      if (skillId) {
-        const d = await skillApiV2.getSkillDetail(skillId)
-        setDetail(d)
-      }
+      if (isCurrentView() && skillId) setDetail(await skillApiV2.getSkillDetail(skillId, environmentId))
+      if (!isCurrentView()) return
       setDiffPreview(null)
     } catch (e) {
-      setError(String(e))
+      if (isCurrentView()) setError(String(e))
     } finally {
-      setSyncing(null)
+      if (isCurrentView()) setSyncing(null)
     }
   }
 
   const openDiff = async (targetId: string) => {
+    if (!isCurrentView()) return
     setDiffLoadingTarget(targetId)
     setDiffError(null)
     try {
       const preview = await skillApiV2.previewCopyTargetDiff(targetId)
-      setDiffPreview(preview)
+      if (isCurrentView()) setDiffPreview(preview)
     } catch (e) {
-      setDiffError(String(e))
+      if (isCurrentView()) setDiffError(String(e))
     } finally {
-      setDiffLoadingTarget(null)
+      if (isCurrentView()) setDiffLoadingTarget(null)
     }
   }
 
   const confirmDeleteTarget = async () => {
-    if (!deleteTargetId) return
+    if (!deleteTargetId || !isCurrentView()) return
     setDeletingTarget(true)
     try {
-      await skillApiV2.deleteSkillTargetDistribution(deleteTargetId)
-      if (skillId) {
-        const d = await skillApiV2.getSkillDetail(skillId)
-        setDetail(d)
-      }
+      await skillApiV2.deleteSkillTargetDistribution(deleteTargetId, environmentId)
+      if (isCurrentView() && skillId) setDetail(await skillApiV2.getSkillDetail(skillId, environmentId))
+      if (!isCurrentView()) return
       if (diffPreview?.targetId === deleteTargetId) {
         setDiffPreview(null)
       }
       setDeleteTargetId(null)
     } catch (e) {
-      setError(String(e))
+      if (isCurrentView()) setError(String(e))
     } finally {
-      setDeletingTarget(false)
+      if (isCurrentView()) setDeletingTarget(false)
     }
   }
 
@@ -255,40 +282,29 @@ export function SkillDetailSlider({
 
   const confirmBatchDeleteTargets = async () => {
     const targetIds = batchDeleteTargetIds ?? []
-    if (targetIds.length === 0) return
+    if (targetIds.length === 0 || !isCurrentView()) return
     setDeletingTarget(true)
+    let failed: string[] = []
     try {
-      const failed: string[] = []
-      const failedIds: string[] = []
-      for (const targetId of targetIds) {
+      const { failures } = await skillApiV2.deleteSkillTargetDistributions(targetIds, environmentId)
+      if (!isCurrentView()) return
+      failed = failures.map(({ targetId, error }) => {
         const target = detail?.targets.find((item) => item.id === targetId)
-        try {
-          await skillApiV2.deleteSkillTargetDistribution(targetId)
-        } catch (e) {
-          failedIds.push(targetId)
-          failed.push(`${target ? pathBasename(target.targetPath) || targetId : targetId}: ${String(e)}`)
-        }
-      }
-      if (skillId) {
-        const d = await skillApiV2.getSkillDetail(skillId)
-        setDetail(d)
-      }
-      if (diffPreview && targetIds.includes(diffPreview.targetId)) {
+        return `${target ? pathBasename(target.targetPath) || targetId : targetId}: ${error}`
+      })
+      const failedIds = new Set(failures.map(({ targetId }) => targetId))
+      if (diffPreview && targetIds.includes(diffPreview.targetId) && !failedIds.has(diffPreview.targetId)) {
         setDiffPreview(null)
       }
-      if (failed.length > 0) {
-        setError(failed.slice(0, 3).join('\n'))
-        setSelectedDeleteTargetIds(new Set(failedIds))
-      } else {
-        setError(null)
-        setSelectedDeleteTargetIds(new Set())
-        setBatchDeleteMode(false)
-      }
+      setError(failed.slice(0, 3).join('\n') || null)
+      setSelectedDeleteTargetIds(failedIds)
+      setBatchDeleteMode(failedIds.size > 0)
       setBatchDeleteTargetIds(null)
+      if (skillId) setDetail(await skillApiV2.getSkillDetail(skillId, environmentId))
     } catch (e) {
-      setError(String(e))
+      if (isCurrentView()) setError([...failed.slice(0, 3), String(e)].join('\n'))
     } finally {
-      setDeletingTarget(false)
+      if (isCurrentView()) setDeletingTarget(false)
     }
   }
 
@@ -392,9 +408,9 @@ export function SkillDetailSlider({
           {tab === 'overview' && (
             <OverviewTab
               detail={detail}
-              docPath={skillDocPath}
-              docContent={skillDocContent || fileContent}
-              fileLoading={fileLoading}
+              docPath={skillDocument?.path ?? null}
+              docContent={skillDocument?.content ?? ''}
+              docLoading={skillDocument?.loading ?? false}
             />
           )}
           {tab === 'files' && (
@@ -429,11 +445,11 @@ export function SkillDetailSlider({
               onConfirmBatchDelete={() => setBatchDeleteTargetIds(selectedBatchDeleteTargets.map((target) => target.id))}
             />
           )}
-          {tab === 'source' && <SourceTab detail={detail} />}
+          {tab === 'source' && <SourceTab key={detail.id} detail={detail} updateAllowed={!readOnly} onUpdated={refreshUpdatedSource} />}
         </div>
       )}
     </SlideOver>
-    {diffPreview && (
+    {detail && diffPreview && (
       <CopyDiffDialog key={diffPreview.targetId} preview={diffPreview} onClose={() => setDiffPreview(null)} />
     )}
     {deleteTarget && (
@@ -454,7 +470,7 @@ export function SkillDetailSlider({
         </div>
       </PreviewDialog>
     )}
-    {batchDeleteTargetIds && (
+    {detail && batchDeleteTargetIds && (
       <PreviewDialog
         title="确认批量删除 Agent 分发"
         confirmLabel="确认删除"
@@ -528,12 +544,12 @@ function OverviewTab({
   detail,
   docPath,
   docContent,
-  fileLoading,
+  docLoading,
 }: {
   detail: SkillDetail
   docPath: string | null
   docContent: string
-  fileLoading: boolean
+  docLoading: boolean
 }) {
   const { t } = useTranslation()
   const frontmatter = Object.entries(detail.frontmatter || {})
@@ -551,7 +567,7 @@ function OverviewTab({
           <small>{STATUS_LABEL[detail.status] || detail.status}</small>
         </div>
         <div className="sm2__markdown sm2__markdown--document sm2__markdown--skilldoc selectable">
-          {fileLoading ? (
+          {docLoading ? (
             <div className="sm2__empty sm2__empty--compact">读取说明文档…</div>
           ) : docContent ? (
             <>
@@ -1252,17 +1268,64 @@ function SkillFrontmatterIntro({ description, compact = false }: { description?:
   )
 }
 
-function SourceTab({ detail }: { detail: SkillDetail }) {
+function SourceTab({ detail, updateAllowed, onUpdated }: {
+  detail: SkillDetail
+  updateAllowed: boolean
+  onUpdated: (detail: SkillDetail) => Promise<void>
+}) {
   const { t } = useTranslation()
+  const [check, setCheck] = useState<SkillSourceUpdateCheck | null>(null)
+  const [busy, setBusy] = useState<'check' | 'apply' | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const [updateError, setUpdateError] = useState<string | null>(null)
+  const [updatedRef, setUpdatedRef] = useState<string | null>(null)
+  const [githubToken, setGithubToken] = useState('')
+  const [showToken, setShowToken] = useState(false)
   const sourceType = detail.source?.sourceType || detail.sourceType
   const sourceUri = detail.source?.sourceUri || detail.sourceUri
   const linkedCenter = isLinkedCenterSkill(detail)
+  const supportsUpdates = updateAllowed && !linkedCenter && !!sourceUri
+    && ['git', 'github', 'skillssh'].includes(sourceType)
+    && /^(?:github:|skillssh:|https?:\/\/github\.com\/)/.test(sourceUri)
+  const checkForUpdates = async () => {
+    setBusy('check')
+    setUpdateError(null)
+    setUpdatedRef(null)
+    setCheck(null)
+    try {
+      setCheck(await skillApiV2.checkSkillSourceUpdate(detail.id, githubToken.trim() || undefined))
+    } catch (error) {
+      setUpdateError(String(error))
+    } finally {
+      setBusy(null)
+    }
+  }
+  const applyUpdate = async () => {
+    if (!check?.updateAvailable) return
+    setBusy('apply')
+    setUpdateError(null)
+    try {
+      const updated = await skillApiV2.applySkillSourceUpdate(detail.id, check, githubToken.trim() || undefined)
+      setGithubToken('')
+      setShowToken(false)
+      setUpdatedRef(updated.source?.sourceRef ?? check.latestRef)
+      await onUpdated(updated)
+    } catch (error) {
+      setUpdateError(String(error))
+    } finally {
+      setCheck(null)
+      setConfirming(false)
+      setBusy(null)
+    }
+  }
   const summaryCards = [
     { label: '类型', value: skillSourceTypeLabel(t, sourceType) },
     { label: '中心类型', value: linkedCenter ? '软链中心目录' : null },
     { label: '导入 Agent', value: detail.source?.importedFromAgent },
     { label: '安装方式', value: detail.source?.installedVia },
-    { label: '来源 Ref', value: detail.source?.sourceRef },
+    { label: t('skills.sourceUpdates.installedCommit'), value: detail.source?.sourceRef },
+    { label: t('skills.sourceUpdates.installedAt'), value: detail.source?.createdAt ? new Date(detail.source.createdAt).toLocaleString() : null },
+    { label: t('skills.sourceUpdates.updatedAt'), value: detail.source?.updatedAt ? new Date(detail.source.updatedAt).toLocaleString() : null },
   ].filter(hasSourceValue)
   const pathCards = [
     { label: '真实源目录', value: linkedCenter ? detail.centerResolvedPath : null },
@@ -1291,6 +1354,78 @@ function SourceTab({ detail }: { detail: SkillDetail }) {
               <code className="selectable" title={item.value}>{item.value}</code>
             </div>
           ))}
+        </div>
+      )}
+      {supportsUpdates && (
+        <div className="sm2__skill-source-card sm2__skill-source-update">
+          <div className="sm2__skill-source-update-actions">
+            <button className="sm2__btn" disabled={busy !== null} onClick={() => void checkForUpdates()}>
+              {t(busy === 'check' ? 'skills.sourceUpdates.checking' : 'skills.sourceUpdates.check')}
+            </button>
+            {check?.updateAvailable && (
+              <button className="sm2__btn sm2__btn--primary" disabled={busy !== null} onClick={() => setConfirming(true)}>
+                {t('skills.sourceUpdates.apply')}
+              </button>
+            )}
+            <button
+              className="sm2__git-advanced-toggle"
+              aria-expanded={showToken}
+              disabled={busy !== null}
+              onClick={() => setShowToken(!showToken)}
+            >
+              {t('skills.sourceUpdates.privateRepository')}
+            </button>
+          </div>
+          {showToken && (
+            <label className="sm2__git-token-field">
+              <span>{t('skills.sourceUpdates.githubToken')}</span>
+              <input
+                type="password"
+                autoComplete="off"
+                value={githubToken}
+                disabled={busy !== null}
+                onChange={(event) => {
+                  setGithubToken(event.target.value)
+                  setCheck(null)
+                  setUpdateError(null)
+                }}
+              />
+            </label>
+          )}
+          {check && (
+            <div role="status">
+              {check.updateAvailable
+                ? t(check.installedRef ? 'skills.sourceUpdates.available' : 'skills.sourceUpdates.different', { version: check.latestRef.slice(0, 12) })
+                : t(check.installedRef ? 'skills.sourceUpdates.current' : 'skills.sourceUpdates.matches')}
+            </div>
+          )}
+          {updatedRef && <div role="status">{t('skills.sourceUpdates.applied', { version: updatedRef.slice(0, 12) })}</div>}
+          {updateError && <div className="sm2__error" role="alert">{updateError}</div>}
+          {confirming && check && (
+            <PreviewDialog
+              title={t('skills.sourceUpdates.apply')}
+              cancelLabel={t('settings.cancel')}
+              confirmLabel={t('skills.sourceUpdates.apply')}
+              busyLabel={t('skills.sourceUpdates.applying')}
+              busy={busy === 'apply'}
+              onCancel={() => { if (!busy) setConfirming(false) }}
+              onConfirm={() => void applyUpdate()}
+            >
+              <p>{t('skills.sourceUpdates.confirm', { version: check.latestRef.slice(0, 12) })}</p>
+              {check.fileChanges.length > 0 ? (
+                <ul className="sm2__skill-source-update-files" aria-label={t('skills.sourceUpdates.fileChanges')}>
+                  {check.fileChanges.map((file, index) => (
+                    <li key={`${file.path}-${index}`}>
+                      <code>{file.path}</code>
+                      <span>{t(`skills.sourceUpdates.fileChange.${file.kind}`)}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>{t('skills.sourceUpdates.noFileChanges')}</p>
+              )}
+            </PreviewDialog>
+          )}
         </div>
       )}
     </section>
@@ -1330,16 +1465,9 @@ function CompactInfo({
   )
 }
 
-function findFile(node: FileTreeNode | null, name: string): string | null {
-  if (!node) return null
-  if (node.name === name && node.nodeType === 'file') return node.path
-  if (node.children) {
-    for (const c of node.children) {
-      const f = findFile(c, name)
-      if (f) return f
-    }
-  }
-  return null
+function findSkillDocument(root: FileTreeNode | null): string | null {
+  const entries = root?.nodeType === 'file' ? [root] : root?.children
+  return entries?.find((entry) => entry.nodeType === 'file' && entry.name === 'SKILL.md')?.path ?? null
 }
 
 function countFiles(node: FileTreeNode | null): number {
@@ -1362,7 +1490,7 @@ function relativeFilePath(path: string, root: string): string {
 }
 
 function isSkillMarkdownPath(path: string | null): boolean {
-  return Boolean(path && /(^|\/)SKILL\.md$/i.test(path))
+  return path !== null && pathBasename(path).toLowerCase() === 'skill.md'
 }
 
 function formatMetaValue(value: string): string {

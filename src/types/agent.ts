@@ -9,7 +9,7 @@ export type AgentType =
   | 'qwen' | 'kimi' | 'doubao' | 'deepseek' | 'opencode'
   | 'qwenwork-cn' | 'deepseek-harness'
   | 'droid' | 'stepfun' | 'antigravity'
-  | 'workbuddy' | 'hermes' | 'pi' | 'kiro' | 'zcode'
+  | 'workbuddy' | 'workbuddy-ai' | 'hermes' | 'pi' | 'kiro' | 'zcode'
 
 export type ToolStatus = 'running' | 'success' | 'error' | 'interrupted'
 
@@ -194,6 +194,7 @@ export interface SessionState {
   sessionTitle?: string
   remoteHostId?: string
   remoteHostName?: string
+  wslDistribution?: string
   pid?: number
   tty?: string
   termProgram?: string
@@ -203,6 +204,7 @@ export interface SessionState {
   zellijSessionName?: string
   cmuxSurfaceId?: string
   cmuxWorkspaceId?: string
+  planRequestId?: string
   planTitle?: string
   planContent?: string
   planPermissions?: string[]
@@ -284,7 +286,7 @@ export type AgentEvent =
   | { type: 'session_end'; sessionId: string }
   | { type: 'processing'; sessionId: string; description: string }
   | { type: 'tool_use'; sessionId: string; toolName: string; toolInput: string; toolTarget?: string; status: ToolStatus }
-  | { type: 'permission_request'; sessionId: string; toolName: string; toolInput?: string; diff?: DiffContent; options?: string[] }
+  | { type: 'permission_request'; sessionId: string; toolUseId?: string; toolName: string; toolInput?: string; diff?: DiffContent; options?: string[] }
   | { type: 'ask_question'; sessionId: string; question: string; options: string[]; descriptions?: string[]; header?: string; multiSelect?: boolean; questions?: AskQuestion['questions'] }
   | { type: 'task_complete'; sessionId: string; summary: string }
   | { type: 'error'; sessionId: string; message: string }

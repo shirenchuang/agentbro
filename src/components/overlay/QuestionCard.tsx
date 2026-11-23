@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import type { OverlayItem, SessionState } from '../../types/agent'
 import { OverlayCard } from './OverlayCard'
 import { setNotchFocusable } from '../../services/tauriApi'
+import { answerDisplayedQuestion, questionReplyError, useSessionStore, type QuestionIdentity } from '../../stores/sessionStore'
 import './QuestionCard.css'
 
 interface QuestionOption {
@@ -11,18 +12,14 @@ interface QuestionOption {
   description?: string | null
 }
 
-interface QuestionData {
-  question: string
+interface QuestionData extends QuestionIdentity {
   options: (string | QuestionOption)[]
   descriptions?: string[]
-  multiSelect?: boolean
-  questions?: Array<{ question: string; header?: string | null; options: QuestionOption[]; multiSelect?: boolean }>
 }
 
 interface QuestionCardProps {
   overlay: OverlayItem
   session: SessionState
-  onAnswer: (answer: string) => void
   onShowSessions?: () => void
   onDismiss: () => void
   onDraftStateChange?: (hasDraft: boolean) => void
@@ -245,9 +242,11 @@ function MultiQuestionView({ data, onAnswer, onDraftStateChange }: { data: Quest
   )
 }
 
-export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDismiss, onDraftStateChange, sessionCount }: QuestionCardProps) {
+export function QuestionCard({ overlay, session, onShowSessions, onDismiss, onDraftStateChange, sessionCount }: QuestionCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as QuestionData
+  const error = useSessionStore((state) => questionReplyError(state, session.id, data))
+  const onAnswer = (answer: string) => { void answerDisplayedQuestion(session.id, data, answer) }
   const options = (data.options || []).map((opt, i) => normalizeOption(opt, data.descriptions?.[i]))
   const isMulti = data.multiSelect ?? false
   const isMultiQuestionSet = Boolean(data.questions && data.questions.length > 1)
@@ -297,7 +296,8 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
         className="overlay-card--question"
         bodyClassName="question-card"
       >
-        <MultiQuestionView data={data} onAnswer={onAnswer} onDraftStateChange={onDraftStateChange} />
+        <MultiQuestionView key={overlay.id} data={data} onAnswer={onAnswer} onDraftStateChange={onDraftStateChange} />
+        {error && <div role="alert" className="question-card__error">{error}</div>}
       </OverlayCard>
     )
   }
@@ -324,11 +324,7 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
   const handleCustomSubmit = () => {
     if (customComposing) return
     const val = customText.trim()
-    if (val) {
-      onAnswer(val)
-      setResponseState({ overlayId: overlay.id, selected, showCustom: false, customText: '' })
-      setNotchFocusable(false)
-    }
+    if (val) onAnswer(val)
   }
 
   const showCustomInput = async () => {
@@ -469,6 +465,7 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
           </button>
         )}
       </div>
+      {error && <div role="alert" className="question-card__error">{error}</div>}
     </OverlayCard>
   )
 }

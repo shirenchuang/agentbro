@@ -7,6 +7,8 @@ import type { SkillManagerTab } from '../../stores/skillStoreV2'
 import { AgentIconBadge } from '../skills-v2/AgentIconBadge'
 import type { IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries, writeStoredAgentOrder } from '../../utils/agentOrdering'
+import { isAgentProgramInstalled } from '../../utils/agentPrograms'
+import { useCurrentAgentPrograms } from '../../hooks/useRuntimeEnvironment'
 import { RuntimeEnvironmentSwitcher } from './RuntimeEnvironmentSwitcher'
 
 interface SidebarItem {
@@ -72,12 +74,14 @@ export function SettingsSidebar({
   const setSkillInstallTab = useSkillStoreV2((s) => s.setInstallTab)
   const marketplaceInstallTask = useSkillStoreV2((s) => s.marketplaceInstallTask)
   const skillAgents = useSkillStoreV2((s) => s.agents)
+  const agentPrograms = useCurrentAgentPrograms()
   const skillSelectedAgentId = useSkillStoreV2((s) => s.selectedAgentId)
   const selectAgent = useSkillStoreV2((s) => s.selectAgent)
   const requestCustomAgentDialog = useSkillStoreV2((s) => s.requestCustomAgentDialog)
   const sessionList = useSessionStore((s) => s.sessionList)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const [showUninstalledSkillAgents, setShowUninstalledSkillAgents] = useState(false)
+  const [agentSearch, setAgentSearch] = useState('')
   const [manualAgentOrder, setManualAgentOrder] = useState<string[]>(() => readStoredAgentOrder())
   const [draggedAgentId, setDraggedAgentId] = useState<string | null>(null)
   const [agentDropTarget, setAgentDropTarget] = useState<AgentDropTarget | null>(null)
@@ -95,7 +99,14 @@ export function SettingsSidebar({
           : '✓'
     : null
   const agentUsageScores = useMemo(() => buildAgentUsageScores(sessionList, activeSessionId), [sessionList, activeSessionId])
-  const visibleSkillAgents = useMemo(() => skillAgents.filter((agent) => agent.id !== SHARED_SKILLS_AGENT_ID), [skillAgents])
+  const agentQuery = collapsed ? '' : agentSearch.trim().toLowerCase()
+  const visibleSkillAgents = useMemo(() => skillAgents.filter((agent) =>
+    agent.id !== SHARED_SKILLS_AGENT_ID
+    && (agent.displayName.toLowerCase().includes(agentQuery) || agent.id.toLowerCase().includes(agentQuery)),
+  ).map((agent) => {
+    const program = agentPrograms[agent.id]
+    return program ? { ...agent, installed: isAgentProgramInstalled(program) } : agent
+  }), [agentPrograms, agentQuery, skillAgents])
   const installedSkillAgents = useMemo(
     () => sortAgentSummaries(
       visibleSkillAgents.filter((agent) => agent.installed),
@@ -107,6 +118,7 @@ export function SettingsSidebar({
     () => sortAgentSummaries(visibleSkillAgents.filter((agent) => !agent.installed), { usageScores: agentUsageScores }),
     [agentUsageScores, visibleSkillAgents],
   )
+  const canReorderInstalledAgents = !agentQuery && installedSkillAgents.length > 1
   const reorderInstalledAgent = useCallback((sourceAgentId: string, target: AgentDropTarget) => {
     const next = installedSkillAgents.map((agent) => agent.id).filter((agentId) => agentId !== sourceAgentId)
     const targetIndex = next.indexOf(target.agentId)
@@ -120,7 +132,7 @@ export function SettingsSidebar({
     setAgentDropTarget(null)
   }
   const startAgentMouseDrag = (event: ReactMouseEvent<HTMLDivElement>, agentId: string) => {
-    if (event.button !== 0 || installedSkillAgents.length < 2) return
+    if (event.button !== 0 || !canReorderInstalledAgents) return
     agentMouseCleanupRef.current?.()
 
     const startX = event.clientX
@@ -312,6 +324,7 @@ export function SettingsSidebar({
       { id: 'install', label: '安装 Skill', icon: '⬇', iconBg: '#FF9500' },
       { id: 'packs', label: '技能包', icon: '📦', iconBg: '#5856D6' },
       { id: 'agents', label: 'Agent 管理', icon: '🤖', iconBg: '#007AFF' },
+      { id: 'projects', label: t('skills.projectsTab'), icon: '📁', iconBg: '#009C95' },
       { id: 'diagnostics', label: '诊断与修复', icon: '🩺', iconBg: '#FF9500' },
       { id: 'settings', label: '设置', icon: '⚙', iconBg: '#8E8E93' },
     ]
@@ -345,12 +358,24 @@ export function SettingsSidebar({
           ))}
           {skillActiveTab === 'agents' && (
             <div className="sm2-sidebar__subgroup">
+              {!collapsed && (
+                <input
+                  type="search"
+                  className="sm2__search sm2-sidebar__agent-search"
+                  aria-label={t('skills.agentManagement.sidebarSearch')}
+                  placeholder={t('skills.agentManagement.sidebarSearch')}
+                  value={agentSearch}
+                  onChange={(event) => setAgentSearch(event.target.value)}
+                />
+              )}
               <div className="sm2-sidebar__subgroup-label">
                 <span>已安装 Agent</span>
                 <em>{installedSkillAgents.length}</em>
               </div>
               {visibleSkillAgents.length === 0 ? (
-                <div className="sm2-sidebar__subgroup-empty">暂无</div>
+                <div className="sm2-sidebar__subgroup-empty" role={agentQuery ? 'status' : undefined}>
+                  {agentQuery ? t('skills.agentManagement.sidebarSearchEmpty') : '暂无'}
+                </div>
               ) : (
                 <>
                   {installedSkillAgents.length === 0 ? (
@@ -359,9 +384,9 @@ export function SettingsSidebar({
                     installedSkillAgents.map((a) => (
                       <div
                         key={a.id}
-                        className={`sm2-sidebar__subitem-row${installedSkillAgents.length > 1 ? ' sm2-sidebar__subitem-row--draggable' : ''}${draggedAgentId === a.id ? ' sm2-sidebar__subitem-row--dragging' : ''}${agentDropTarget?.agentId === a.id ? ` sm2-sidebar__subitem-row--drop-${agentDropTarget.edge}` : ''}`}
+                        className={`sm2-sidebar__subitem-row${canReorderInstalledAgents ? ' sm2-sidebar__subitem-row--draggable' : ''}${draggedAgentId === a.id ? ' sm2-sidebar__subitem-row--dragging' : ''}${agentDropTarget?.agentId === a.id ? ` sm2-sidebar__subitem-row--drop-${agentDropTarget.edge}` : ''}`}
                         data-agent-id={a.id}
-                        title={`拖拽调整 ${a.displayName} 顺序`}
+                        title={canReorderInstalledAgents ? `拖拽调整 ${a.displayName} 顺序` : undefined}
                         onMouseDown={(event) => startAgentMouseDrag(event, a.id)}
                       >
                         <button
@@ -382,19 +407,26 @@ export function SettingsSidebar({
                   )}
                   {uninstalledSkillAgents.length > 0 && (
                     <div className="sm2-sidebar__subgroup-section">
-                      <button
-                        type="button"
-                        className="sm2-sidebar__fold-toggle"
-                        aria-expanded={showUninstalledSkillAgents}
-                        onClick={() => setShowUninstalledSkillAgents((open) => !open)}
-                      >
-                        <span className={`sm2-sidebar__fold-chevron${showUninstalledSkillAgents ? ' sm2-sidebar__fold-chevron--open' : ''}`}>
-                          ›
-                        </span>
-                        <span>未安装 Agent</span>
-                        <em>{uninstalledSkillAgents.length}</em>
-                      </button>
-                      {showUninstalledSkillAgents && uninstalledSkillAgents.map((a) => (
+                      {agentQuery ? (
+                        <div className="sm2-sidebar__subgroup-label">
+                          <span>未安装 Agent</span>
+                          <em>{uninstalledSkillAgents.length}</em>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="sm2-sidebar__fold-toggle"
+                          aria-expanded={showUninstalledSkillAgents}
+                          onClick={() => setShowUninstalledSkillAgents((open) => !open)}
+                        >
+                          <span className={`sm2-sidebar__fold-chevron${showUninstalledSkillAgents ? ' sm2-sidebar__fold-chevron--open' : ''}`}>
+                            ›
+                          </span>
+                          <span>未安装 Agent</span>
+                          <em>{uninstalledSkillAgents.length}</em>
+                        </button>
+                      )}
+                      {(agentQuery || showUninstalledSkillAgents) && uninstalledSkillAgents.map((a) => (
                         <button
                           key={a.id}
                           type="button"

@@ -7,6 +7,9 @@
 
 use super::{process_tree, registry, tmux};
 
+#[cfg(any(target_os = "windows", test))]
+mod windows_terminal;
+
 /// Result of a jump operation
 #[derive(Debug)]
 pub enum JumpResult {
@@ -1125,6 +1128,9 @@ fn jump_to_terminal_windows(
     ctx: &JumpContext,
     tree: &std::collections::HashMap<u32, process_tree::ProcessInfo>,
 ) -> JumpResult {
+    if windows_terminal::focus_existing(ctx.pid, tree) {
+        return JumpResult::Success;
+    }
     if let Some(terminal) = outer_terminal_app(ctx, tree).or_else(|| ctx.terminal_app.clone()) {
         return jump_to_terminal_app_windows(&terminal, ctx.cwd.as_deref());
     }
@@ -1354,6 +1360,8 @@ fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
                 "com.stepfun.app" => "com.stepfun.app",
                 "ai.opencode.desktop" => "ai.opencode.desktop",
                 "com.workbuddy.workbuddy" => "com.workbuddy.workbuddy",
+                "com.tencent.workbuddy.mac" => "com.tencent.workbuddy.mac",
+                "com.workbuddy.workbuddy-ai" => "com.workbuddy.workbuddy-ai",
                 _ => return None,
             });
         }
@@ -1367,7 +1375,8 @@ fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
         Some("codebuddycn") | Some("codybuddycn") => Some("com.tencent.codebuddy.cn"),
         Some("stepfun") => Some("com.stepfun.app"),
         Some("opencode") => Some("ai.opencode.desktop"),
-        Some("workbuddy") => Some("com.workbuddy.workbuddy"),
+        Some("workbuddy") => Some("com.tencent.workbuddy.mac"),
+        Some("workbuddy-ai") => Some("com.workbuddy.workbuddy-ai"),
         _ => None,
     }
 }
@@ -1388,6 +1397,8 @@ fn native_bundle_matches_context(ctx: &JumpContext, bundle_id: &str) -> bool {
             | (Some("stepfun"), "com.stepfun.app")
             | (Some("opencode"), "ai.opencode.desktop")
             | (Some("workbuddy"), "com.workbuddy.workbuddy")
+            | (Some("workbuddy"), "com.tencent.workbuddy.mac")
+            | (Some("workbuddy-ai"), "com.workbuddy.workbuddy-ai")
     )
 }
 
@@ -1414,6 +1425,8 @@ fn is_ide_host_bundle(bundle_id: &str) -> bool {
         || lower == "com.stepfun.app"
         || lower == "ai.opencode.desktop"
         || lower == "com.workbuddy.workbuddy"
+        || lower == "com.tencent.workbuddy.mac"
+        || lower == "com.workbuddy.workbuddy-ai"
 }
 
 fn outer_terminal_app(

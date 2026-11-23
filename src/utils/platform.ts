@@ -17,7 +17,7 @@ export function isWindowsPlatform(): boolean {
   const nav = navigator as NavigatorWithUserAgentData
   const platform = nav.userAgentData?.platform || nav.platform || ''
   const userAgent = nav.userAgent || ''
-  return /Win/i.test(`${platform} ${userAgent}`)
+  return /\b(?:Windows|Win32|Win64)\b/i.test(`${platform} ${userAgent}`)
 }
 
 export function primaryModifierPressed(event: { metaKey: boolean; ctrlKey: boolean }): boolean {

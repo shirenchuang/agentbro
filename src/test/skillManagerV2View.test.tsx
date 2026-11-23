@@ -5,12 +5,12 @@ import { AgentIconBadge } from '../components/skills-v2/AgentIconBadge'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
 import { useSessionStore } from '../stores/sessionStore'
 import { skillApiV2 } from '../services/skillApiV2'
-import { agentApi, type AgentProgramInfo } from '../services/agentApi'
+import { agentApi, type AgentOutputEvent, type AgentPackageOutput, type AgentProgramInfo } from '../services/agentApi'
 import * as tauriApi from '../services/tauriApi'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import i18n from '../i18n'
-import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AdoptPreview, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackDetail, SkillDetail, SkillTargetDetail, UnmanagedItemDto } from '../services/skillApiV2'
+import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AgentSkillViewSnapshot, AdoptPreview, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackDetail, SkillPackManifest, SkillDetail, SkillTargetDetail, UnmanagedItemDto } from '../services/skillApiV2'
 import type { AgentType, SessionState } from '../types/agent'
 import { useConfigStore } from '../stores/configStore'
 import {
@@ -21,7 +21,11 @@ import {
 // SkillManagerShell imports pages that call skillApiV2 at mount; we stub the api
 // so tests run without the Tauri runtime.
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn().mockResolvedValue(null) }))
+vi.mock('@tauri-apps/api/path', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@tauri-apps/api/path')>(),
+  homeDir: vi.fn().mockResolvedValue('/Profiles/owner/'),
+}))
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn().mockResolvedValue(null), save: vi.fn().mockResolvedValue(null) }))
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn().mockResolvedValue(undefined) }))
 
 function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
@@ -494,7 +498,7 @@ describe('Skill library view mode (no Agent matrix)', () => {
     vi.spyOn(skillApiV2, 'getSkillDetail')
       .mockResolvedValueOnce(initialDetail)
       .mockResolvedValueOnce(refreshedDetail)
-    const deleteDistribution = vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockResolvedValue(undefined)
+    const deleteDistributions = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 2, failures: [] })
 
     const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
     render(
@@ -512,11 +516,10 @@ describe('Skill library view mode (no Agent matrix)', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除 2 个分发' }))
     fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
 
-    await waitFor(() => {
-      expect(deleteDistribution).toHaveBeenCalledWith('target-claude')
-      expect(deleteDistribution).toHaveBeenCalledWith('target-codex')
-    })
-    expect(deleteDistribution).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(deleteDistributions).toHaveBeenCalledExactlyOnceWith(
+      ['target-claude', 'target-codex'], LOCAL_RUNTIME_ENVIRONMENT_ID,
+    ))
+    expect(await screen.findByText('尚未分发到任何 Agent')).toBeInTheDocument()
   })
 })
 
@@ -957,6 +960,8 @@ describe('Marketplace install flow', () => {
 describe('Git install skill preview view modes', () => {
   beforeEach(() => {
     cleanup()
+    vi.restoreAllMocks()
+    useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
     vi.spyOn(skillApiV2, 'previewGitHubRepoImport').mockResolvedValue({
       repo: {
         owner: 'anthropics',
@@ -1027,6 +1032,7 @@ describe('Git install skill preview view modes', () => {
       expect(preview).toHaveBeenCalledWith(
         'https://github.com/acme/private-skills',
         'github-test-token',
+        LOCAL_RUNTIME_ENVIRONMENT_ID,
       )
     })
 
@@ -1037,8 +1043,84 @@ describe('Git install skill preview view modes', () => {
         'https://github.com/acme/private-skills',
         expect.any(Array),
         'github-test-token',
+        { environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID, expectedCommit: undefined },
       )
     })
+  })
+  it.each([false, true])('discards a Git preview after switching runtime, return=%s', async (returnToHost) => {
+    const host = 'preview-ssh'
+    const runtime = useRuntimeEnvironmentStore.getState()
+    runtime.selectEnvironment(host)
+    let finishPreview!: (preview: Awaited<ReturnType<typeof skillApiV2.previewGitHubRepoImport>>) => void
+    const preview = vi.mocked(skillApiV2.previewGitHubRepoImport)
+    preview.mockReturnValueOnce(new Promise((resolve) => { finishPreview = resolve }))
+    const install = vi.spyOn(skillApiV2, 'importGitHubRepoSkills')
+    const { GitPanel } = await import('../components/skills-v2/InstallView')
+    const url = 'https://github.com/acme/skills/tree/main/skills/demo'
+    render(<GitPanel initialUrl={url} onDone={() => {}} />)
+    fireEvent.click(screen.getByText('检测 Skill'))
+    expect(preview).toHaveBeenCalledWith(url, '', host)
+
+    await act(async () => {
+      runtime.selectEnvironment('other-ssh')
+      if (returnToHost) runtime.selectEnvironment(host)
+      finishPreview({
+        repo: { owner: 'acme', repo: 'skills', branch: 'main', normalizedUrl: url, revision: 'a'.repeat(40) },
+        skills: [{
+          sourcePath: 'skills/demo', skillId: 'demo', skillName: 'Demo', description: null,
+          rootDirectory: '', skillDirectoryName: 'demo', downloadUrl: url, conflict: null,
+        }],
+      })
+    })
+    expect(install).not.toHaveBeenCalled()
+    expect(screen.getByText('检测 Skill')).toBeInTheDocument()
+    expect(screen.queryByText('Demo')).not.toBeInTheDocument()
+  })
+
+  it('keeps review open when a slash is part of the SSH Git branch name', async () => {
+    useRuntimeEnvironmentStore.getState().selectEnvironment('preview-ssh')
+    const url = 'https://github.com/acme/skills/tree/feature/review'
+    vi.mocked(skillApiV2.previewGitHubRepoImport).mockResolvedValueOnce({
+      repo: {
+        owner: 'acme', repo: 'skills', branch: 'feature/review', normalizedUrl: url,
+        revision: 'b'.repeat(40), requestedPath: null,
+      },
+      skills: [{
+        sourcePath: 'skills/demo', skillId: 'demo', skillName: 'Demo', description: null,
+        rootDirectory: '', skillDirectoryName: 'demo', downloadUrl: url, conflict: null,
+      }],
+    })
+    const install = vi.spyOn(skillApiV2, 'importGitHubRepoSkills')
+    const { GitPanel } = await import('../components/skills-v2/InstallView')
+    render(<GitPanel initialUrl={url} onDone={() => {}} />)
+    fireEvent.click(screen.getByText('检测 Skill'))
+    expect(await screen.findByText('安装所选 (1)')).toBeInTheDocument()
+    expect(install).not.toHaveBeenCalled()
+  })
+
+  it('uses the reviewed commit and SSH host for a direct Git Skill install', async () => {
+    const host = 'preview-ssh'
+    useRuntimeEnvironmentStore.getState().selectEnvironment(host)
+    const url = 'https://github.com/acme/skills/tree/main/skills/demo'
+    const revision = 'b'.repeat(40)
+    const repo = { owner: 'acme', repo: 'skills', branch: 'main', normalizedUrl: url, revision }
+    vi.mocked(skillApiV2.previewGitHubRepoImport).mockResolvedValueOnce({
+      repo,
+      skills: [{
+        sourcePath: 'skills/demo', skillId: 'demo', skillName: 'Demo', description: null,
+        rootDirectory: '', skillDirectoryName: 'demo', downloadUrl: url, conflict: null,
+      }],
+    })
+    const install = vi.spyOn(skillApiV2, 'importGitHubRepoSkills').mockResolvedValue({
+      repo, importedSkills: [], skippedSkills: [],
+    })
+    const { GitPanel } = await import('../components/skills-v2/InstallView')
+    render(<GitPanel initialUrl={url} onDone={() => {}} />)
+    fireEvent.click(screen.getByText('检测 Skill'))
+    await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(
+      url, [{ sourcePath: 'skills/demo', resolution: 'overwrite' }], '',
+      { environmentId: host, expectedCommit: revision },
+    ))
   })
 })
 
@@ -1260,7 +1342,7 @@ describe('Local skill import', () => {
     fireEvent.click(screen.getByRole('button', { name: '浏览远程文件夹' }))
 
     expect(await screen.findByRole('dialog', { name: '选择 ubuntu 上的文件夹' })).toBeInTheDocument()
-    await waitFor(() => expect(browse).toHaveBeenCalledWith('~'))
+    await waitFor(() => expect(browse).toHaveBeenCalledWith('~', 'ubuntu'))
     fireEvent.click(await screen.findByRole('button', { name: /skills.*Skill 文件夹/ }))
     await waitFor(() => expect(screen.getByLabelText('远程目录路径')).toHaveValue('/home/agent/skills'))
     fireEvent.click(screen.getByRole('button', { name: '选择当前文件夹' }))
@@ -1900,7 +1982,11 @@ describe('Agent sync local agent chips', () => {
       },
     ]
     let finishFirstAdopt!: () => void
-    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValue(inventory)
+    let finishInventory!: () => void
+    const inventoryRequest = new Promise<AgentSkillInventoryAgent[]>((resolve) => {
+      finishInventory = () => resolve(inventory)
+    })
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockReturnValue(inventoryRequest)
     vi.spyOn(skillApiV2, 'executeAdopt').mockImplementationOnce(
       () => new Promise<string>((resolve) => {
         finishFirstAdopt = () => resolve('')
@@ -1910,8 +1996,14 @@ describe('Agent sync local agent chips', () => {
     const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
     render(<AgentSyncPanel onDone={() => {}} />)
 
-    fireEvent.click(await screen.findByText('选择当前可接管'))
-    fireEvent.click(screen.getByText('接管到中心库'))
+    const selectVisible = screen.getByRole('button', { name: '选择当前可接管' })
+    expect(selectVisible).toBeDisabled()
+    await act(async () => finishInventory())
+    await waitFor(() => expect(selectVisible).toBeEnabled())
+    fireEvent.click(selectVisible)
+    const adoptSelected = screen.getByRole('button', { name: '接管到中心库' })
+    expect(adoptSelected).toBeEnabled()
+    fireEvent.click(adoptSelected)
 
     expect(await screen.findByRole('status')).toHaveTextContent('正在接管 1 / 2')
     expect(screen.getByRole('status')).toHaveTextContent('alpha')
@@ -1919,7 +2011,7 @@ describe('Agent sync local agent chips', () => {
     expect(screen.getByLabelText('选择 Agent')).not.toBeDisabled()
     fireEvent.click(screen.getByText('beta'))
     expect(document.body.querySelector('.sm2__slideover-title')).toHaveTextContent('beta')
-    finishFirstAdopt()
+    await act(async () => finishFirstAdopt())
   })
 
   it('localizes stale unmanaged adoption errors instead of showing database text', async () => {
@@ -2671,6 +2763,16 @@ describe('selecting a skill updates detail', () => {
 })
 
 describe('Skill detail slider + agent page render without crashing', () => {
+  function previewFiles(root: string, names: string[]): NonNullable<SkillDetail['files']> {
+    const separator = root.includes('\\') ? '\\' : '/'
+    return {
+      name: 'release-checklist',
+      nodeType: 'dir',
+      path: root,
+      children: names.map((name) => ({ name, nodeType: 'file', path: `${root}${separator}${name}`, children: null })),
+    }
+  }
+
   const agentDetail: AgentDetail = {
     id: 'claude-code',
     displayName: 'Claude Code',
@@ -2714,6 +2816,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
     useRuntimeEnvironmentStore.setState({ selectedEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
     useSkillStoreV2.setState({
       runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+      agentProgramSnapshot: null,
+      agentProgramOperation: null,
       viewMode: 'cards',
       filters: { query: '', source: '', status: '', type: '' },
       skills: [makeSkill()],
@@ -2766,6 +2870,73 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container).toBeTruthy()
   })
 
+  it('checks a Git Skill source and applies the selected version after confirmation', async () => {
+    const sourceUri = 'skillssh:example/skills/release-checklist'
+    const oldVersion = 'a'.repeat(40)
+    const newVersion = 'b'.repeat(40)
+    const source = {
+      sourceType: 'skillssh', sourceUri, sourceRef: oldVersion,
+      importedFromAgent: null, importedFromPath: null, installedVia: 'agentbro',
+      createdAt: '2026-11-19T12:00:00Z', updatedAt: '2026-11-19T12:00:00Z',
+    }
+    const root = '/center/release-checklist'
+    const detail: SkillDetail = {
+      ...makeSkill({ sourceType: 'skillssh', sourceUri }), source,
+      centerResolvedPath: null, files: previewFiles(root, ['SKILL.md', 'notes.md']), frontmatter: {}, targets: [],
+    }
+    const checked = {
+      sourceUri, installedRef: oldVersion, latestRef: newVersion, currentHash: 'check-hash', updateAvailable: true,
+      fileChanges: [
+        { path: 'examples/说明.md', kind: 'added' as const },
+        { path: 'SKILL.md', kind: 'modified' as const },
+        { path: 'old-guide.md', kind: 'removed' as const },
+      ],
+    }
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue(detail)
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+    let finishUpdatedDoc!: (content: string) => void
+    const updatedDoc = new Promise<string>((resolve) => { finishUpdatedDoc = resolve })
+    let applyingSource = false
+    vi.spyOn(skillApiV2, 'readFileContent').mockImplementation(async (path) => (
+      path.endsWith('notes.md') ? 'Selected reference notes.' : applyingSource ? updatedDoc : 'Original instructions.'
+    ))
+    const check = vi.spyOn(skillApiV2, 'checkSkillSourceUpdate').mockResolvedValue(checked)
+    const apply = vi.spyOn(skillApiV2, 'applySkillSourceUpdate').mockImplementation(async () => {
+      applyingSource = true
+      return { ...detail, source: { ...source, sourceRef: newVersion } }
+    })
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId={detail.id} open onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: '来源' }))
+    fireEvent.click(screen.getByRole('button', { name: '私有仓库' }))
+    fireEvent.change(screen.getByLabelText('GitHub 访问令牌（仅本次使用）'), { target: { value: 'fixture-token' } })
+    fireEvent.click(screen.getByRole('button', { name: '检查更新' }))
+    expect(await screen.findByText('来源有可用更新 · bbbbbbbbbbbb')).toBeInTheDocument()
+    expect(check).toHaveBeenCalledWith(detail.id, 'fixture-token')
+    fireEvent.click(screen.getByRole('button', { name: '更新 Skill' }))
+    const dialog = await screen.findByRole('dialog', { name: '更新 Skill' })
+    expect(apply).not.toHaveBeenCalled()
+    const changes = within(dialog).getByRole('list', { name: '文件变更' })
+    expect(within(changes).getAllByRole('listitem').map((row) => row.textContent)).toEqual([
+      'examples/说明.md新增',
+      'SKILL.md修改',
+      'old-guide.md删除',
+    ])
+    fireEvent.click(within(dialog).getByRole('button', { name: '更新 Skill' }))
+    expect(await screen.findByText('Skill 已更新到 bbbbbbbbbbbb。')).toBeInTheDocument()
+    expect(apply).toHaveBeenCalledWith(detail.id, checked, 'fixture-token')
+    expect(screen.queryByLabelText('GitHub 访问令牌（仅本次使用）')).not.toBeInTheDocument()
+    expect(screen.getByText(newVersion)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '文件' }))
+    fireEvent.click(screen.getByRole('button', { name: /notes\.md/ }))
+    expect(await screen.findByText('Selected reference notes.')).toBeInTheDocument()
+    await act(async () => { finishUpdatedDoc('Updated instructions.') })
+    expect(screen.getByText('Selected reference notes.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '概览' }))
+    expect(screen.getByText('Updated instructions.')).toBeInTheDocument()
+  })
+
   it('loads the file tree for unmanaged fallback skills', async () => {
     vi.spyOn(skillApiV2, 'getSkillDetail').mockRejectedValueOnce(new Error('not in center'))
     const readFileTree = vi.spyOn(skillApiV2, 'readFileTree').mockResolvedValueOnce({
@@ -2806,7 +2977,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     )
 
     expect(await screen.findByText('Manual doc.')).toBeInTheDocument()
-    expect(readFileTree).toHaveBeenCalledWith('/c/skills/manual-skill')
+    expect(readFileTree).toHaveBeenCalledWith('/c/skills/manual-skill', LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(document.body.querySelector('.sm2__markdown--skilldoc > :first-child')?.tagName).toBe('H1')
     expect(document.body.querySelector('.sm2__skill-frontmatter')).toBeNull()
 
@@ -2815,6 +2986,115 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getAllByText('SKILL.md').length).toBeGreaterThan(0)
     expect(screen.getByText('reference.md')).toBeInTheDocument()
     expect(screen.getByText('2 个文件')).toBeInTheDocument()
+  })
+
+  it('keeps the selected Windows file preview when a slow unmanaged document finishes', async () => {
+    const root = 'C:\\Users\\Owner\\.claude\\skills\\manual-skill'
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockRejectedValue(new Error('not in center'))
+    vi.spyOn(skillApiV2, 'readFileTree').mockResolvedValue(previewFiles(root, ['SKILL.md', 'notes.md']))
+    let finishDocument!: (content: string) => void
+    const pendingDocument = new Promise<string>((resolve) => { finishDocument = resolve })
+    const read = vi.spyOn(skillApiV2, 'readFileContent').mockImplementation(async (path) => (
+      path.endsWith('notes.md') ? 'Windows reference notes.' : pendingDocument
+    ))
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="manual-skill" open onClose={() => {}} fallbackSkill={{
+      id: 'manual-skill', name: 'manual-skill', centerPath: root,
+    }} />)
+    await waitFor(() => expect(read).toHaveBeenCalledWith(`${root}\\SKILL.md`, LOCAL_RUNTIME_ENVIRONMENT_ID))
+    fireEvent.click(screen.getByRole('button', { name: '文件' }))
+    fireEvent.click(screen.getByRole('button', { name: /notes\.md/ }))
+    expect(await screen.findByText('Windows reference notes.')).toBeInTheDocument()
+
+    await act(async () => { finishDocument('Windows skill instructions.') })
+    expect(screen.getByText('Windows reference notes.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '概览' }))
+    expect(screen.getByText('Windows skill instructions.')).toBeInTheDocument()
+    expect(read).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByRole('button', { name: '文件' }))
+    fireEvent.click(screen.getByRole('button', { name: /SKILL\.md/ }))
+    expect((await screen.findByText('Windows skill instructions.')).closest('.sm2__markdown'))
+      .toHaveClass('sm2__markdown--file-skill')
+  })
+
+  it('opens the Windows default document when the unmanaged file tree cannot be read', async () => {
+    const root = 'C:\\Users\\Owner\\.claude\\skills\\manual-skill'
+    vi.spyOn(skillApiV2, 'readFileTree').mockRejectedValue(new Error('tree unavailable'))
+    const read = vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValue('Standalone Windows instructions.')
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="manual-skill" open onClose={() => {}} fallbackSkill={{
+      id: 'manual-skill', name: 'manual-skill', centerPath: root, readOnly: true,
+    }} />)
+
+    expect(await screen.findByText('Standalone Windows instructions.')).toBeInTheDocument()
+    expect(read).toHaveBeenCalledExactlyOnceWith(`${root}\\SKILL.md`, LOCAL_RUNTIME_ENVIRONMENT_ID)
+  })
+
+  it.each([false, true])('keeps reference text out of the overview without a readable document, empty file=%s', async (emptyDocument) => {
+    const root = '/center/release-checklist'
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue({
+      ...makeSkill(), frontmatter: {}, source: null, targets: [],
+      files: previewFiles(root, emptyDocument ? ['SKILL.md', 'notes.md'] : ['notes.md']),
+    })
+    vi.spyOn(skillApiV2, 'readFileContent').mockImplementation(async (path) => (
+      path.endsWith('notes.md') ? 'Reference-only text.' : ''
+    ))
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: '文件' }))
+    fireEvent.click(screen.getByRole('button', { name: /notes\.md/ }))
+    expect(await screen.findByText('Reference-only text.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '概览' }))
+    expect(screen.queryByText('Reference-only text.')).not.toBeInTheDocument()
+    expect(await screen.findByText('未找到说明文档')).toBeInTheDocument()
+  })
+
+  it.each([true, false])('recognizes only the root Skill document with nested directories first, root present=%s', async (hasRootDocument) => {
+    const root = '/center/release-checklist'
+    const files = previewFiles(root, hasRootDocument ? ['SKILL.md'] : [])
+    const nested = previewFiles(`${root}/examples`, ['SKILL.md'])
+    files.children = [{ ...nested, name: 'examples' }, ...(files.children ?? [])]
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue({
+      ...makeSkill(), frontmatter: {}, source: null, targets: [], files,
+    })
+    const read = vi.spyOn(skillApiV2, 'readFileContent').mockImplementation(async (path) => (
+      path === `${root}/SKILL.md` ? 'Main Skill instructions.' : 'Nested example instructions.'
+    ))
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+
+    expect(await screen.findByText(hasRootDocument ? 'Main Skill instructions.' : '未找到说明文档')).toBeInTheDocument()
+    expect(screen.queryByText('Nested example instructions.')).not.toBeInTheDocument()
+    if (hasRootDocument) expect(read).toHaveBeenCalledExactlyOnceWith(`${root}/SKILL.md`, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    else expect(read).not.toHaveBeenCalled()
+  })
+
+  it('closes an Agent file preview when its host changes instead of reading the old path remotely', async () => {
+    const root = '/c/skills/manual-skill'
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram()])
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockRejectedValue(new Error('not in center'))
+    const tree = vi.spyOn(skillApiV2, 'readFileTree').mockResolvedValue(previewFiles(root, ['SKILL.md']))
+    vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValue('Local-only instructions.')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByText('manual-skill', { selector: '.sm2__agent-skill-card-titleline strong' }))
+    expect(await screen.findByText('Local-only instructions.')).toBeInTheDocument()
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'remote-runtime' })
+    })
+    await waitFor(() => expect(screen.queryByText('Local-only instructions.')).not.toBeInTheDocument())
+    expect(tree).toHaveBeenCalledExactlyOnceWith(root, LOCAL_RUNTIME_ENVIRONMENT_ID)
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({ runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
+    })
+    expect(screen.queryByText('Local-only instructions.')).not.toBeInTheDocument()
   })
 
   it('labels linked center skills with their real source directory', async () => {
@@ -2908,12 +3188,13 @@ describe('Skill detail slider + agent page render without crashing', () => {
       targets: [],
       source: null,
     })
-    vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValue('# Release Checklist\n\nCopy this text.')
+    const read = vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValue('# Release Checklist\n\nCopy this text.')
 
     const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
     render(<SkillDetailSlider skillId="release-checklist" open={true} onClose={() => {}} />)
 
     const paragraph = await screen.findByText('Copy this text.')
+    expect(read).toHaveBeenCalledExactlyOnceWith('/center/release-checklist/SKILL.md', LOCAL_RUNTIME_ENVIRONMENT_ID)
     const overviewMarkdown = paragraph.closest('.sm2__markdown')
     expect(overviewMarkdown).toHaveClass('selectable')
     const title = document.body.querySelector('.sm2__slideover-title .selectable')
@@ -3080,8 +3361,107 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除分发' }))
     fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
 
-    await waitFor(() => expect(deleteTarget).toHaveBeenCalledWith('target-codex'))
+    await waitFor(() => expect(deleteTarget).toHaveBeenCalledWith('target-codex', LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(await screen.findByText('尚未分发到任何 Agent')).toBeInTheDocument()
+  })
+
+  it.each([true, false])('keeps batch Skill detail deletion on the confirmed host, runtime switches=%s', async (switchRuntime) => {
+    const local: SkillDetail = {
+      ...makeSkill(),
+      frontmatter: {},
+      files: null,
+      targets: [agentDetail.skills[0], { ...agentDetail.skills[0], id: 'target-2', agentId: 'codex' }],
+      source: null,
+    }
+    const remote = { ...local, name: 'Remote Release Checklist', targets: [] }
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValueOnce(local).mockResolvedValue(
+      switchRuntime ? remote : { ...local, targets: [local.targets[1]] },
+    )
+    let finishRemoval!: () => void
+    const held = new Promise<void>((resolve) => { finishRemoval = resolve })
+    const legacyRuntimes: string[] = []
+    vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockImplementation(async () => {
+      legacyRuntimes.push(useRuntimeEnvironmentStore.getState().selectedEnvironmentId)
+      await held
+    })
+    const remove = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockReturnValue(
+      held.then(() => ({ deleted: 1, failures: [{ targetId: 'target-2', error: 'Local failure' }] })),
+    )
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Agent (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除分发' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: '全选' }))
+    fireEvent.click(screen.getByRole('button', { name: '删除 2 个分发' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: '确认批量删除 Agent 分发' })).getByRole('button', { name: '确认删除' }))
+
+    await act(async () => {
+      if (switchRuntime) useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime')
+      finishRemoval()
+    })
+
+    expect(legacyRuntimes).toEqual([])
+    expect(remove).toHaveBeenCalledExactlyOnceWith(['target-1', 'target-2'], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    if (switchRuntime) {
+      expect(await screen.findByText('Remote Release Checklist')).toBeInTheDocument()
+      expect(screen.queryByText(/Local failure/)).not.toBeInTheDocument()
+    } else {
+      expect(await screen.findByText(/Local failure/)).toBeInTheDocument()
+      expect(screen.getByText('1 / 1 已选择')).toBeInTheDocument()
+    }
+  })
+
+  it('keeps the new host Skill detail when the previous host responds later', async () => {
+    const local: SkillDetail = { ...makeSkill(), frontmatter: {}, files: null, targets: agentDetail.skills, source: null }
+    let resolveLocal!: (detail: SkillDetail) => void
+    const pendingLocal = new Promise<SkillDetail>((resolve) => { resolveLocal = resolve })
+    const load = vi.spyOn(skillApiV2, 'getSkillDetail')
+      .mockReturnValueOnce(pendingLocal)
+      .mockResolvedValue({ ...local, name: 'Remote Release Checklist', targets: [] })
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+    await waitFor(() => expect(load).toHaveBeenCalledWith('release-checklist', LOCAL_RUNTIME_ENVIRONMENT_ID))
+
+    act(() => useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime'))
+    expect(await screen.findByText('Remote Release Checklist')).toBeInTheDocument()
+    await act(async () => { resolveLocal(local) })
+
+    expect(screen.getByText('Remote Release Checklist')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Agent (1)' })).not.toBeInTheDocument()
+    expect(load).toHaveBeenLastCalledWith('release-checklist', 'remote-runtime')
+  })
+
+  it.each(['single', 'batch'])('closes a %s Skill detail removal review after switching hosts and back', async (mode) => {
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue({
+      ...makeSkill(),
+      frontmatter: {},
+      files: null,
+      targets: agentDetail.skills,
+      source: null,
+    })
+    const removeOne = vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockResolvedValue()
+    const removeBatch = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Agent (1)' }))
+    if (mode === 'batch') {
+      fireEvent.click(screen.getByRole('button', { name: '批量删除分发' }))
+      fireEvent.click(screen.getByRole('checkbox', { name: '全选' }))
+      fireEvent.click(screen.getByRole('button', { name: '删除 1 个分发' }))
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: '删除分发' }))
+    }
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime')
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(removeOne).not.toHaveBeenCalled()
+    expect(removeBatch).not.toHaveBeenCalled()
   })
 
   it('opens skill documentation links with the system browser', async () => {
@@ -3201,9 +3581,69 @@ describe('Skill detail slider + agent page render without crashing', () => {
       settingsFile: '~/.codefuse/engine/cc/settings.json',
       mcpConfig: '~/.codefuse/engine/cc/settings.json',
       pluginDir: '~/.codefuse/engine/cc/plugins/cache',
-    }))
+    }, LOCAL_RUNTIME_ENVIRONMENT_ID))
+    await waitFor(() => expect(dialog).not.toBeInTheDocument())
     expect(loadOverview).toHaveBeenCalledWith(true)
-    expect(screen.queryByRole('dialog', { name: /添加 Claude Code 实例/ })).not.toBeInTheDocument()
+  })
+
+  it('browses the selected SSH host when configuring a custom Agent', async () => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    const hostId = 'company-ssh'
+    runtime.selectEnvironment(hostId)
+    useSkillStoreV2.setState({ runtimeEnvironmentId: hostId })
+    const openLocal = vi.mocked(openDialog)
+    openLocal.mockClear()
+    const browse = vi.spyOn(skillApiV2, 'browseRemoteSkillSources').mockResolvedValue({
+      path: '/home/remote/branch',
+      parentPath: '/home/remote',
+      entries: [],
+    })
+    const add = vi.spyOn(agentApi, 'addCustom').mockRejectedValue(new Error('Fixture ends before persistence'))
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    act(() => useSkillStoreV2.getState().requestCustomAgentDialog())
+    fireEvent.change(await screen.findByLabelText('显示名称'), { target: { value: 'Remote branch' } })
+    fireEvent.click(screen.getByRole('button', { name: '选择目录' }))
+    expect(await screen.findByRole('dialog', { name: `选择 ${hostId} 上的文件夹` })).toBeInTheDocument()
+    await waitFor(() => expect(browse).toHaveBeenCalledExactlyOnceWith('~', hostId))
+    await waitFor(() => expect(screen.getByRole('button', { name: '选择当前文件夹' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: '选择当前文件夹' }))
+
+    expect(screen.getByLabelText('配置根目录')).toHaveValue('/home/remote/branch')
+    expect(openLocal).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '保存 Agent' }))
+    expect(add).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      displayName: 'Remote branch',
+      configDir: '/home/remote/branch',
+      globalSkillsDir: '/home/remote/branch/skills',
+      settingsFile: '/home/remote/branch/settings.json',
+    }), hostId)
+  })
+
+  it('drops a custom Agent folder browse when the SSH host changes', async () => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    runtime.selectEnvironment('earlier-ssh')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'earlier-ssh' })
+    let finishBrowse!: (value: Awaited<ReturnType<typeof skillApiV2.browseRemoteSkillSources>>) => void
+    const browse = vi.spyOn(skillApiV2, 'browseRemoteSkillSources').mockReturnValue(
+      new Promise((resolve) => { finishBrowse = resolve }),
+    )
+    const add = vi.spyOn(agentApi, 'addCustom')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    act(() => useSkillStoreV2.getState().requestCustomAgentDialog())
+    fireEvent.click(await screen.findByRole('button', { name: '选择目录' }))
+    expect(browse).toHaveBeenCalledExactlyOnceWith('~', 'earlier-ssh')
+    await act(async () => {
+      runtime.selectEnvironment('other-ssh')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'other-ssh' })
+      finishBrowse({ path: '/home/earlier/branch', parentPath: null, entries: [] })
+    })
+    expect(screen.queryByRole('button', { name: '选择当前文件夹' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '保存 Agent' })).not.toBeInTheDocument()
+    expect(add).not.toHaveBeenCalled()
   })
 
   it('deletes a custom agent from the agent detail header', async () => {
@@ -3248,9 +3688,462 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('dialog', { name: '删除 Agent「AntCC」' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
 
-    await waitFor(() => expect(removeCustom).toHaveBeenCalledWith('custom-antcc'))
+    await waitFor(() => expect(removeCustom).toHaveBeenCalledWith('custom-antcc', LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(loadOverview).toHaveBeenCalledWith(true)
     expect(useSkillStoreV2.getState().selectedAgentId).toBeNull()
+  })
+
+  it('keeps a same-ID custom Agent in the new runtime after a deletion finishes elsewhere', async () => {
+    const id = 'custom-team'
+    const local = makeSidebarAgent(id, 'Local Agent')
+    const remote = makeSidebarAgent(id, 'Remote Agent')
+    useSkillStoreV2.setState({
+      agents: [local],
+      selectedAgentId: id,
+      selectedAgentDetail: { ...agentDetail, ...local },
+    })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({ id, isCustom: true })])
+    let finishRemoval!: () => void
+    vi.spyOn(agentApi, 'removeCustom').mockReturnValue(new Promise((resolve) => { finishRemoval = resolve }))
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { unmount } = render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '删除此 Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+    unmount()
+
+    act(() => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+      useSkillStoreV2.setState({
+        runtimeEnvironmentId: 'other-host',
+        agents: [remote],
+        selectedAgentId: id,
+        selectedAgentDetail: { ...agentDetail, ...remote },
+      })
+    })
+    loadOverview.mockClear()
+    await act(async () => finishRemoval())
+
+    expect(useSkillStoreV2.getState().agents).toEqual([remote])
+    expect(useSkillStoreV2.getState().selectedAgentId).toBe(id)
+    expect(loadOverview).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { operation: 'install', status: 'notInstalled', button: '安装此 Agent' },
+    { operation: 'update', status: 'updateAvailable', button: '更新此 Agent' },
+  ] as const)('ignores completion of an Agent $operation after leaving and returning to a runtime', async ({ operation, status, button }) => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({
+      status, installedVersion: '1.0.0', latestVersion: '2.0.0',
+    })])
+    let finishOperation!: () => void
+    vi.spyOn(agentApi, operation).mockReturnValue(new Promise((resolve) => { finishOperation = resolve }))
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: button }))
+    await act(async () => {
+      const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+      selectEnvironment('other-host')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    loadOverview.mockClear()
+    loadAgentDetail.mockClear()
+    await act(async () => finishOperation())
+
+    expect(loadOverview).not.toHaveBeenCalled()
+    expect(loadAgentDetail).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Agent (安装|更新)完成/)).not.toBeInTheDocument()
+  })
+
+  it('reports an install whose command exits successfully without a detected Agent', async () => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({ status: 'notInstalled', binaryPath: null })])
+    vi.spyOn(agentApi, 'install').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '安装此 Agent' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('仍未检测到 Claude Code')
+    expect(screen.queryByText('Agent 安装完成')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '安装此 Agent' })).toBeEnabled()
+  })
+
+  it('reports an unchanged version and confirms a retry only after detecting the update', async () => {
+    const outdated = makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([outdated])
+      .mockResolvedValueOnce([outdated])
+      .mockResolvedValue([makeProgram({ installedVersion: '2.0.0', latestVersion: '2.0.0' })])
+    vi.spyOn(agentApi, 'update').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Claude Code 仍为 1.0.0')
+    expect(screen.queryByText('Agent 更新完成')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '更新此 Agent' }))
+
+    expect(await screen.findByText('Agent 更新完成')).toBeInTheDocument()
+    expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('shows desktop-managed updates for the selected bundled Codex', async () => {
+    useSkillStoreV2.setState({
+      agents: [makeSidebarAgent('codex', 'Codex', { managed: 1 })],
+      selectedAgentId: 'codex',
+      selectedAgentDetail: { ...agentDetail, id: 'codex', displayName: 'Codex', version: '9.9.9', latestVersion: '9.9.10' },
+    })
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({
+      id: 'codex',
+      displayName: 'Codex',
+      packageManager: 'app',
+      packageName: null,
+      installedVersion: '0.169.1',
+      binaryPath: '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+      installCommand: null,
+      updateCommand: null,
+      uninstallCommand: null,
+      hooksInstalled: true,
+    })])
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    expect(await screen.findByText('随桌面客户端更新')).toBeInTheDocument()
+    expect(screen.getByText('当前版本 0.169.1')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '无需更新' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '卸载 Agent' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '清理残留' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: '路径与设置' }))
+    expect(screen.queryByText('9.9.10')).not.toBeInTheDocument()
+  })
+
+  it.each(['2.1.89', null])('runs the native Claude updater without a registry version when the previous version is %s', async (previousVersion) => {
+    useSkillStoreV2.setState({ selectedAgentDetail: { ...agentDetail, version: '1.0.0' } })
+    const native = makeProgram({
+      packageManager: 'native',
+      packageName: null,
+      installedVersion: '2.1.89',
+      latestVersion: null,
+      installCommand: null,
+      updateCommand: 'claude update',
+      uninstallCommand: null,
+    })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([{ ...native, installedVersion: previousVersion }])
+      .mockResolvedValueOnce([native])
+      .mockResolvedValue([makeProgram({ ...native, installedVersion: '2.1.90' })])
+    const update = vi.spyOn(agentApi, 'update').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    const check = await screen.findByRole('button', { name: '检查并更新' })
+    expect(screen.getByText(previousVersion ? '当前版本 2.1.89' : '当前版本 未知')).toBeInTheDocument()
+    fireEvent.click(check)
+    expect(update).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(await screen.findByText('更新检查完成，Claude Code 当前版本为 2.1.89。')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '卸载 Agent' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '清理残留' })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: '检查并更新' }))
+    expect(await screen.findByText('Agent 更新完成')).toBeInTheDocument()
+    expect(screen.getByText('当前版本 2.1.90')).toBeInTheDocument()
+  })
+
+  it('keeps an update active across Agent Management navigation and keeps its verified version', async () => {
+    const oldProgram = makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })
+    const newProgram = makeProgram({ installedVersion: '2.0.0', latestVersion: '2.0.0' })
+    let finishUpdate!: () => void
+    let finishReturnLookup!: (programs: AgentProgramInfo[]) => void
+    let finishVerification!: (programs: AgentProgramInfo[]) => void
+    const refresh = vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([oldProgram])
+      .mockReturnValueOnce(new Promise((resolve) => { finishReturnLookup = resolve }))
+      .mockReturnValueOnce(new Promise((resolve) => { finishVerification = resolve }))
+    const update = vi.spyOn(agentApi, 'update').mockReturnValue(new Promise((resolve) => { finishUpdate = resolve }))
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const firstPage = render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+    expect(update).toHaveBeenCalledTimes(1)
+    firstPage.unmount()
+    render(<AgentManagementPage />)
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2))
+
+    expect(screen.getByRole('button', { name: '正在更新' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '卸载 Agent' })).toBeDisabled()
+    await act(async () => finishUpdate())
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(3))
+    expect(screen.getByRole('button', { name: '正在更新' })).toBeDisabled()
+
+    await act(async () => finishVerification([newProgram]))
+    expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '卸载 Agent' })).toBeEnabled()
+    await act(async () => finishReturnLookup([oldProgram]))
+    expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
+    expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it('discards an entry lookup error once Agent Management is closed', async () => {
+    let failLookup!: (error: Error) => void
+    const refresh = vi.spyOn(agentApi, 'refresh').mockReturnValue(new Promise((_, reject) => { failLookup = reject }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const page = render(<AgentManagementPage />)
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    page.unmount()
+
+    await act(async () => failLookup(new Error('Old Agent lookup failed')))
+    expect(useSkillStoreV2.getState().error).toBeNull()
+  })
+
+  it('refreshes the new Settings window after an external package finishes and ignores the older entry scan', async () => {
+    const old = makeProgram({ status: 'updateAvailable', installedVersion: '2.0.0', latestVersion: '999.0.0' })
+    const updated = makeProgram({ status: 'installed', installedVersion: '999.0.0', latestVersion: '999.0.0' })
+    let finishEntryScan!: (programs: AgentProgramInfo[]) => void
+    let finishSubscription!: () => void
+    let emit: ((event: AgentOutputEvent) => void) | undefined
+    const refresh = vi.spyOn(agentApi, 'refresh')
+      .mockReturnValueOnce(new Promise((resolve) => { finishEntryScan = resolve }))
+      .mockResolvedValue([updated])
+    vi.spyOn(agentApi, 'onOutput').mockImplementation((callback) => {
+      emit = callback
+      return new Promise((resolve) => {
+        finishSubscription = () => resolve(() => { emit = undefined })
+      })
+    })
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const page = render(<AgentManagementPage />)
+    expect(refresh).not.toHaveBeenCalled()
+    await act(async () => finishSubscription())
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    const completion: AgentOutputEvent = {
+      agentId: 'claude-code',
+      operation: 'update',
+      stream: 'info',
+      line: 'Operation completed',
+      done: true,
+      success: true,
+    }
+    const active = {
+      agentId: 'claude-code',
+      operation: 'update',
+      environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+      selectionRevision: useRuntimeEnvironmentStore.getState().selectionRevision,
+    } as const
+    act(() => {
+      useSkillStoreV2.getState().beginAgentProgramOperation(active)
+      emit?.(completion)
+      useSkillStoreV2.getState().finishAgentProgramOperation(active)
+      emit?.({ ...completion, done: false })
+    })
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    await act(async () => emit?.(completion))
+    expect(await screen.findByText('当前版本 999.0.0')).toBeInTheDocument()
+    await act(async () => finishEntryScan([old]))
+    expect(screen.getByText('当前版本 999.0.0')).toBeInTheDocument()
+    expect(refresh).toHaveBeenCalledTimes(2)
+
+    const oldListener = emit
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-package-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'remote-package-host' })
+    })
+    expect(refresh).toHaveBeenLastCalledWith('remote-package-host')
+    oldListener?.(completion)
+    expect(refresh).toHaveBeenCalledTimes(3)
+    page.unmount()
+    oldListener?.(completion)
+    expect(refresh).toHaveBeenCalledTimes(3)
+  })
+
+  it('restores package output on return and ignores late snapshots and other runtimes', async () => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram()])
+    const output = (revision: number, lines: AgentPackageOutput['lines']): AgentPackageOutput => ({
+      agentId: 'claude-code',
+      revision,
+      lines,
+    })
+    const initial = output(1, [{ stream: 'info', line: 'Started package update' }])
+    const whileClosed = output(2, [...initial.lines, { stream: 'stdout', line: 'Downloaded while closed' }])
+    const finished = output(3, [...whileClosed.lines, { stream: 'stderr', line: 'Finished package output' }])
+    let emit: ((output: AgentPackageOutput) => void) | undefined
+    vi.spyOn(agentApi, 'onPackageOutput').mockImplementation(async (handler) => {
+      emit = handler
+      return () => { emit = undefined }
+    })
+    let finishReopenedLookup!: (output: AgentPackageOutput) => void
+    const readOutput = vi.spyOn(agentApi, 'packageOutput')
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(whileClosed)
+      .mockReturnValueOnce(new Promise((resolve) => { finishReopenedLookup = resolve }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+
+    const firstPage = render(<AgentManagementPage />)
+    expect(await screen.findByText('* Started package update')).toBeInTheDocument()
+    firstPage.unmount()
+    expect(emit).toBeUndefined()
+
+    const reopenedPage = render(<AgentManagementPage />)
+    expect(await screen.findByText('> Downloaded while closed')).toBeInTheDocument()
+    expect(screen.getAllByText('* Started package update')).toHaveLength(1)
+    reopenedPage.unmount()
+
+    render(<AgentManagementPage />)
+    await waitFor(() => expect(readOutput).toHaveBeenCalledTimes(3))
+    await act(async () => {
+      emit?.(finished)
+      emit?.({ ...finished, agentId: 'codex', revision: 4, lines: [{ stream: 'info', line: 'Codex output' }] })
+      finishReopenedLookup(whileClosed)
+    })
+    expect(screen.getByText('! Finished package output')).toBeInTheDocument()
+    expect(screen.queryByText('* Codex output')).not.toBeInTheDocument()
+
+    act(() => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-output-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'remote-output-host' })
+    })
+    expect(screen.queryByText('! Finished package output')).not.toBeInTheDocument()
+    expect(readOutput).toHaveBeenCalledTimes(3)
+  })
+
+  it.each([
+    { installedVersion: '2.0.0-beta.1', latestVersion: '1.9.9', status: 'installed' },
+    { installedVersion: '1.2.3+local.1', latestVersion: '1.2.3+upstream.2', status: 'installed' },
+    { installedVersion: '1.2.3', latestVersion: '1.2.4', status: 'updateAvailable', updateCommand: null },
+    { installedVersion: null, latestVersion: '1.2.4', status: 'installed' },
+  ] as const)('does not offer an unverified or unsupported update from $installedVersion to $latestVersion', async (versions) => {
+    useSkillStoreV2.setState({ selectedAgentDetail: { ...agentDetail, version: null, latestVersion: null } })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram(versions)])
+    const update = vi.spyOn(agentApi, 'update').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    await act(async () => { render(<AgentManagementPage />) })
+
+    expect(screen.getByRole('button', { name: '无需更新' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: '更新此 Agent' })).not.toBeInTheDocument()
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('refreshes the installed version after a failed update and preserves the command error', async () => {
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })])
+      .mockResolvedValue([makeProgram({ installedVersion: '2.0.0', latestVersion: '2.0.0' })])
+    vi.spyOn(agentApi, 'update').mockRejectedValue('Update script failed after changing files')
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Update script failed after changing files')
+    expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
+    expect(screen.queryByText('Agent 更新完成')).not.toBeInTheDocument()
+  })
+
+  it('reports an unverified Agent installation when program detection fails', async () => {
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([makeProgram({ status: 'notInstalled', binaryPath: null })])
+      .mockRejectedValue('Detection failed')
+    vi.spyOn(agentApi, 'install').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '安装此 Agent' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('无法确认 Claude Code 的安装状态或版本'))
+    expect(screen.queryByText('Agent 安装完成')).not.toBeInTheDocument()
+  })
+
+  it('does not publish an old Agent update error to the newly selected runtime', async () => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({
+      status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0',
+    })])
+    let failUpdate!: (error: Error) => void
+    vi.spyOn(agentApi, 'update').mockReturnValue(new Promise((_, reject) => { failUpdate = reject }))
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { unmount } = render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+    unmount()
+    act(() => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'other-host', error: 'Remote host status' })
+    })
+    await act(async () => failUpdate(new Error('Old update failed')))
+
+    expect(useSkillStoreV2.getState().error).toBe('Remote host status')
+  })
+
+  it('keeps a newer Agent version when the page-entry program lookup finishes late', async () => {
+    let finishInitialLookup!: (programs: AgentProgramInfo[]) => void
+    const refresh = vi.spyOn(agentApi, 'refresh')
+      .mockReturnValueOnce(new Promise((resolve) => { finishInitialLookup = resolve }))
+      .mockResolvedValueOnce([makeProgram({ installedVersion: '2.0.0', latestVersion: '2.0.0' })])
+    vi.spyOn(useSkillStoreV2.getState(), 'refresh').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: '刷新总览' }))
+    expect(await screen.findByText('当前版本 2.0.0')).toBeInTheDocument()
+    await act(async () => finishInitialLookup([makeProgram({ installedVersion: '1.0.0' })]))
+
+    expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
+  })
+
+  it.each(['detected', 'manual', 'inventory'] as const)('selects the appropriate Agent after startup lookup: %s', async (choice) => {
+    const other = { ...makeSidebarAgent('antigravity', 'Antigravity'), installed: choice === 'inventory' }
+    const claude = { ...makeSidebarAgent('claude-code', 'Claude Code'), installed: false }
+    useSkillStoreV2.setState({
+      agents: [other, claude],
+      selectedAgentId: null,
+      selectedAgentDetail: null,
+    })
+    let finishLookup!: (programs: AgentProgramInfo[]) => void
+    let failLookup!: (error: Error) => void
+    const refresh = vi.spyOn(agentApi, 'refresh').mockReturnValue(new Promise((resolve, reject) => {
+      finishLookup = resolve
+      failLookup = reject
+    }))
+    vi.spyOn(skillApiV2, 'getAgentDetail').mockImplementation(async (agentId) => ({
+      ...agentDetail,
+      id: agentId,
+      displayName: agentId === other.id ? other.displayName : claude.displayName,
+    }))
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    expect(useSkillStoreV2.getState().selectedAgentId).toBeNull()
+
+    if (choice === 'manual') {
+      await act(async () => useSkillStoreV2.getState().selectAgent(other.id))
+    }
+    await act(async () => {
+      if (choice === 'inventory') failLookup(new Error('Program detection unavailable'))
+      else finishLookup([makeProgram()])
+    })
+
+    expect(useSkillStoreV2.getState().selectedAgentId).toBe(choice === 'detected' ? claude.id : other.id)
   })
 
   it('does not treat the shared .agents directory as an agent in management views', async () => {
@@ -3301,6 +4194,90 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     await waitFor(() => expect(useSkillStoreV2.getState().selectedAgentId).toBe('claude-code'))
     expect(screen.queryByText('.agents')).not.toBeInTheDocument()
+  })
+
+  it('groups sidebar Agents by detected program status and updates the grouping after refresh', async () => {
+    useSkillStoreV2.setState({
+      activeTab: 'agents',
+      agents: [
+        { ...makeSidebarAgent('claude-code', 'Claude Code'), installed: false },
+        makeSidebarAgent('codex', 'Codex'),
+      ],
+    })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([
+        makeProgram({ installedVersion: '2.0.0' }),
+        makeProgram({ id: 'codex', displayName: 'Codex', status: 'notInstalled' }),
+      ])
+      .mockResolvedValue([
+        makeProgram({ status: 'notInstalled', binaryPath: null }),
+        makeProgram({ id: 'codex', displayName: 'Codex', status: 'updateAvailable' }),
+      ])
+    vi.spyOn(useSkillStoreV2.getState(), 'refresh').mockResolvedValue()
+
+    const { SettingsSidebar } = await import('../components/settings/SettingsSidebar')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { container } = render(
+      <>
+        <SettingsSidebar
+          activeSection="skill-manager-v2"
+          activeIslandView="overview"
+          activeMonitorView="overview"
+          collapsed={false}
+          onCollapsedChange={() => {}}
+          onSelect={() => {}}
+          onIslandViewChange={() => {}}
+          onMonitorViewChange={() => {}}
+        />
+        <AgentManagementPage />
+      </>,
+    )
+
+    expect(await screen.findByText('当前版本 2.0.0')).toBeInTheDocument()
+    expect(container.querySelector('[data-agent-id="claude-code"]')).toBeInTheDocument()
+    expect(container.querySelector('[data-agent-id="codex"]')).toBeNull()
+    expect(useSkillStoreV2.getState().agents.find((agent) => agent.id === 'claude-code')?.installed).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新总览' }))
+
+    await waitFor(() => expect(container.querySelector('[data-agent-id="codex"]')).toBeInTheDocument())
+    expect(container.querySelector('[data-agent-id="claude-code"]')).toBeNull()
+    expect(screen.getByText('当前版本 未安装')).toBeInTheDocument()
+  })
+
+  it('ignores an Agent program snapshot after leaving and returning to the same runtime', async () => {
+    const { selectionRevision } = useRuntimeEnvironmentStore.getState()
+    useSkillStoreV2.setState({
+      activeTab: 'agents',
+      agents: [{ ...makeSidebarAgent('claude-code', 'Claude Code'), installed: false }],
+      agentProgramSnapshot: {
+        environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+        selectionRevision,
+        programs: { 'claude-code': makeProgram() },
+      },
+    })
+
+    const { SettingsSidebar } = await import('../components/settings/SettingsSidebar')
+    const { container } = render(
+      <SettingsSidebar
+        activeSection="skill-manager-v2"
+        activeIslandView="overview"
+        activeMonitorView="overview"
+        collapsed={false}
+        onCollapsedChange={() => {}}
+        onSelect={() => {}}
+        onIslandViewChange={() => {}}
+        onMonitorViewChange={() => {}}
+      />,
+    )
+
+    expect(container.querySelector('[data-agent-id="claude-code"]')).toBeInTheDocument()
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-host')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    expect(container.querySelector('[data-agent-id="claude-code"]')).toBeNull()
   })
 
   it('sorts installed sidebar agents by active usage and supports drag reorder', async () => {
@@ -3357,6 +4334,50 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(JSON.parse(window.localStorage.getItem('agentbro.agentManagement.agentOrder.v1') || '[]')).toEqual(['claude-code', 'workbuddy', 'codex'])
     window.localStorage.removeItem('agentbro.agentManagement.agentOrder.v1')
     useSessionStore.setState({ sessions: {}, sessionList: [], activeSessionId: null })
+  })
+
+  it('searches installed and folded uninstalled Agents without changing selection', async () => {
+    useSkillStoreV2.setState({
+      activeTab: 'agents',
+      selectedAgentId: 'claude-code',
+      agents: [
+        makeSidebarAgent('claude-code', 'Claude Code'),
+        makeSidebarAgent('codex', 'Codex'),
+        { ...makeSidebarAgent('qwenwork-cn', '千问办公'), installed: false },
+      ],
+    })
+    const { SettingsSidebar } = await import('../components/settings/SettingsSidebar')
+    const { container } = render(
+      <SettingsSidebar
+        activeSection="skill-manager-v2"
+        activeIslandView="overview"
+        activeMonitorView="overview"
+        collapsed={false}
+        onCollapsedChange={() => {}}
+        onSelect={() => {}}
+        onIslandViewChange={() => {}}
+        onMonitorViewChange={() => {}}
+      />,
+    )
+
+    const search = screen.getByRole('searchbox')
+    expect(screen.queryByText('千问办公')).not.toBeInTheDocument()
+    fireEvent.change(search, { target: { value: 'ClAuDe' } })
+    expect(screen.getByText('Claude Code')).toBeInTheDocument()
+    expect(screen.queryByText('Codex')).not.toBeInTheDocument()
+
+    fireEvent.change(search, { target: { value: ' QWENWORK ' } })
+    expect(screen.getByText('千问办公')).toBeInTheDocument()
+    expect(screen.queryByText('Claude Code')).not.toBeInTheDocument()
+    expect(useSkillStoreV2.getState().selectedAgentId).toBe('claude-code')
+
+    fireEvent.change(search, { target: { value: 'does not match' } })
+    expect(container.querySelector('.sm2-sidebar__subgroup-empty[role="status"]')).toBeInTheDocument()
+
+    fireEvent.change(search, { target: { value: '' } })
+    expect(screen.getByText('Claude Code')).toBeInTheDocument()
+    expect(screen.getByText('Codex')).toBeInTheDocument()
+    expect(screen.queryByText('千问办公')).not.toBeInTheDocument()
   })
 
   it('Agent skills default to cards and can switch to list view', async () => {
@@ -3669,10 +4690,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(within(slider).getByRole('button', { name: '文件' })).toBeInTheDocument()
     expect(within(slider).getByRole('button', { name: '来源' })).toBeInTheDocument()
     expect(slider.querySelector('.sm2__detail-pills .sm2__tag--ok')).toHaveTextContent('正常')
-    expect(getSkillDetail).toHaveBeenCalledWith('shared-review')
+    expect(getSkillDetail).toHaveBeenCalledWith('shared-review', LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
 
-  it('keeps shared adoption open when the Agent detail refresh fails without adopting twice', async () => {
+  it('keeps shared adoption open when its inventory refresh fails without adopting twice', async () => {
     const consumerDetail: AgentDetail = {
       ...agentDetail,
       id: 'codex',
@@ -3684,10 +4705,12 @@ describe('Skill detail slider + agent page render without crashing', () => {
       inheritedManagedSkills: [],
       inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-retry')],
     }
+    const agents = [makeSidebarAgent('codex', 'Codex')]
+    const overview = { ...makeOverview(), agents }
     useSkillStoreV2.setState({
-      overview: makeOverview(),
+      overview,
       lastOverviewLoadedAt: Date.now(),
-      agents: [makeSidebarAgent('codex', 'Codex')],
+      agents,
       selectedAgentId: 'codex',
       selectedAgentDetail: consumerDetail,
       unmanaged: [],
@@ -3700,19 +4723,13 @@ describe('Skill detail slider + agent page render without crashing', () => {
       hash: 'hash-shared-retry',
       centerHasSameId: false,
       canQuickAdopt: true,
-      options: [
-        { value: 'import_cleanup', label: 'Import and clean up', destructive: true },
-      ],
+      options: [{ value: 'import_cleanup', label: 'Import and clean up', destructive: true }],
     })
     const executeAdopt = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('shared-retry')
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
-    const getAgentDetail = vi.spyOn(skillApiV2, 'getAgentDetail')
-      .mockRejectedValueOnce(new Error('shared detail refresh failed'))
-      .mockResolvedValue({
-        ...consumerDetail,
-        inheritedUnmanagedSkills: [],
-      })
-    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+    const agentSnapshot = { ...consumerDetail, inheritedUnmanagedSkills: [] }
+    const refresh = vi.spyOn(skillApiV2, 'refreshAgentSkillView')
+      .mockRejectedValueOnce(new Error('Shared inventory refresh failed'))
+      .mockResolvedValue({ agentDetail: agentSnapshot, overview, unmanaged: [] })
 
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
@@ -3722,138 +4739,91 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '接管' }))
     fireEvent.click(await screen.findByRole('button', { name: '确认接管' }))
 
-    await waitFor(() => expect(getAgentDetail).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText(/shared detail refresh failed/)).toBeInTheDocument()
+    expect(await screen.findByText(/Shared inventory refresh failed/)).toBeInTheDocument()
+    expect(useSkillStoreV2.getState().selectedAgentDetail).toBe(consumerDetail)
     expect(screen.getByRole('heading', { name: '接管 shared-retry' })).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByRole('button', { name: '重试刷新' })).toBeEnabled())
+    const retry = screen.getByRole('button', { name: '重试刷新' })
+    expect(retry).toBeEnabled()
+    fireEvent.click(retry)
+    await waitFor(() => expect(screen.queryByRole('heading', { name: '接管 shared-retry' })).not.toBeInTheDocument())
 
-    fireEvent.click(screen.getByRole('button', { name: '重试刷新' }))
-    await waitFor(() => {
-      expect(executeAdopt).toHaveBeenCalledTimes(1)
-      expect(screen.queryByRole('heading', { name: '接管 shared-retry' })).not.toBeInTheDocument()
-    })
+    expect(executeAdopt).toHaveBeenCalledExactlyOnceWith('agents', 'raw-shared-retry', 'import_cleanup', null)
+    expect(refresh.mock.calls).toEqual([['codex', LOCAL_RUNTIME_ENVIRONMENT_ID], ['codex', LOCAL_RUNTIME_ENVIRONMENT_ID]])
+    expect(useSkillStoreV2.getState().selectedAgentDetail).toBe(agentSnapshot)
   })
 
-  it('keeps shared adoption open when the overview refresh fails without adopting twice', async () => {
-    const consumerDetail: AgentDetail = {
-      ...agentDetail,
-      id: 'codex',
-      displayName: 'Codex',
-      iconKey: 'codex',
-      skillsDir: '/Users/me/.codex/skills',
-      skills: [],
-      inheritsSharedSkills: true,
-      inheritedManagedSkills: [],
-      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-retry')],
-    }
-    useSkillStoreV2.setState({
-      overview: makeOverview(),
-      lastOverviewLoadedAt: Date.now(),
-      agents: [makeSidebarAgent('codex', 'Codex')],
-      selectedAgentId: 'codex',
-      selectedAgentDetail: consumerDetail,
-      unmanaged: [],
-    })
-    vi.spyOn(skillApiV2, 'previewAdopt').mockResolvedValue({
-      agentId: 'agents',
-      unmanagedId: 'raw-shared-retry',
-      skillPath: '/Users/me/.agents/skills/shared-retry',
-      inferredSkillId: 'shared-retry',
-      hash: 'hash-shared-retry',
-      centerHasSameId: false,
-      canQuickAdopt: true,
-      options: [
-        { value: 'import_cleanup', label: 'Import and clean up', destructive: true },
-      ],
-    })
-    const executeAdopt = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('shared-retry')
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
-    vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue({
-      ...consumerDetail,
-      inheritedUnmanagedSkills: [],
-    })
-    const overview = vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+  it.each(['runtime', 'runtime and back', 'agent', 'agent and back'])(
+    'ignores an adoption preview returned after changing the %s selection', async (selection) => {
+      const consumerDetail: AgentDetail = {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        skillsDir: '/Users/me/.codex/skills',
+        skills: [],
+        inheritsSharedSkills: true,
+        inheritedManagedSkills: [],
+        inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-runtime')],
+      }
+      const otherAgent = makeSidebarAgent('claude-code', 'Claude Code')
+      vi.spyOn(skillApiV2, 'getAgentDetail').mockImplementation(async (agentId) => (
+        agentId === consumerDetail.id ? consumerDetail : agentDetail
+      ))
+      useSkillStoreV2.setState({
+        runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+        overview: makeOverview(),
+        lastOverviewLoadedAt: Date.now(),
+        agents: [makeSidebarAgent('codex', 'Codex'), otherAgent],
+        selectedAgentId: 'codex',
+        selectedAgentDetail: consumerDetail,
+        unmanaged: [],
+      })
+      const preview: AdoptPreview = {
+        agentId: 'agents',
+        unmanagedId: 'raw-shared-runtime',
+        skillPath: '/Users/me/.agents/skills/shared-runtime',
+        inferredSkillId: 'shared-runtime',
+        hash: 'hash-shared-runtime',
+        centerHasSameId: false,
+        canQuickAdopt: true,
+        options: [
+          { value: 'import_cleanup', label: 'Import and clean up', destructive: true },
+        ],
+      }
+      let resolvePreview: (preview: AdoptPreview) => void = () => {}
+      const previewPromise = new Promise<AdoptPreview>((resolve) => {
+        resolvePreview = resolve
+      })
+      const previewAdopt = vi.spyOn(skillApiV2, 'previewAdopt').mockReturnValue(previewPromise)
 
-    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
-    render(<AgentManagementPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
-    fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '接管' }))
-    const confirmAdopt = await screen.findByRole('button', { name: '确认接管' })
-    const overviewCallsBeforeAdopt = overview.mock.calls.length
-    overview.mockRejectedValueOnce(new Error('shared overview refresh failed'))
-    fireEvent.click(confirmAdopt)
+      const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+      render(<AgentManagementPage />)
+      fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
+      fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
+      fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+      fireEvent.click(screen.getByRole('button', { name: '接管' }))
+      await waitFor(() => expect(previewAdopt).toHaveBeenCalledTimes(1))
 
-    await waitFor(() => expect(overview).toHaveBeenCalledTimes(overviewCallsBeforeAdopt + 1))
-    expect(await screen.findByText(/shared overview refresh failed/)).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '接管 shared-retry' })).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByRole('button', { name: '重试刷新' })).toBeEnabled())
+      await act(async () => {
+        const runtime = useRuntimeEnvironmentStore.getState()
+        const store = useSkillStoreV2.getState()
+        if (selection.startsWith('runtime')) {
+          runtime.selectEnvironment('remote-runtime')
+          if (selection.endsWith('and back')) runtime.selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+        } else {
+          await store.selectAgent(otherAgent.id)
+          if (selection.endsWith('and back')) await store.selectAgent(consumerDetail.id)
+        }
+        useSkillStoreV2.getState().setError('Current selection status')
+        resolvePreview(preview)
+      })
 
-    fireEvent.click(screen.getByRole('button', { name: '重试刷新' }))
-    await waitFor(() => {
-      expect(executeAdopt).toHaveBeenCalledTimes(1)
-      expect(screen.queryByRole('heading', { name: '接管 shared-retry' })).not.toBeInTheDocument()
-    })
-  })
+      expect(screen.queryByRole('heading', { name: '接管 shared-runtime' })).not.toBeInTheDocument()
+      expect(useSkillStoreV2.getState().error).toBe('Current selection status')
+    },
+  )
 
-  it('ignores an adoption preview returned after the runtime environment changes', async () => {
-    const consumerDetail: AgentDetail = {
-      ...agentDetail,
-      id: 'codex',
-      displayName: 'Codex',
-      iconKey: 'codex',
-      skillsDir: '/Users/me/.codex/skills',
-      skills: [],
-      inheritsSharedSkills: true,
-      inheritedManagedSkills: [],
-      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-runtime')],
-    }
-    useSkillStoreV2.setState({
-      runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
-      overview: makeOverview(),
-      lastOverviewLoadedAt: Date.now(),
-      agents: [makeSidebarAgent('codex', 'Codex')],
-      selectedAgentId: 'codex',
-      selectedAgentDetail: consumerDetail,
-      unmanaged: [],
-    })
-    const preview: AdoptPreview = {
-      agentId: 'agents',
-      unmanagedId: 'raw-shared-runtime',
-      skillPath: '/Users/me/.agents/skills/shared-runtime',
-      inferredSkillId: 'shared-runtime',
-      hash: 'hash-shared-runtime',
-      centerHasSameId: false,
-      canQuickAdopt: true,
-      options: [
-        { value: 'import_cleanup', label: 'Import and clean up', destructive: true },
-      ],
-    }
-    let resolvePreview: (preview: AdoptPreview) => void = () => {}
-    const previewPromise = new Promise<AdoptPreview>((resolve) => {
-      resolvePreview = resolve
-    })
-    const previewAdopt = vi.spyOn(skillApiV2, 'previewAdopt').mockReturnValue(previewPromise)
-
-    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
-    render(<AgentManagementPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
-    fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '接管' }))
-    await waitFor(() => expect(previewAdopt).toHaveBeenCalledTimes(1))
-
-    act(() => {
-      useSkillStoreV2.setState({ runtimeEnvironmentId: 'remote-runtime' })
-      resolvePreview(preview)
-    })
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('运行环境已切换，已忽略原环境的接管预览')
-    expect(screen.queryByRole('heading', { name: '接管 shared-runtime' })).not.toBeInTheDocument()
-  })
-
-  it('keeps the adoption dialog open when the runtime changes during adoption', async () => {
+  it('drops the adoption review and stops follow-ups when the runtime changes during adoption', async () => {
     const consumerDetail: AgentDetail = {
       ...agentDetail,
       id: 'codex',
@@ -3923,13 +4893,12 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const detailCallsBeforeRuntimeChange = getAgentDetail.mock.calls.length
     const overviewCallsBeforeRuntimeChange = overview.mock.calls.length
 
-    act(() => {
-      useRuntimeEnvironmentStore.setState({ selectedEnvironmentId: 'remote-runtime' })
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime')
       resolveExecute('shared-runtime')
     })
 
-    expect(await screen.findByText(/运行环境已切换，已停止原环境的接管后续操作/)).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '接管 shared-runtime' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '接管 shared-runtime' })).not.toBeInTheDocument()
     expect(getPackDetail).not.toHaveBeenCalled()
     expect(upsertPack).not.toHaveBeenCalled()
     expect(listUnmanaged).toHaveBeenCalledTimes(listCallsBeforeRuntimeChange)
@@ -3938,212 +4907,97 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(useSkillStoreV2.getState().overview).toBe(localOverview)
   })
 
-  it('does not write an old Agent detail after the runtime environment changes', async () => {
-    const consumerDetail: AgentDetail = {
-      ...agentDetail,
-      id: 'codex',
-      displayName: 'Codex',
-      iconKey: 'codex',
-      skillsDir: '/Users/me/.codex/skills',
-      skills: [],
-      inheritsSharedSkills: true,
-      inheritedManagedSkills: [],
-      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-runtime')],
-    }
-    useSkillStoreV2.setState({
-      runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
-      overview: makeOverview(),
-      lastOverviewLoadedAt: Date.now(),
-      agents: [makeSidebarAgent('codex', 'Codex')],
-      selectedAgentId: 'codex',
-      selectedAgentDetail: consumerDetail,
-      unmanaged: [],
-    })
-    vi.spyOn(skillApiV2, 'previewAdopt').mockResolvedValue({
-      agentId: 'agents',
-      unmanagedId: 'raw-shared-runtime',
-      skillPath: '/Users/me/.agents/skills/shared-runtime',
-      inferredSkillId: 'shared-runtime',
-      hash: 'hash-shared-runtime',
-      centerHasSameId: false,
-      canQuickAdopt: true,
-      options: [
-        { value: 'import_cleanup', label: 'Import and clean up', destructive: true },
-      ],
-    })
-    vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('shared-runtime')
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
-    let resolveDetail: (detail: AgentDetail) => void = () => {}
-    const detailPromise = new Promise<AgentDetail>((resolve) => {
-      resolveDetail = resolve
-    })
-    const getAgentDetail = vi.spyOn(skillApiV2, 'getAgentDetail').mockReturnValue(detailPromise)
-    const overview = vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
-
-    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
-    render(<AgentManagementPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
-    fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '接管' }))
-    const confirmAdopt = await screen.findByRole('button', { name: '确认接管' })
-    const overviewCallsBeforeAdopt = overview.mock.calls.length
-    fireEvent.click(confirmAdopt)
-    await waitFor(() => expect(getAgentDetail).toHaveBeenCalledTimes(1))
-
-    const remoteAgent = makeSidebarAgent('remote-codex', 'Remote Codex')
-    const remoteDetail: AgentDetail = {
-      ...consumerDetail,
-      id: remoteAgent.id,
-      displayName: remoteAgent.displayName,
-      skillsDir: '/home/me/.codex/skills',
-      inheritsSharedSkills: false,
-      inheritedManagedSkills: [],
-      inheritedUnmanagedSkills: [],
-    }
-    const remoteOverview = {
-      ...makeOverview(),
-      metrics: { centerSkillCount: 9, targetCount: 8, unmanagedCount: 1, issueCount: 0 },
-      agents: [remoteAgent],
-    }
-    const remoteUnmanaged: UnmanagedItemDto[] = [
-      {
-        id: 'remote-unmanaged',
-        agentId: remoteAgent.id,
-        itemType: 'skill',
-        path: '/home/me/.codex/skills/remote-skill',
-        inferredSkillId: 'remote-skill',
-        hash: null,
-        reason: 'not_in_center_library',
-      },
-    ]
-    act(() => {
+  it.each(['runtime', 'runtime and back', 'agent', 'agent and back'])(
+    'ignores an adoption refresh returned after changing the %s selection', async (selection) => {
+      const consumerDetail: AgentDetail = {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        skills: [],
+        inheritsSharedSkills: true,
+        inheritedManagedSkills: [],
+        inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-refresh')],
+      }
+      const agents = [makeSidebarAgent('codex', 'Codex'), makeSidebarAgent('claude-code', 'Claude Code')]
+      const overview = { ...makeOverview(), agents }
       useSkillStoreV2.setState({
-        runtimeEnvironmentId: 'remote-runtime',
-        overview: remoteOverview,
-        agents: [remoteAgent],
-        selectedAgentId: remoteAgent.id,
-        selectedAgentDetail: remoteDetail,
-        unmanaged: remoteUnmanaged,
+        overview,
+        lastOverviewLoadedAt: Date.now(),
+        agents,
+        selectedAgentId: 'codex',
+        selectedAgentDetail: consumerDetail,
+        unmanaged: [],
       })
-      resolveDetail({
-        ...consumerDetail,
-        inheritedUnmanagedSkills: [],
+      vi.spyOn(skillApiV2, 'previewAdopt').mockResolvedValue({
+        agentId: 'agents',
+        unmanagedId: 'raw-shared-refresh',
+        skillPath: '/Users/me/.agents/skills/shared-refresh',
+        inferredSkillId: 'shared-refresh',
+        hash: 'hash-shared-refresh',
+        centerHasSameId: false,
+        canQuickAdopt: true,
+        options: [{ value: 'import_cleanup', label: 'Import and clean up', destructive: true }],
       })
-    })
+      const executeAdopt = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('shared-refresh')
+      vi.spyOn(skillApiV2, 'getAgentDetail').mockImplementation(async (id) => (
+        id === consumerDetail.id ? consumerDetail : agentDetail
+      ))
+      let finishRefresh!: (snapshot: AgentSkillViewSnapshot) => void
+      const refresh = vi.spyOn(skillApiV2, 'refreshAgentSkillView').mockReturnValue(
+        new Promise((resolve) => { finishRefresh = resolve }),
+      )
 
-    expect(await screen.findByText(/运行环境已切换，已丢弃原环境的刷新结果/)).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '接管 shared-runtime' })).toBeInTheDocument()
-    expect(overview).toHaveBeenCalledTimes(overviewCallsBeforeAdopt)
-    expect(useSkillStoreV2.getState().selectedAgentDetail).toBe(remoteDetail)
-    expect(useSkillStoreV2.getState().overview).toBe(remoteOverview)
-    expect(useSkillStoreV2.getState().unmanaged).toBe(remoteUnmanaged)
-  })
+      const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+      render(<AgentManagementPage />)
+      fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
+      fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
+      fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+      fireEvent.click(screen.getByRole('button', { name: '接管' }))
+      fireEvent.click(await screen.findByRole('button', { name: '确认接管' }))
+      await waitFor(() => expect(refresh).toHaveBeenCalledExactlyOnceWith('codex', LOCAL_RUNTIME_ENVIRONMENT_ID))
+      expect(executeAdopt).toHaveBeenCalledExactlyOnceWith('agents', 'raw-shared-refresh', 'import_cleanup', null)
 
-  it('does not write an old overview after the runtime environment changes', async () => {
-    const consumerDetail: AgentDetail = {
-      ...agentDetail,
-      id: 'codex',
-      displayName: 'Codex',
-      iconKey: 'codex',
-      skillsDir: '/Users/me/.codex/skills',
-      skills: [],
-      inheritsSharedSkills: true,
-      inheritedManagedSkills: [],
-      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-runtime')],
-    }
-    useSkillStoreV2.setState({
-      runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
-      overview: makeOverview(),
-      lastOverviewLoadedAt: Date.now(),
-      agents: [makeSidebarAgent('codex', 'Codex')],
-      selectedAgentId: 'codex',
-      selectedAgentDetail: consumerDetail,
-      unmanaged: [],
-    })
-    vi.spyOn(skillApiV2, 'previewAdopt').mockResolvedValue({
-      agentId: 'agents',
-      unmanagedId: 'raw-shared-runtime',
-      skillPath: '/Users/me/.agents/skills/shared-runtime',
-      inferredSkillId: 'shared-runtime',
-      hash: 'hash-shared-runtime',
-      centerHasSameId: false,
-      canQuickAdopt: true,
-      options: [
-        { value: 'import_cleanup', label: 'Import and clean up', destructive: true },
-      ],
-    })
-    vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('shared-runtime')
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
-    vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue({
-      ...consumerDetail,
-      inheritedUnmanagedSkills: [],
-    })
-    let resolveOverview: (overview: ReturnType<typeof makeOverview>) => void = () => {}
-    const overviewPromise = new Promise<ReturnType<typeof makeOverview>>((resolve) => {
-      resolveOverview = resolve
-    })
-    const overview = vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
-
-    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
-    render(<AgentManagementPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
-    fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '接管' }))
-    const confirmAdopt = await screen.findByRole('button', { name: '确认接管' })
-    const overviewCallsBeforeAdopt = overview.mock.calls.length
-    overview.mockReturnValueOnce(overviewPromise)
-    fireEvent.click(confirmAdopt)
-    await waitFor(() => expect(overview).toHaveBeenCalledTimes(overviewCallsBeforeAdopt + 1))
-
-    const remoteAgent = makeSidebarAgent('remote-codex', 'Remote Codex')
-    const remoteDetail: AgentDetail = {
-      ...consumerDetail,
-      id: remoteAgent.id,
-      displayName: remoteAgent.displayName,
-      skillsDir: '/home/me/.codex/skills',
-      inheritsSharedSkills: false,
-      inheritedManagedSkills: [],
-      inheritedUnmanagedSkills: [],
-    }
-    const remoteOverview = {
-      ...makeOverview(),
-      metrics: { centerSkillCount: 9, targetCount: 8, unmanagedCount: 1, issueCount: 0 },
-      agents: [remoteAgent],
-    }
-    const remoteUnmanaged: UnmanagedItemDto[] = [
-      {
-        id: 'remote-unmanaged',
-        agentId: remoteAgent.id,
-        itemType: 'skill',
-        path: '/home/me/.codex/skills/remote-skill',
-        inferredSkillId: 'remote-skill',
-        hash: null,
-        reason: 'not_in_center_library',
-      },
-    ]
-    act(() => {
-      useSkillStoreV2.setState({
-        runtimeEnvironmentId: 'remote-runtime',
-        overview: remoteOverview,
-        agents: [remoteAgent],
-        selectedAgentId: remoteAgent.id,
-        selectedAgentDetail: remoteDetail,
-        unmanaged: remoteUnmanaged,
+      const currentOverview = { ...overview, metrics: { ...overview.metrics, centerSkillCount: 9 } }
+      const currentUnmanaged = [makeSharedUnmanaged('current-skill')]
+      let currentDetail!: AgentDetail
+      await act(async () => {
+        const runtime = useRuntimeEnvironmentStore.getState()
+        const store = useSkillStoreV2.getState()
+        if (selection.startsWith('runtime')) {
+          runtime.selectEnvironment('remote-runtime')
+          if (selection.endsWith('and back')) runtime.selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+        } else {
+          await store.selectAgent('claude-code')
+          if (selection.endsWith('and back')) await store.selectAgent('codex')
+        }
+        const currentAgentId = selection === 'agent' ? 'claude-code' : 'codex'
+        expect(useSkillStoreV2.getState().selectedAgentId).toBe(currentAgentId)
+        currentDetail = {
+          ...(currentAgentId === 'codex' ? consumerDetail : agentDetail),
+          skillsDir: '/current/skills',
+        }
+        useSkillStoreV2.setState({
+          runtimeEnvironmentId: useRuntimeEnvironmentStore.getState().selectedEnvironmentId,
+          overview: currentOverview,
+          unmanaged: currentUnmanaged,
+          selectedAgentDetail: currentDetail,
+          error: 'Current selection status',
+        })
+        finishRefresh({
+          agentDetail: { ...consumerDetail, inheritedUnmanagedSkills: [] },
+          overview,
+          unmanaged: [],
+        })
       })
-      resolveOverview({
-        ...makeOverview(),
-        metrics: { centerSkillCount: 1, targetCount: 1, unmanagedCount: 0, issueCount: 0 },
-      })
-    })
 
-    expect(await screen.findByText(/运行环境已切换，已丢弃原环境的刷新结果/)).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '接管 shared-runtime' })).toBeInTheDocument()
-    expect(useSkillStoreV2.getState().selectedAgentDetail).toBe(remoteDetail)
-    expect(useSkillStoreV2.getState().overview).toBe(remoteOverview)
-    expect(useSkillStoreV2.getState().unmanaged).toBe(remoteUnmanaged)
-  })
+      expect(screen.queryByRole('heading', { name: '接管 shared-refresh' })).not.toBeInTheDocument()
+      expect(useSkillStoreV2.getState().selectedAgentDetail).toBe(currentDetail)
+      expect(useSkillStoreV2.getState().overview).toBe(currentOverview)
+      expect(useSkillStoreV2.getState().unmanaged).toBe(currentUnmanaged)
+      expect(useSkillStoreV2.getState().error).toBe('Current selection status')
+    },
+  )
 
   it('keeps the inherited scope visible for a consumer with an empty shared directory', async () => {
     useSkillStoreV2.setState({
@@ -4476,6 +5330,116 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(loadOverview).toHaveBeenCalledWith(true)
   })
 
+  async function openAgentSkillLibrary() {
+    useSkillStoreV2.setState({
+      skills: [
+        makeSkill({ id: 'first-skill', name: 'First skill', installedAgents: [] }),
+        makeSkill({ id: 'second-skill', name: 'Second skill', installedAgents: [] }),
+      ],
+    })
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    await act(async () => { render(<AgentManagementPage />) })
+    await act(async () => { fireEvent.click(screen.getByText('Skills (2)')) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '新增SKILL' })) })
+    return within(screen.getByRole('dialog', { name: '从技能库添加' }))
+  }
+
+  it('discards a late Agent Skill preview after the selection and mode change', async () => {
+    const dialog = await openAgentSkillLibrary()
+    const older: DistributionPreview = {
+      skillIds: ['first-skill'],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    const latest: DistributionPreview = { ...older, skillIds: ['second-skill'], requestedMode: 'copy' }
+    let resolvePreview!: (value: DistributionPreview) => void
+    const pending = new Promise<DistributionPreview>((resolve) => { resolvePreview = resolve })
+    const preview = vi.spyOn(skillApiV2, 'previewDistribute').mockReturnValueOnce(pending).mockResolvedValue(latest)
+    const execute = vi.spyOn(skillApiV2, 'executeDistribute').mockResolvedValue(latest)
+    fireEvent.click(dialog.getByRole('checkbox', { name: '选择 First skill' }))
+    fireEvent.click(dialog.getByRole('button', { name: '添加 1 个 Skill' }))
+    expect(preview).toHaveBeenCalledWith(['first-skill'], ['claude-code'], 'link')
+
+    fireEvent.click(dialog.getByRole('checkbox', { name: '选择 First skill' }))
+    fireEvent.click(dialog.getByRole('checkbox', { name: '选择 Second skill' }))
+    fireEvent.click(dialog.getByRole('button', { name: /复制/ }))
+    await act(async () => { resolvePreview(older) })
+
+    expect(screen.queryByRole('dialog', { name: '确认安装 Skill' })).not.toBeInTheDocument()
+    expect(execute).not.toHaveBeenCalled()
+    fireEvent.click(dialog.getByRole('button', { name: '添加 1 个 Skill' }))
+    expect(preview).toHaveBeenLastCalledWith(['second-skill'], ['claude-code'], 'copy')
+    const review = await screen.findByRole('dialog', { name: '确认安装 Skill' })
+    expect(review).toHaveTextContent(/1 个 Skill.+复制/)
+    fireEvent.click(within(review).getByRole('button', { name: '执行分发' }))
+    expect(await screen.findByText('Skill 已安装到当前 Agent')).toBeInTheDocument()
+    expect(execute).toHaveBeenCalledWith(latest)
+  })
+
+  it('invalidates a reviewed Agent Skill install after switching runtimes', async () => {
+    const dialog = await openAgentSkillLibrary()
+    vi.spyOn(skillApiV2, 'previewDistribute').mockResolvedValue({
+      skillIds: ['first-skill'],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    })
+    const execute = vi.spyOn(skillApiV2, 'executeDistribute')
+    fireEvent.click(dialog.getByRole('checkbox', { name: '选择 First skill' }))
+    fireEvent.click(dialog.getByRole('button', { name: '添加 1 个 Skill' }))
+    const confirm = await screen.findByRole('button', { name: '执行分发' })
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    fireEvent.click(confirm)
+
+    expect(execute).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: '确认安装 Skill' })).not.toBeInTheDocument()
+  })
+
+  it('drops the install refresh if the runtime changes while inventory is loading', async () => {
+    const dialog = await openAgentSkillLibrary()
+    const preview: DistributionPreview = {
+      skillIds: ['first-skill'],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    vi.spyOn(skillApiV2, 'previewDistribute').mockResolvedValue(preview)
+    vi.spyOn(skillApiV2, 'executeDistribute').mockResolvedValue(preview)
+    let resolveInventory!: (value: UnmanagedItemDto[]) => void
+    const inventory = new Promise<UnmanagedItemDto[]>((resolve) => { resolveInventory = resolve })
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockReturnValue(inventory)
+    const initialInventory = useSkillStoreV2.getState().unmanaged
+    const loadAgentDetail = vi.mocked(useSkillStoreV2.getState().loadAgentDetail)
+    loadAgentDetail.mockClear()
+    fireEvent.click(dialog.getByRole('checkbox', { name: '选择 First skill' }))
+    fireEvent.click(dialog.getByRole('button', { name: '添加 1 个 Skill' }))
+    fireEvent.click(await screen.findByRole('button', { name: '执行分发' }))
+    await waitFor(() => expect(listUnmanaged).toHaveBeenCalled())
+
+    await act(async () => {
+      const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      resolveInventory([])
+    })
+
+    expect(useSkillStoreV2.getState().unmanaged).toEqual(initialInventory)
+    expect(loadAgentDetail).not.toHaveBeenCalled()
+  })
+
   it('hides pack controls and center-library install action on unmanaged skills', async () => {
     useSkillStoreV2.setState({
       selectedAgentDetail: {
@@ -4553,7 +5517,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('button', { name: '批量删除 0 个' })).toBeInTheDocument()
   })
 
-  it('moves a directly distributed Skill into a selected skill pack', async () => {
+  it.each([
+    'same selection', 'switch before confirming', 'switch during move', 'switch during refresh',
+  ] as const)('keeps a direct Skill move on its reviewed Agent view with %s', async (scenario) => {
     const pack = {
       id: 'daily-pack',
       name: 'Daily Pack',
@@ -4592,10 +5558,27 @@ describe('Skill detail slider + agent page render without crashing', () => {
       },
     }
     const previewMove = vi.spyOn(skillApiV2, 'previewMoveDirectSkillToPack').mockResolvedValue(movePreview)
-    const executeMove = vi.spyOn(skillApiV2, 'moveDirectSkillToPack').mockResolvedValue(movePreview)
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    let finishMove!: () => void
+    const executeMove = vi.spyOn(skillApiV2, 'moveDirectSkillToPack').mockImplementation(() => {
+      if (scenario !== 'switch during move') return Promise.resolve(movePreview)
+      return new Promise((resolve) => { finishMove = () => resolve(movePreview) })
+    })
+    let finishRefresh!: () => void
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    const snapshot = {
+      agentDetail,
+      overview: { ...makeOverview(), agents: useSkillStoreV2.getState().agents },
+      unmanaged: [],
+    }
+    if (scenario === 'switch during refresh') {
+      refreshAgentSkillView.mockImplementation(() => new Promise((resolve) => {
+        finishRefresh = () => resolve(snapshot)
+      }))
+    } else refreshAgentSkillView.mockResolvedValue(snapshot)
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged')
     const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
     const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    loadOverview.mockClear()
 
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
@@ -4603,16 +5586,46 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '归入技能包 release-checklist' }))
 
     expect(screen.getByRole('heading', { name: '将直接分发归入技能包' })).toBeInTheDocument()
-    await waitFor(() => expect(previewMove).toHaveBeenCalledWith('target-1', 'daily-pack'))
     expect(await screen.findByText('加入技能包成员')).toBeInTheDocument()
     expect(screen.getByText('不处理其他成员')).toBeInTheDocument()
     expect(screen.getByText(/不会安装、更新或删除「Daily Pack」中的其他 2 个成员/)).toBeInTheDocument()
     expect(screen.getByText('切换为技能包控制')).toBeInTheDocument()
 
+    if (scenario === 'switch before confirming') {
+      await act(async () => {
+        useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+        useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      })
+      expect(screen.queryByRole('dialog', { name: '将直接分发归入技能包' })).not.toBeInTheDocument()
+      expect(executeMove).not.toHaveBeenCalled()
+      return
+    }
+
     fireEvent.click(screen.getByRole('button', { name: '移动并交由技能包管理' }))
-    await waitFor(() => expect(executeMove).toHaveBeenCalledWith('target-1', 'daily-pack', []))
-    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
-    expect(loadOverview).toHaveBeenCalledWith(true)
+    expect(executeMove).toHaveBeenCalledTimes(1)
+
+    if (scenario === 'same selection') {
+      await waitFor(() => expect(screen.getByText('已将「Release Checklist」归入「Daily Pack」')).toBeInTheDocument())
+    } else {
+      if (scenario === 'switch during refresh') await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalled())
+      const remoteItem = makeSharedUnmanaged('remote-only', { agentId: 'claude-code' })
+      await act(async () => {
+        useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+        useSkillStoreV2.setState({ runtimeEnvironmentId: 'other-host', unmanaged: [remoteItem], error: 'New host status' })
+        if (scenario === 'switch during move') finishMove()
+        else finishRefresh()
+      })
+      expect(useSkillStoreV2.getState().unmanaged).toEqual([remoteItem])
+      expect(useSkillStoreV2.getState().error).toBe('New host status')
+      expect(screen.queryByText(/Release Checklist.*Daily Pack/)).not.toBeInTheDocument()
+    }
+    expect(previewMove).toHaveBeenCalledExactlyOnceWith('target-1', 'daily-pack', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(executeMove).toHaveBeenCalledExactlyOnceWith('target-1', 'daily-pack', [], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(listUnmanaged).not.toHaveBeenCalled()
+    expect(loadAgentDetail).not.toHaveBeenCalled()
+    expect(loadOverview).not.toHaveBeenCalledWith(true)
+    if (scenario === 'switch during move') expect(refreshAgentSkillView).not.toHaveBeenCalled()
+    else expect(refreshAgentSkillView).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
 
   it('shows every claim and defaults moving to the skill existing pack', async () => {
@@ -4695,7 +5708,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '归入技能包 release-checklist' }))
 
     expect(document.querySelector('#sm2-move-to-pack-select')).toHaveValue('nice-try')
-    await waitFor(() => expect(previewMove).toHaveBeenCalledWith('target-1', 'nice-try'))
+    await waitFor(() => expect(previewMove).toHaveBeenCalledWith('target-1', 'nice-try', LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('shows immediate deleting feedback for a managed skill card', async () => {
@@ -4727,7 +5740,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByText('Skills (2)'))
 
     fireEvent.click(screen.getByRole('button', { name: '删除 release-checklist' }))
-    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-1']))
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-1'], LOCAL_RUNTIME_ENVIRONMENT_ID))
     await waitFor(() => expect(screen.queryByRole('button', { name: '删除 release-checklist' })).not.toBeInTheDocument())
 
     act(() => {
@@ -4761,6 +5774,73 @@ describe('Skill detail slider + agent page render without crashing', () => {
     await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalledTimes(2))
     expect(listUnmanaged).not.toHaveBeenCalled()
     expect(useSkillStoreV2.getState().error).toBeNull()
+  })
+
+  it('does not retry a deletion refresh after switching away and back to the same runtime', async () => {
+    vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    let failRefresh!: (error: Error) => void
+    refreshAgentSkillView.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      failRefresh = reject
+    }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '删除 release-checklist' }))
+    await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({ selectedAgentDetail: agentDetail, error: 'New view status' })
+      failRefresh(new Error('old refresh failed'))
+    })
+
+    expect(refreshAgentSkillView).toHaveBeenCalledTimes(1)
+    expect(useSkillStoreV2.getState().error).toBe('New view status')
+    expect(screen.getByRole('button', { name: '删除 release-checklist' })).toBeInTheDocument()
+  })
+
+  it('keeps the new Agent view error when an earlier deletion fails after leaving and returning', async () => {
+    let failDelete!: (error: Error) => void
+    const deleteTargets = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockImplementationOnce(() => (
+      new Promise((_resolve, reject) => { failDelete = reject })
+    ))
+    vi.spyOn(skillApiV2, 'getAgentDetail').mockImplementation(async (id) => ({ ...agentDetail, id }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '删除 release-checklist' }))
+    expect(deleteTargets).toHaveBeenCalledTimes(1)
+
+    await act(async () => { await useSkillStoreV2.getState().selectAgent('codex') })
+    await act(async () => { await useSkillStoreV2.getState().selectAgent('claude-code') })
+    await act(async () => {
+      useSkillStoreV2.setState({ error: 'New Agent status' })
+      failDelete(new Error('old deletion failed'))
+    })
+
+    expect(useSkillStoreV2.getState().error).toBe('New Agent status')
+    expect(vi.mocked(skillApiV2.refreshAgentSkillView)).not.toHaveBeenCalled()
+  })
+
+  it('invalidates a deletion review when the runtime changes and returns before confirmation', async () => {
+    const deleteTargets = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '批量选择' }))
+    fireEvent.click(screen.getByLabelText('选择 release-checklist'))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除 1 个' }))
+    expect(screen.getByRole('dialog', { name: '确认批量删除 Skill？' })).toBeInTheDocument()
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+
+    expect(screen.queryByRole('dialog', { name: '确认批量删除 Skill？' })).not.toBeInTheDocument()
+    expect(deleteTargets).not.toHaveBeenCalled()
   })
 
   it('cancels managed skill batch deletion from the confirmation dialog', async () => {
@@ -4813,7 +5893,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
 
     expect(screen.queryByRole('dialog', { name: '移除共享的已管理 Skill？' })).not.toBeInTheDocument()
-    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-shared-review']))
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-shared-review'], LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(screen.getByRole('button', { name: '删除中 shared-review' })).toHaveAttribute('aria-busy', 'true')
     expect(finishDelete).toBeTypeOf('function')
     ;(finishDelete as unknown as () => void)()
@@ -4853,7 +5933,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const dialog = screen.getByRole('dialog', { name: '移除共享的已管理 Skill？' })
     fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
 
-    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-shared-review', 'target-shared-writing']))
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-shared-review', 'target-shared-writing'], LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('deletes an unmanaged agent skill from the skill card after confirmation', async () => {
@@ -4871,7 +5951,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '直接删除' }))
     expect(screen.queryByRole('dialog', { name: '删除 Skill「manual-skill」？' })).not.toBeInTheDocument()
 
-    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1']))
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1'], LOCAL_RUNTIME_ENVIRONMENT_ID))
     await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalledWith('claude-code'))
   })
 
@@ -4906,7 +5986,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
     expect(screen.queryByRole('dialog', { name: '永久删除共享的未管理 Skill？' })).not.toBeInTheDocument()
 
-    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', ['raw-shared-writing']))
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', ['raw-shared-writing'], LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('closes the unmanaged confirmation dialog and keeps failed items visible', async () => {
@@ -4951,7 +6031,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '直接删除' }))
 
     expect(screen.queryByRole('dialog', { name: '删除 Skill「bird」？' })).not.toBeInTheDocument()
-    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('codex', ['unmanaged-codex-bird']))
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('codex', ['unmanaged-codex-bird'], LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(await screen.findByText(/该未管理 Skill 不属于 Agent「codex」，请重新扫描后重试/)).toBeInTheDocument()
     expect(useSkillStoreV2.getState().unmanaged).toContainEqual(codexItem)
   })
@@ -4988,7 +6068,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
     expect(screen.queryByRole('dialog', { name: '确认批量删除未管理 Skill？' })).not.toBeInTheDocument()
 
-    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1', 'unmanaged-2']))
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1', 'unmanaged-2'], LOCAL_RUNTIME_ENVIRONMENT_ID))
     await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalledWith('claude-code'))
   })
 
@@ -5059,7 +6139,62 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const dialog = screen.getByRole('dialog', { name: '永久删除共享的未管理 Skill？' })
     fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
 
-    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', ['raw-shared-writing', 'raw-shared-review']))
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', ['raw-shared-writing', 'raw-shared-review'], LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
+  it('finishes confirmed unmanaged deletion on the original runtime for every owner', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        inheritsSharedSkills: true,
+        inheritedUnmanagedSkills: [
+          makeSharedUnmanaged('shared-writing'),
+          makeSharedUnmanaged('shared-review', { agentId: 'codex' }),
+        ],
+      },
+      selectedAgentId: 'codex',
+      agents: [makeSidebarAgent('codex', 'Codex')],
+      unmanaged: [],
+    })
+    const ownerRuntimes: string[] = []
+    let finishFirstOwner!: () => void
+    const pendingFirstOwner = new Promise<{ deleted: number; failures: [] }>((resolve) => {
+      finishFirstOwner = () => resolve({ deleted: 1, failures: [] })
+    })
+    const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkills').mockImplementation(
+      (owner, _ids, environmentId?: string) => {
+        ownerRuntimes.push(environmentId ?? useRuntimeEnvironmentStore.getState().selectedEnvironmentId)
+        return owner === 'agents' ? pendingFirstOwner : Promise.resolve({ deleted: 1, failures: [] })
+      },
+    )
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (3)' }))
+    fireEvent.click(screen.getByRole('button', { name: '共享继承 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择当前可接管' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除 2 个' }))
+    fireEvent.click(screen.getByRole('button', { name: '从共享目录删除' }))
+    expect(deleteUnmanaged).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'new-host', error: 'New host status' })
+      finishFirstOwner()
+    })
+
+    expect(deleteUnmanaged.mock.calls.map(([owner, ids]) => [owner, ids])).toEqual([
+      ['agents', ['raw-shared-writing']],
+      ['codex', ['raw-shared-review']],
+    ])
+    expect(ownerRuntimes).toEqual([LOCAL_RUNTIME_ENVIRONMENT_ID, LOCAL_RUNTIME_ENVIRONMENT_ID])
+    expect(refreshAgentSkillView).not.toHaveBeenCalled()
+    expect(useSkillStoreV2.getState().error).toBe('New host status')
   })
 
   it('batch adopts shared unmanaged Skills through the standard flow with owner agents', async () => {
@@ -5113,7 +6248,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
         option: 'import_cleanup',
         renamedId: null,
       },
-    ]))
+    ], LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('switches unmanaged skills into a peer tab and batch adopts them like agent sync', async () => {
@@ -5149,7 +6284,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
         unmanagedId: 'unmanaged-1',
         option: 'import_keep',
         renamedId: null,
-      }])
+      }], LOCAL_RUNTIME_ENVIRONMENT_ID)
     })
     expect(listUnmanaged).toHaveBeenCalled()
   })
@@ -5193,9 +6328,12 @@ describe('Skill detail slider + agent page render without crashing', () => {
       })),
       finalizationError: null,
     })
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([localOnly])
-    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
-    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    refreshAgentSkillView.mockResolvedValueOnce({
+      agentDetail,
+      overview: { ...makeOverview(), agents: useSkillStoreV2.getState().agents },
+      unmanaged: [localOnly],
+    })
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
     fireEvent.click(screen.getByText('Skills (4)'))
@@ -5214,12 +6352,83 @@ describe('Skill detail slider + agent page render without crashing', () => {
       expect(takeover).toHaveBeenCalledWith('claude-code', [
         'unmanaged-same',
         'unmanaged-conflict',
-      ])
+      ], LOCAL_RUNTIME_ENVIRONMENT_ID)
     })
-    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
-    expect(loadOverview).toHaveBeenCalledWith(true)
+    expect(refreshAgentSkillView).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(await screen.findByText('一键接管完成：已接管 2 个，失败 0 个；其他未管理 Skill 保持不变。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '批量管理' })).toBeInTheDocument()
+  })
+
+  it('closes an unconfirmed one-click takeover when the runtime changes and returns', async () => {
+    useSkillStoreV2.setState({
+      unmanaged: [{
+        ...makeSharedUnmanaged('same-skill', { agentId: 'claude-code' }),
+        reason: 'same_name_as_center_skill',
+      }],
+    })
+    const takeover = vi.spyOn(skillApiV2, 'takeoverCenterSkills')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '一键接管 1 个' }))
+    expect(screen.getByRole('dialog', { name: '接管中心库已有的 1 个 Skill？' })).toBeInTheDocument()
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+
+    expect(screen.queryByRole('dialog', { name: '接管中心库已有的 1 个 Skill？' })).not.toBeInTheDocument()
+    expect(takeover).not.toHaveBeenCalled()
+  })
+
+  it.each(['takeover', 'refresh'] as const)('keeps another runtime intact when one-click takeover is pending in %s', async (phase) => {
+    const item = {
+      ...makeSharedUnmanaged('same-skill', { agentId: 'claude-code' }),
+      reason: 'same_name_as_center_skill',
+    }
+    const remoteItem = makeSharedUnmanaged('remote-skill', { agentId: 'claude-code' })
+    useSkillStoreV2.setState({ unmanaged: [item] })
+    const result = {
+      items: [{ unmanagedId: item.id, skillId: 'same-skill', error: null }],
+      finalizationError: null,
+    }
+    let finishTakeover!: () => void
+    const takeover = vi.spyOn(skillApiV2, 'takeoverCenterSkills').mockImplementation(() => {
+      if (phase === 'refresh') return Promise.resolve(result)
+      return new Promise((resolve) => { finishTakeover = () => resolve(result) })
+    })
+    const snapshot = { agentDetail, overview: makeOverview(), unmanaged: [] }
+    let finishRefresh!: () => void
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    refreshAgentSkillView.mockImplementation(() => new Promise((resolve) => {
+      finishRefresh = () => resolve(snapshot)
+    }))
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '一键接管 1 个' }))
+    fireEvent.click(screen.getByRole('button', { name: '以中心库为准接管' }))
+    expect(takeover).toHaveBeenCalledTimes(1)
+    if (phase === 'refresh') await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalled())
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'new-host', unmanaged: [remoteItem], error: 'New host status' })
+      if (phase === 'takeover') finishTakeover()
+      else finishRefresh()
+    })
+
+    expect(useSkillStoreV2.getState().error).toBe('New host status')
+    expect(useSkillStoreV2.getState().unmanaged).toEqual([remoteItem])
+    expect(screen.queryByText(/一键接管完成/)).not.toBeInTheDocument()
+    expect(takeover).toHaveBeenCalledWith('claude-code', [item.id], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(listUnmanaged).not.toHaveBeenCalled()
+    if (phase === 'takeover') expect(refreshAgentSkillView).not.toHaveBeenCalled()
+    else expect(refreshAgentSkillView).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
 
   it('explains which batch adoption conflicts require individual review', async () => {
@@ -5276,7 +6485,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByText(/当前选择的接管方式已不可用/)).not.toBeInTheDocument()
   })
 
-  it('syncs successfully batch-adopted unmanaged skills into an existing skill pack', async () => {
+  it.each([false, true])('syncs batch-adopted skills into the original pack (switch during lookup: %s)', async (switchRuntime) => {
     useSkillStoreV2.setState({
       selectedAgentDetail: {
         ...agentDetail,
@@ -5293,7 +6502,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       finalizationError: null,
     })
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
-    vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue({
+    const existingPack: SkillPackDetail = {
       id: 'agent-tools',
       name: 'Agent Tools',
       description: 'Daily agent tools',
@@ -5302,7 +6511,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
       appliedAgents: [],
       createdAt: '2026-01-01T00:00:00Z',
       updatedAt: '2026-01-01T00:00:00Z',
-    } as SkillPackDetail)
+    }
+    let finishLookup!: (pack: SkillPackDetail) => void
+    const pendingLookup = new Promise<SkillPackDetail>((resolve) => { finishLookup = resolve })
+    const getPackDetail = vi.spyOn(skillApiV2, 'getPackDetail').mockReturnValue(switchRuntime ? pendingLookup : Promise.resolve(existingPack))
     const upsertPack = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
       id: 'agent-tools',
       name: 'Agent Tools',
@@ -5329,22 +6541,35 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.change(screen.getByLabelText('目标技能包'), { target: { value: 'agent-tools' } })
     fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
 
+    if (switchRuntime) {
+      await waitFor(() => expect(getPackDetail).toHaveBeenCalledTimes(1))
+      await act(async () => {
+        useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+        useSkillStoreV2.setState({ runtimeEnvironmentId: 'new-host', error: 'New host status' })
+        finishLookup(existingPack)
+      })
+      expect(useSkillStoreV2.getState().error).toBe('New host status')
+    }
     await waitFor(() => {
+      expect(getPackDetail).toHaveBeenCalledWith('agent-tools', LOCAL_RUNTIME_ENVIRONMENT_ID)
       expect(upsertPack).toHaveBeenCalledWith({
         id: 'agent-tools',
         name: 'Agent Tools',
         description: 'Daily agent tools',
         tags: [],
         skillIds: ['release-checklist', 'manual-skill'],
-      })
+      }, { environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
     })
   })
 
-  it('creates a skill pack from successfully batch-adopted unmanaged skills', async () => {
-    vi.spyOn(skillApiV2, 'executeAdoptBatch').mockResolvedValue({
+  it.each([false, true])('creates a pack on the adoption runtime (switch during adoption: %s)', async (switchRuntime) => {
+    const result = {
       items: [{ unmanagedId: 'unmanaged-1', skillId: 'manual-skill', error: null }],
       finalizationError: null,
-    })
+    }
+    let finishAdoption!: (value: typeof result) => void
+    const pendingAdoption = new Promise<typeof result>((resolve) => { finishAdoption = resolve })
+    const adopt = vi.spyOn(skillApiV2, 'executeAdoptBatch').mockReturnValue(switchRuntime ? pendingAdoption : Promise.resolve(result))
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     const upsertPack = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
       id: 'pack-manual',
@@ -5369,6 +6594,16 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.change(screen.getByLabelText('新技能包名称'), { target: { value: 'Manual Pack' } })
     fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
 
+    if (switchRuntime) {
+      await waitFor(() => expect(adopt).toHaveBeenCalledTimes(1))
+      await act(async () => {
+        useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+        useSkillStoreV2.setState({ runtimeEnvironmentId: 'new-host', error: 'New host status' })
+        finishAdoption(result)
+      })
+      expect(useSkillStoreV2.getState().error).toBe('New host status')
+      expect(screen.queryByText(/批量接管完成/)).not.toBeInTheDocument()
+    }
     await waitFor(() => {
       expect(upsertPack).toHaveBeenCalledWith({
         id: '',
@@ -5376,8 +6611,25 @@ describe('Skill detail slider + agent page render without crashing', () => {
         description: '',
         tags: [],
         skillIds: ['manual-skill'],
-      })
+      }, { environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
     })
+  })
+
+  it('closes an unconfirmed batch Skill adoption when the runtime changes', async () => {
+    const adopt = vi.spyOn(skillApiV2, 'executeAdoptBatch')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByText('选择当前可接管'))
+    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    expect(screen.getByRole('button', { name: '确认接管' })).toBeInTheDocument()
+
+    act(() => useRuntimeEnvironmentStore.getState().selectEnvironment('different-host'))
+
+    expect(screen.queryByRole('button', { name: '确认接管' })).not.toBeInTheDocument()
+    expect(adopt).not.toHaveBeenCalled()
   })
 
   it('localizes managed mode, direct claim, and unmanaged reason labels on the agent page', async () => {
@@ -5776,10 +7028,13 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
   it('shows a rescan action inside the empty unmanaged skills section', async () => {
     useSkillStoreV2.setState({ unmanaged: [] })
-    const scan = vi.spyOn(skillApiV2, 'scanAgentInventory').mockResolvedValue({ agentId: 'claude-code', managed: 1, unmanaged: 0 })
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
-    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
-    vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue(agentDetail)
+    const scan = vi.spyOn(skillApiV2, 'scanAgentInventory').mockResolvedValue({ agentId: 'claude-code', managed: 1, unmanaged: 1 })
+    const scannedItem = makeSharedUnmanaged('scanned-item', { agentId: 'claude-code' })
+    const refresh = vi.spyOn(skillApiV2, 'refreshAgentSkillView').mockResolvedValue({
+      agentDetail,
+      overview: makeOverview(),
+      unmanaged: [scannedItem],
+    })
 
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     const { container } = render(<AgentManagementPage />)
@@ -5792,8 +7047,64 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(button).toHaveTextContent('重新扫描此 Agent')
 
     fireEvent.click(button!)
-    await waitFor(() => expect(scan).toHaveBeenCalledWith('claude-code'))
+    await waitFor(() => expect(useSkillStoreV2.getState().unmanaged).toEqual([scannedItem]))
+    expect(scan).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(refresh).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
+
+  it.each(['during scan', 'during inventory read', 'away and back', 'before scan failure'] as const)(
+    'keeps the current runtime inventory after switching %s',
+    async (scenario) => {
+      const counts = { agentId: 'claude-code', managed: 1, unmanaged: 1 }
+      let finishScan!: () => void
+      let failScan!: (error: Error) => void
+      const scanPromise = new Promise<typeof counts>((resolve, reject) => {
+        finishScan = () => resolve(counts)
+        failScan = reject
+      })
+      const scan = vi.spyOn(skillApiV2, 'scanAgentInventory').mockReturnValue(scanPromise)
+      const previousRuntimeItem = makeSharedUnmanaged('old-scan', { agentId: 'claude-code' })
+      let finishInventory!: () => void
+      const inventoryPromise = new Promise<AgentSkillViewSnapshot>((resolve) => {
+        finishInventory = () => resolve({
+          agentDetail,
+          overview: makeOverview(),
+          unmanaged: [previousRuntimeItem],
+        })
+      })
+      const refresh = vi.spyOn(skillApiV2, 'refreshAgentSkillView').mockReturnValue(inventoryPromise)
+      vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+      useSkillStoreV2.setState({ unmanaged: [] })
+
+      const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+      render(<AgentManagementPage />)
+      fireEvent.click(screen.getByRole('button', { name: '重新扫描此 Agent' }))
+      expect(scan).toHaveBeenCalledTimes(1)
+      const waitingForInventory = scenario === 'during inventory read' || scenario === 'away and back'
+      if (waitingForInventory) {
+        await act(async () => finishScan())
+        expect(refresh).toHaveBeenCalledTimes(1)
+      }
+
+      const updatedItem = makeSharedUnmanaged('current-runtime-item', { agentId: 'claude-code' })
+      await act(async () => {
+        const runtime = useRuntimeEnvironmentStore.getState()
+        runtime.selectEnvironment('other-host')
+        if (scenario === 'away and back') runtime.selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+        const runtimeEnvironmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId
+        useSkillStoreV2.setState({ runtimeEnvironmentId, unmanaged: [updatedItem], error: 'Current runtime status' })
+        if (scenario === 'before scan failure') failScan(new Error('Old scan failed'))
+        else finishScan()
+        finishInventory()
+      })
+
+      expect(useSkillStoreV2.getState().unmanaged).toEqual([updatedItem])
+      expect(useSkillStoreV2.getState().error).toBe('Current runtime status')
+      expect(scan).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+      if (waitingForInventory) expect(refresh).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+      else expect(refresh).not.toHaveBeenCalled()
+    },
+  )
 
   it('shows immediate busy feedback while preparing to adopt an unmanaged skill', async () => {
     let resolvePreview: (preview: AdoptPreview) => void = () => {}
@@ -5939,7 +7250,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     fireEvent.click(within(configRow as HTMLElement).getByRole('button', { name: '编辑' }))
     const editor = await screen.findByLabelText('编辑配置文件内容')
-    expect(readConfig).toHaveBeenCalledWith('claude-code', '/c/config.json')
+    expect(readConfig).toHaveBeenCalledWith('claude-code', '/c/config.json', LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(editor).toHaveValue('{\n  "enabled": false,\n  "threshold": 9007199254740993\n}\n')
     expect(screen.getByText('JSON 语法正确')).toBeInTheDocument()
     expect(within(configRow as HTMLElement).queryByRole('button', { name: /复制/ })).not.toBeInTheDocument()
@@ -5952,18 +7263,80 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '格式化 JSON' }))
     expect(editor).toHaveValue('{\n  "enabled": true\n}\n')
     fireEvent.click(screen.getByRole('button', { name: '保存更改' }))
-    await waitFor(() => expect(writeConfig).toHaveBeenCalledWith(
+    const dialog = screen.getByRole('dialog')
+    expect(await within(dialog).findByText('配置已保存，原文件已备份')).toBeInTheDocument()
+    expect(writeConfig).toHaveBeenCalledWith(
       'claude-code',
       '/c/config.json',
       '{\n  "enabled": true\n}\n',
       'sha256:before',
-    ))
-    const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByText('配置已保存，原文件已备份')).toBeInTheDocument()
+      LOCAL_RUNTIME_ENVIRONMENT_ID,
+    )
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
 
     fireEvent.click(within(configRow as HTMLElement).getByRole('button', { name: '定位' }))
     await waitFor(() => expect(revealPath).toHaveBeenCalledWith('/c/config.json'))
+  })
+
+  it('keeps Agent config edits typed during a save and saves them with the new revision', async () => {
+    const path = '/c/config.json'
+    vi.spyOn(skillApiV2, 'readAgentConfigFile').mockResolvedValue({ path, content: '{"count":0}', revision: 'initial' })
+    let saved!: (document: { path: string; content: string; revision: string }) => void
+    const write = vi.spyOn(skillApiV2, 'writeAgentConfigFile')
+      .mockReturnValueOnce(new Promise((resolve) => { saved = resolve }))
+      .mockResolvedValueOnce({ path, content: '{"count":2}', revision: 'second' })
+      .mockRejectedValueOnce('Configuration write failed temporarily')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('路径与设置'))
+    const row = screen.getByText('配置文件').closest('.sm2__config-resource') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
+    const editor = await screen.findByLabelText('编辑配置文件内容')
+
+    fireEvent.change(editor, { target: { value: '{"count":1}' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存更改' }))
+    fireEvent.change(editor, { target: { value: '{"count":2}' } })
+    await act(async () => saved({ path, content: '{"count":1}', revision: 'first' }))
+    expect(editor).toHaveValue('{"count":2}')
+    const save = screen.getByRole('button', { name: '保存更改' })
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    await waitFor(() => expect(write).toHaveBeenNthCalledWith(
+      2, 'claude-code', path, '{"count":2}', 'first', LOCAL_RUNTIME_ENVIRONMENT_ID,
+    ))
+    await within(screen.getByRole('dialog')).findByText('配置已保存，原文件已备份')
+
+    fireEvent.change(editor, { target: { value: '{"count":3}' } })
+    fireEvent.click(save)
+    expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent('Configuration write failed temporarily')
+    expect(editor).toHaveValue('{"count":3}')
+    expect(save).toBeEnabled()
+  })
+
+  it('ignores an Agent config save response after changing environments', async () => {
+    const path = '/c/config.json'
+    vi.spyOn(skillApiV2, 'readAgentConfigFile').mockResolvedValue({ path, content: '{"enabled":false}', revision: 'initial' })
+    let saved!: (document: { path: string; content: string; revision: string }) => void
+    const write = vi.spyOn(skillApiV2, 'writeAgentConfigFile')
+      .mockReturnValueOnce(new Promise((resolve) => { saved = resolve }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('路径与设置'))
+    const row = screen.getByText('配置文件').closest('.sm2__config-resource') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
+    const editor = await screen.findByLabelText('编辑配置文件内容')
+    fireEvent.change(editor, { target: { value: '{"enabled":true}' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存更改' }))
+
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('different-host')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    await act(async () => saved({ path, content: '{"enabled":true}', revision: 'saved' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByText('配置已保存，原文件已备份')).not.toBeInTheDocument()
+    expect(write).toHaveBeenCalledTimes(1)
   })
 
   it('shows hook bridge command details and open actions', async () => {
@@ -6008,6 +7381,91 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(openPath).toHaveBeenCalledWith('/Users/me/.claude/settings.json')
     fireEvent.click(screen.getByText('打开脚本'))
     expect(openPath).toHaveBeenCalledWith('/Users/me/Library/Application Support/com.vibetunnel.agentbro/agentbro-bridge')
+  })
+
+  it('does not read the local Hook settings from Agent Management on an SSH host', async () => {
+    const localStatus = vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([{
+      toolId: 'claude-code',
+      name: 'claude-code',
+      displayName: 'Local Claude',
+      installed: true,
+      status: 'Installed',
+      configPath: '/local-machine/claude/settings.json',
+    }])
+    useRuntimeEnvironmentStore.getState().selectEnvironment('build-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'build-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    await act(async () => {})
+
+    expect(localStatus).not.toHaveBeenCalled()
+    expect(screen.queryByText('/local-machine/claude/settings.json')).not.toBeInTheDocument()
+  })
+
+  it('installs and removes a Hook on the SSH host shown in Agent Management', async () => {
+    const remoteStatus = vi.spyOn(agentApi, 'remoteHookStatus')
+      .mockResolvedValueOnce('notInstalled')
+      .mockResolvedValueOnce('installed')
+      .mockResolvedValueOnce('notInstalled')
+    const install = vi.spyOn(agentApi, 'installHook').mockResolvedValue()
+    const uninstall = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    useRuntimeEnvironmentStore.getState().selectEnvironment('build-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'build-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    expect(await screen.findByText(i18n.t('skills.runtimeEnvironment.currentLabel', { name: 'build-host' }))).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.installHooks') }))
+    expect(install).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
+    fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.uninstallHooks') }))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('build-host'))
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
+    expect(await screen.findByRole('button', { name: i18n.t('settings.installHooks') })).toBeEnabled()
+    expect(remoteStatus.mock.calls).toEqual(Array.from({ length: 3 }, () => ['claude-code', 'build-host']))
+  })
+
+  it('does not reload Hook status for an abandoned SSH host after install finishes', async () => {
+    const remoteStatus = vi.spyOn(agentApi, 'remoteHookStatus')
+      .mockResolvedValueOnce('needsReinstall')
+      .mockResolvedValueOnce('settingsCorrupted')
+    let finishInstall!: () => void
+    const install = vi.spyOn(agentApi, 'installHook').mockReturnValue(new Promise((resolve) => { finishInstall = resolve }))
+    useRuntimeEnvironmentStore.getState().selectEnvironment('build-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'build-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.reinstall') }))
+    expect(install).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('gpu-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'gpu-host' })
+    })
+    expect(await screen.findByText(i18n.t('settings.hookSettingsCorrupted'))).toBeInTheDocument()
+    await act(async () => finishInstall())
+
+    expect(remoteStatus.mock.calls).toEqual([['claude-code', 'build-host'], ['claude-code', 'gpu-host']])
+    expect(screen.getByText(i18n.t('settings.hookSettingsCorrupted'))).toBeInTheDocument()
+  })
+
+  it('shows SSH connection errors without marking the remote Hook uninstalled', async () => {
+    vi.spyOn(agentApi, 'remoteHookStatus').mockRejectedValue(new Error('SSH connection refused'))
+    useRuntimeEnvironmentStore.getState().selectEnvironment('offline-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'offline-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('SSH connection refused')
+    expect(screen.queryByRole('button', { name: i18n.t('settings.installHooks') })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: i18n.t('settings.detectNow') })).toBeEnabled()
   })
 
   it('routes custom Claude Code hook actions through its engine instance', async () => {
@@ -6080,6 +7538,105 @@ describe('Skill detail slider + agent page render without crashing', () => {
     await waitFor(() => expect(uninstallHook).toHaveBeenCalledWith('engine:custom-codefuse'))
   })
 
+  it.each([
+    { id: 'cursor-cli', name: 'Cursor CLI', otherTool: 'cursor', otherAdapter: 'cursor', configPath: '~/.cursor/settings.json' },
+    { id: 'claude-code', name: 'Claude Code', otherTool: 'engine:team', otherAdapter: 'claude-code', configPath: '~/.claude/settings.json' },
+  ])('uses the exact $name Hook profile even when another entry appears first', async ({ id, name, otherTool, otherAdapter, configPath }) => {
+    const agent = makeSidebarAgent(id, name)
+    useSkillStoreV2.setState({
+      agents: [agent],
+      selectedAgentId: id,
+      selectedAgentDetail: { ...agentDetail, ...agent, configPath },
+    })
+    vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([
+      {
+        toolId: otherTool,
+        adapterId: otherAdapter,
+        name: otherAdapter,
+        displayName: 'Other profile',
+        installed: true,
+        configPath,
+        status: 'Installed',
+        isCustom: otherTool.startsWith('engine:'),
+        customId: otherTool.startsWith('engine:') ? 'team' : undefined,
+      },
+      {
+        toolId: id,
+        adapterId: id,
+        name: id,
+        displayName: name,
+        installed: true,
+        configPath,
+        status: 'Installed',
+      },
+    ])
+    const uninstall = vi.spyOn(tauriApi, 'uninstallAgentHook').mockResolvedValue()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    const button = await screen.findByRole('button', { name: '卸载 Hook' })
+    await act(async () => fireEvent.click(button))
+
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith(id)
+  })
+
+  it('does not show a sibling built-in Hook when the selected profile has no status', async () => {
+    const agent = makeSidebarAgent('cursor-cli', 'Cursor CLI')
+    const configPath = '~/.cursor/settings.json'
+    useSkillStoreV2.setState({
+      agents: [agent],
+      selectedAgentId: agent.id,
+      selectedAgentDetail: { ...agentDetail, ...agent, configPath },
+    })
+    vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([{
+      toolId: 'cursor',
+      adapterId: 'cursor',
+      name: 'cursor',
+      displayName: 'Cursor',
+      installed: true,
+      configPath,
+      status: 'Installed',
+    }])
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+
+    expect(await screen.findByText('该 Agent 暂不支持 Hook 接入')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '卸载 Hook' })).not.toBeInTheDocument()
+  })
+
+  it('resolves the custom Hook for the same config file with an expanded home path', async () => {
+    const agent = makeSidebarAgent('custom-registered', 'Registered Agent')
+    useSkillStoreV2.setState({
+      agents: [agent],
+      selectedAgentId: agent.id,
+      selectedAgentDetail: { ...agentDetail, ...agent, configPath: '/Profiles/owner/registered/settings.json' },
+    })
+    vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([
+      {
+        toolId: 'custom:other', customId: 'other', name: 'claude-code', displayName: agent.displayName,
+        installed: true, status: 'Installed', isCustom: true, configPath: '~/other/settings.json',
+      },
+      {
+        toolId: 'custom:matching', customId: 'matching', name: 'claude-code', displayName: 'Matching',
+        installed: true, status: 'Installed', isCustom: true, configPath: '~/registered/settings.json',
+      },
+    ])
+    const uninstall = vi.spyOn(tauriApi, 'uninstallAgentHook').mockResolvedValue()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    const button = await screen.findByRole('button', { name: '卸载 Hook' })
+    await act(async () => fireEvent.click(button))
+
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('custom:matching')
+  })
+
   it('uses the install action when the selected agent is not installed', async () => {
     const codexDetail: AgentDetail = {
       ...agentDetail,
@@ -6108,7 +7665,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<AgentManagementPage />)
 
     fireEvent.click(await screen.findByText('安装此 Agent'))
-    await waitFor(() => expect(install).toHaveBeenCalledWith('codex'))
+    await waitFor(() => expect(install).toHaveBeenCalledWith('codex', LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('opens the download page when an uninstalled app has no install command', async () => {
@@ -6227,12 +7784,14 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<AgentManagementPage />)
 
     fireEvent.click(await screen.findByText('更新此 Agent'))
-    await waitFor(() => expect(update).toHaveBeenCalledWith('claude-code'))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('uninstalls a supported agent from the page header after confirmation', async () => {
     useSkillStoreV2.setState({ unmanaged: [] })
-    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram()])
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([makeProgram()])
+      .mockResolvedValue([makeProgram({ status: 'notInstalled', binaryPath: null })])
     const uninstall = vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
@@ -6246,11 +7805,189 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('npm uninstall -g @anthropic-ai/claude-code')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
-    await waitFor(() => expect(uninstall).toHaveBeenCalledWith('claude-code'))
+    await waitFor(() => expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(await screen.findByText('Agent「Claude Code」已卸载，已清理 1 个 Skills')).toBeInTheDocument()
   })
 
-  it('removes an uninstalled Agent from the installed sidebar and selects the next one', async () => {
+  it('keeps an uninstall limited to the Skills shown before another Skill was discovered', async () => {
+    const reviewed = makeSharedUnmanaged('reviewed', { agentId: 'claude-code' })
+    const discovered = makeSharedUnmanaged('discovered', { agentId: 'claude-code' })
+    useSkillStoreV2.setState({ unmanaged: [reviewed] })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([makeProgram()])
+      .mockResolvedValue([makeProgram({ status: 'notInstalled', binaryPath: null })])
+    vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([discovered])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockImplementation(async (force) => {
+      if (force) useSkillStoreV2.setState({ agents: [makeSidebarAgent('claude-code', 'Claude Code', { unmanaged: 1 })] })
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    act(() => useSkillStoreV2.setState({ unmanaged: [reviewed, discovered] }))
+    const reviewedCount = within(screen.getByRole('dialog')).getByText('未管理 Skills').parentElement?.textContent
+    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+
+    expect(await screen.findByText(/Agent「Claude Code」已卸载/)).toBeInTheDocument()
+    expect(removeUnmanaged).toHaveBeenCalledExactlyOnceWith('claude-code', reviewed.id, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(reviewedCount).toBe('1未管理 Skills')
+    expect(useSkillStoreV2.getState().unmanaged).toEqual([discovered])
+    expect(useSkillStoreV2.getState().agents[0]?.unmanagedSkillCount).toBe(1)
+  })
+
+  it.each([
+    { change: 'a new installation', reviewed: makeProgram({ status: 'notInstalled', binaryPath: null }), current: makeProgram() },
+    { change: 'a replaced launcher', reviewed: makeProgram({ binaryPath: '/previous/claude' }), current: makeProgram() },
+    { change: 'an additional Hook', reviewed: makeProgram(), current: makeProgram({ hooksInstalled: true }) },
+  ])('requires a fresh cleanup review after detecting $change', async ({ reviewed, current }) => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([reviewed])
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
+    const removeManaged = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    const uninstallHook = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    const cleanupOnly = reviewed.status === 'notInstalled'
+    fireEvent.click(await screen.findByRole('button', { name: cleanupOnly ? '清理残留' : '卸载 Agent' }))
+    act(() => useSkillStoreV2.setState({
+      agentProgramSnapshot: {
+        environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+        selectionRevision: useRuntimeEnvironmentStore.getState().selectionRevision,
+        programs: { [current.id]: current },
+      },
+    }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /确认(卸载|清理)/ }))
+
+    expect(uninstall).not.toHaveBeenCalled()
+    expect(removeManaged).not.toHaveBeenCalled()
+    expect(removeUnmanaged).not.toHaveBeenCalled()
+    expect(uninstallHook).not.toHaveBeenCalled()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Claude Code 的程序或 Hook 状态已变化')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '卸载 Agent' })).toBeEnabled()
+  })
+
+  it('keeps Agent resources when the native package command is already busy', async () => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({ hooksInstalled: true })])
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockRejectedValue('agent_package_operation_in_progress')
+    const removeManaged = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    const uninstallHook = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(removeManaged).not.toHaveBeenCalled()
+    expect(removeUnmanaged).not.toHaveBeenCalled()
+    expect(uninstallHook).not.toHaveBeenCalled()
+    expect(alert).toHaveTextContent('另一个 Agent 程序操作正在运行')
+    expect(screen.getByRole('button', { name: '卸载 Agent' })).toBeEnabled()
+  })
+
+  it('cleans AgentBro resources while keeping an installed app without an uninstall command', async () => {
+    useSkillStoreV2.setState({
+      unmanaged: [makeSharedUnmanaged('builtin', { agentId: 'claude-code', readOnly: true })],
+    })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({ kind: 'app', uninstallCommand: null })])
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
+    const remove = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    const loadDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '清理残留' }))
+    expect(screen.getByRole('dialog')).not.toHaveTextContent('未管理 Skills')
+    fireEvent.click(screen.getByRole('button', { name: '确认清理' }))
+
+    expect(await screen.findByText(/已清理 Claude Code 的 AgentBro 资源/)).toHaveTextContent('已清理 1 个 Skills')
+    expect(uninstall).not.toHaveBeenCalled()
+    expect(removeUnmanaged).not.toHaveBeenCalled()
+    expect(remove).toHaveBeenCalledExactlyOnceWith(agentDetail.skills.map((skill) => skill.id), LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(loadDetail).toHaveBeenCalledWith('claude-code', true)
+    expect(useSkillStoreV2.getState().agents.find((agent) => agent.id === 'claude-code')?.installed).toBe(true)
+    expect(useSkillStoreV2.getState().selectedAgentId).toBe('claude-code')
+  })
+
+  it.each([true, false])('keeps the Agent selected without verified removal, detected=%s', async (detected) => {
+    const refresh = vi.spyOn(agentApi, 'refresh').mockResolvedValueOnce([makeProgram()])
+    if (detected) refresh.mockResolvedValueOnce([makeProgram()])
+    else refresh.mockRejectedValueOnce('Detection failed')
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    const loadDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
+      detected ? '仍检测到 Claude Code' : '无法确认 Claude Code 是否已卸载',
+    ))
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(loadDetail).toHaveBeenCalledWith('claude-code', true)
+    expect(useSkillStoreV2.getState().agents.find((agent) => agent.id === 'claude-code')?.installed).toBe(true)
+    expect(useSkillStoreV2.getState().selectedAgentId).toBe('claude-code')
+    expect(screen.queryByText(/已卸载，/)).not.toBeInTheDocument()
+  })
+
+  it('finishes an uninstall on the confirmed runtime without changing the newly selected host', async () => {
+    const localSkill = makeSharedUnmanaged('local-only', { agentId: 'claude-code' })
+    const remoteSkill = makeSharedUnmanaged('remote-only', { agentId: 'claude-code' })
+    useSkillStoreV2.setState({ unmanaged: [localSkill] })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({ hooksInstalled: true })])
+    let finishProgramUninstall!: () => void
+    const pendingProgramUninstall = new Promise<void>((resolve) => { finishProgramUninstall = resolve })
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockReturnValue(pendingProgramUninstall)
+    const deleteManaged = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    const uninstallHook = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue(undefined)
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+    expect(uninstall).toHaveBeenCalledTimes(1)
+
+    const remoteAgent = makeSidebarAgent('claude-code', 'Remote Claude')
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'remote-runtime', unmanaged: [remoteSkill], agents: [remoteAgent] })
+      finishProgramUninstall()
+    })
+
+    expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(deleteManaged).toHaveBeenCalledExactlyOnceWith(agentDetail.skills.map((skill) => skill.id), LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(deleteUnmanaged).toHaveBeenCalledExactlyOnceWith('claude-code', localSkill.id, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(uninstallHook).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(listUnmanaged).toHaveBeenCalledExactlyOnceWith(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(useSkillStoreV2.getState().agents).toEqual([remoteAgent])
+    expect(useSkillStoreV2.getState().unmanaged).toEqual([remoteSkill])
+    expect(screen.queryByText(/已卸载/)).not.toBeInTheDocument()
+  })
+
+  it('removes an uninstalled Agent from the sidebar and selects the next detected installation', async () => {
     const codexDetail: AgentDetail = {
       ...agentDetail,
       id: 'codex',
@@ -6265,11 +8002,16 @@ describe('Skill detail slider + agent page render without crashing', () => {
       selectedAgentDetail: agentDetail,
       agents: [
         makeSidebarAgent('claude-code', 'Claude Code', { managed: 1 }),
-        makeSidebarAgent('codex', 'Codex'),
+        makeSidebarAgent('gemini', 'Gemini'),
+        { ...makeSidebarAgent('codex', 'Codex'), installed: false },
       ],
       unmanaged: [],
     })
-    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram()])
+    const codexProgram = makeProgram({ id: 'codex', displayName: 'Codex' })
+    const geminiProgram = makeProgram({ id: 'gemini', displayName: 'Gemini', status: 'notInstalled', binaryPath: null })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([makeProgram(), codexProgram, geminiProgram])
+      .mockResolvedValue([makeProgram({ status: 'notInstalled', binaryPath: null }), codexProgram, geminiProgram])
     vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
     vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
@@ -6486,18 +8228,18 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
 
-    fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
-    const dialog = screen.getByRole('dialog', { name: '卸载 Agent「Aider」' })
+    fireEvent.click(await screen.findByRole('button', { name: '清理残留' }))
+    const dialog = screen.getByRole('dialog', { name: '清理「Aider」的 AgentBro 资源' })
     expect(dialog).toHaveTextContent('未安装，仅清理残留')
     expect(dialog).toHaveTextContent('1已管理 Skills')
     expect(dialog).toHaveTextContent('1未管理 Skills')
-    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认清理' }))
 
-    await waitFor(() => expect(deleteManaged).toHaveBeenCalledWith(['target-aider']))
-    expect(deleteUnmanaged).toHaveBeenCalledWith('aider', 'unmanaged-aider')
-    expect(uninstallHook).toHaveBeenCalledWith('aider')
+    await waitFor(() => expect(deleteManaged).toHaveBeenCalledWith(['target-aider'], LOCAL_RUNTIME_ENVIRONMENT_ID))
+    expect(deleteUnmanaged).toHaveBeenCalledWith('aider', 'unmanaged-aider', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(uninstallHook).toHaveBeenCalledWith('aider', LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(uninstall).not.toHaveBeenCalled()
-    expect(await screen.findByText('Agent「Aider」已卸载，已清理 2 个 Skills')).toBeInTheDocument()
+    expect(await screen.findByText(/已清理 Aider 的 AgentBro 资源/)).toHaveTextContent('已清理 2 个 Skills')
   })
 
   it('SkillPackPage renders the redesigned pack workspace', async () => {
@@ -6509,6 +8251,473 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container.querySelector('.sm2__pack-dashboard')).toBeNull()
     expect(screen.getByLabelText('技能包概览')).toBeInTheDocument()
     expect(container.querySelector('.sm2__rail')).toBeNull()
+  })
+
+  async function renderPackPage(overrides: Partial<SkillPackDetail> = {}) {
+    const skill = makeSkill()
+    const pack: SkillPackDetail = {
+      id: 'default',
+      name: 'Review pack',
+      description: '',
+      tags: [],
+      members: [{ skillId: skill.id, skillName: skill.name, required: true, sortOrder: 0, missing: false }],
+      appliedAgents: [],
+      createdAt: '',
+      updatedAt: '',
+      ...overrides,
+    }
+    const agents = useSkillStoreV2.getState().agents
+    const overview = {
+      ...makeOverview(),
+      agents: [...agents, { ...agents[0], id: 'codex', displayName: 'Codex', iconKey: 'codex' }],
+      skills: [skill],
+      packs: [{ id: pack.id, name: pack.name, description: '', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true }],
+    }
+    useSkillStoreV2.setState({
+      ...overview,
+      overview,
+      selectedPackId: pack.id,
+      selectedPackDetail: pack,
+      lastOverviewLoadedAt: Date.now(),
+    })
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(overview)
+    vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue(pack)
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    render(<SkillPackPage />)
+    return { pack, skill, overview }
+  }
+
+  async function openPackApplication() {
+    const { pack, skill } = await renderPackPage()
+    fireEvent.click(screen.getByRole('button', { name: '应用到 Agent' }))
+    return { pack, skill, dialog: within(screen.getByRole('dialog', { name: '应用「Review pack」' })) }
+  }
+
+  it('reviews a shared GitHub Pack and keeps its source through recheck and confirmation', async () => {
+    const { pack, skill } = await renderPackPage()
+    const link = 'https://github.com/example/workflows/blob/main/team.agentbro-pack.json'
+    const sourceUrl = 'https://raw.githubusercontent.com/example/workflows/main/team.agentbro-pack.json'
+    const fingerprint = 'a'.repeat(64)
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack', version: 2, name: 'Shared Pack', description: '',
+      tags: ['review'], skillIds: [skill.id], skillFingerprints: { [skill.id]: fingerprint },
+    }
+    const read = vi.spyOn(skillApiV2, 'readPackManifestLink')
+      .mockRejectedValueOnce('Could not open the public GitHub file (HTTP 404).')
+      .mockResolvedValueOnce({ manifest, sourceUrl })
+    const reviewed = [{ skillId: skill.id, missing: false, fingerprint }]
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints').mockResolvedValue(reviewed)
+    const create = vi.spyOn(skillApiV2, 'importReviewedPack').mockResolvedValue({ ...pack, id: 'linked', name: manifest.name })
+
+    fireEvent.click(screen.getByRole('button', { name: '从链接导入' }))
+    const inputDialog = within(screen.getByRole('dialog', { name: '从链接导入' }))
+    const input = inputDialog.getByLabelText('GitHub 链接')
+    const review = inputDialog.getByRole('button', { name: '预览技能包' })
+    expect(review).toBeDisabled()
+    fireEvent.change(input, { target: { value: link } })
+    fireEvent.click(review)
+    expect(await inputDialog.findByRole('alert')).toHaveTextContent('HTTP 404')
+    expect(input).toHaveValue(link)
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    const preview = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    expect(preview.getByText(manifest.name)).toBeInTheDocument()
+    expect(preview.getByText(sourceUrl)).toBeInTheDocument()
+    expect(fingerprints).toHaveBeenCalledWith([skill.id], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(create).not.toHaveBeenCalled()
+    fireEvent.click(preview.getByRole('button', { name: '重新比对技能' }))
+    await waitFor(() => expect(preview.getByRole('button', { name: '创建技能包' })).toBeEnabled())
+    expect(preview.getByText(sourceUrl)).toBeInTheDocument()
+    expect(read).toHaveBeenCalledTimes(2)
+    fireEvent.click(preview.getByRole('button', { name: '创建技能包' }))
+    await waitFor(() => expect(create).toHaveBeenCalledWith(manifest, reviewed, false, LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
+  it('discards a shared Pack download after changing the selected runtime', async () => {
+    const { skill } = await renderPackPage()
+    const sourceUrl = 'https://raw.githubusercontent.com/example/repo/main/pack.json'
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack', version: 2, name: 'Old host Pack', description: '',
+      tags: [], skillIds: [skill.id],
+    }
+    let finish!: (value: { manifest: SkillPackManifest; sourceUrl: string }) => void
+    const read = vi.spyOn(skillApiV2, 'readPackManifestLink')
+      .mockReturnValue(new Promise((resolve) => { finish = resolve }))
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints')
+    fireEvent.click(screen.getByRole('button', { name: '从链接导入' }))
+    const dialog = within(screen.getByRole('dialog', { name: '从链接导入' }))
+    fireEvent.change(dialog.getByLabelText('GitHub 链接'), { target: { value: sourceUrl } })
+    fireEvent.click(dialog.getByRole('button', { name: '预览技能包' }))
+    expect(read).toHaveBeenCalledWith(sourceUrl)
+
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-host')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    await act(async () => finish({ manifest, sourceUrl }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(fingerprints).not.toHaveBeenCalled()
+  })
+
+  it('exports the Skill Pack definition and its reviewed contents', async () => {
+    const { pack, skill } = await renderPackPage()
+    act(() => useSkillStoreV2.setState({
+      selectedPackDetail: {
+        ...pack,
+        description: 'Review before publishing',
+        tags: ['team'],
+        appliedAgents: [{ packId: pack.id, packName: pack.name, memberCount: 1, agentId: 'claude-code' }],
+      },
+    }))
+    const destination = 'C:/Team Files/技能包.agentbro-pack.json'
+    vi.mocked(saveDialog).mockResolvedValueOnce(destination)
+    const fingerprint = 'a'.repeat(64)
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints').mockResolvedValue([
+      { skillId: skill.id, missing: false, fingerprint },
+    ])
+    const write = vi.spyOn(skillApiV2, 'writePackManifest').mockResolvedValue(undefined)
+    fireEvent.click(screen.getByLabelText('更多操作'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '导出技能包' }))
+
+    expect(await screen.findByText('技能包已导出。')).toBeInTheDocument()
+    expect(fingerprints).toHaveBeenCalledWith([skill.id], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(write).toHaveBeenCalledWith(destination, {
+      format: 'agentbro-skill-pack',
+      version: 2,
+      name: pack.name,
+      description: 'Review before publishing',
+      tags: ['team'],
+      skillIds: [skill.id],
+      skillFingerprints: { [skill.id]: fingerprint },
+    })
+  })
+
+  it('exports pinned GitHub sources only when explicitly requested', async () => {
+    const { skill } = await renderPackPage()
+    const file = '/Team/pinned.agentbro-pack.json'
+    const source = { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' }
+    vi.mocked(saveDialog).mockResolvedValueOnce(file)
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints').mockResolvedValue([
+      { skillId: skill.id, missing: false, fingerprint: 'a'.repeat(64), source },
+    ])
+    const write = vi.spyOn(skillApiV2, 'writePackManifest').mockResolvedValue(undefined)
+    fireEvent.click(screen.getByLabelText('更多操作'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '导出并包含 GitHub 来源' }))
+    await waitFor(() => expect(write).toHaveBeenCalledWith(file, expect.objectContaining({
+      version: 3,
+      skillSources: { [skill.id]: source },
+    })))
+    expect(fingerprints).toHaveBeenCalledWith([skill.id], LOCAL_RUNTIME_ENVIRONMENT_ID, true)
+  })
+
+  it('reviews a pinned source, reports a failed restore, and rechecks before creating the Pack', async () => {
+    const { pack, skill } = await renderPackPage()
+    const fingerprint = 'a'.repeat(64)
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack',
+      version: 3,
+      name: 'Pinned pack',
+      description: '',
+      tags: [],
+      skillIds: [skill.id],
+      skillFingerprints: { [skill.id]: fingerprint },
+      skillSources: {
+        [skill.id]: { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' },
+      },
+    }
+    const reviewed = [{ skillId: skill.id, missing: false, fingerprint }]
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/pinned.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    const review = vi.spyOn(skillApiV2, 'getPackFingerprints')
+      .mockResolvedValueOnce([{ skillId: skill.id, missing: true, fingerprint: null }])
+      .mockResolvedValueOnce(reviewed)
+    const restore = vi.spyOn(skillApiV2, 'restorePackMember')
+      .mockRejectedValueOnce('Skill content does not match the recorded fingerprint.')
+      .mockResolvedValueOnce(undefined)
+    const create = vi.spyOn(skillApiV2, 'importReviewedPack')
+      .mockResolvedValue({ ...pack, id: 'restored-pack', name: manifest.name })
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    const restoreButton = dialog.getByRole('button', { name: `恢复 ${skill.id}` })
+    expect(dialog.getByText(/example\/workflows.*review\/SKILL\.md/)).toBeInTheDocument()
+    expect(dialog.getByRole('button', { name: '创建技能包' })).toBeDisabled()
+    fireEvent.click(restoreButton)
+    expect(await dialog.findByRole('alert')).toHaveTextContent('does not match the recorded fingerprint')
+    expect(restore).toHaveBeenCalledWith(manifest, skill.id, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(create).not.toHaveBeenCalled()
+
+    fireEvent.click(restoreButton)
+    await waitFor(() => expect(review).toHaveBeenCalledTimes(2))
+    const confirm = await dialog.findByRole('button', { name: '创建技能包' })
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+    await waitFor(() => expect(create).toHaveBeenCalledWith(manifest, reviewed, false, LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
+  it('leaves a pending Skill Pack restore bound to its original SSH host', async () => {
+    const { skill } = await renderPackPage()
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('pack-ssh-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'pack-ssh-host' })
+    })
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack',
+      version: 3,
+      name: 'Remote pinned pack',
+      description: '',
+      tags: [],
+      skillIds: [skill.id],
+      skillFingerprints: { [skill.id]: 'a'.repeat(64) },
+      skillSources: {
+        [skill.id]: { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' },
+      },
+    }
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/pinned.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    const review = vi.spyOn(skillApiV2, 'getPackFingerprints')
+      .mockResolvedValue([{ skillId: skill.id, missing: true, fingerprint: null }])
+    let finish!: () => void
+    const restore = vi.spyOn(skillApiV2, 'restorePackMember')
+      .mockReturnValue(new Promise<void>((resolve) => { finish = resolve }))
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    fireEvent.click(dialog.getByRole('button', { name: `恢复 ${skill.id}` }))
+    expect(restore).toHaveBeenCalledWith(manifest, skill.id, 'pack-ssh-host')
+    act(() => {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({ runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
+    })
+    await act(async () => finish())
+    expect(review).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog', { name: '导入技能包' })).not.toBeInTheDocument()
+  })
+
+  it('previews missing Skill Pack members and imports a new pack in manifest order', async () => {
+    const { pack, skill, overview } = await renderPackPage()
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack',
+      version: 1,
+      name: '团队审阅',
+      description: '团队的审阅流程',
+      tags: ['team'],
+      skillIds: ['review-notes', skill.id],
+    }
+    const source = '/Users/me/Team Workspace/团队审阅.agentbro-pack.json'
+    vi.mocked(openDialog).mockResolvedValueOnce(source)
+    const read = vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    const upsert = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
+      ...pack,
+      id: 'pack-imported',
+      name: manifest.name,
+      description: manifest.description,
+      tags: manifest.tags,
+      members: [
+        { skillId: 'review-notes', skillName: 'Review Notes', required: true, sortOrder: 0, missing: false },
+        { ...pack.members[0], sortOrder: 1 },
+      ],
+    })
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const preview = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    expect(read).toHaveBeenCalledWith(source)
+    expect(preview.getByText(manifest.description)).toBeInTheDocument()
+    expect(preview.getByText('缺失')).toBeInTheDocument()
+    expect(preview.getByRole('button', { name: '创建技能包' })).toBeDisabled()
+    expect(upsert).not.toHaveBeenCalled()
+
+    const updatedSkills = [skill, makeSkill({ id: 'review-notes' })]
+    vi.mocked(skillApiV2.overview).mockResolvedValue({ ...overview, skills: updatedSkills })
+    act(() => useSkillStoreV2.setState({ skills: updatedSkills }))
+    fireEvent.click(preview.getByRole('button', { name: '创建技能包' }))
+
+    expect(await screen.findByText('已将「团队审阅」导入为新技能包。')).toBeInTheDocument()
+    expect(upsert).toHaveBeenCalledWith({
+      id: '',
+      name: manifest.name,
+      description: manifest.description,
+      tags: manifest.tags,
+      skillIds: ['review-notes', skill.id],
+    }, { deferSync: true })
+    expect(useSkillStoreV2.getState().selectedPackId).toBe('pack-imported')
+  })
+
+  it('discards a Skill Pack import review after switching runtimes', async () => {
+    const { skill } = await renderPackPage()
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/workflow.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue({
+      format: 'agentbro-skill-pack',
+      version: 1,
+      name: 'Portable pack',
+      description: '',
+      tags: [],
+      skillIds: [skill.id],
+    })
+    const upsert = vi.spyOn(skillApiV2, 'upsertPack')
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const confirm = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+      .getByRole('button', { name: '创建技能包' })
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    fireEvent.click(confirm)
+
+    expect(upsert).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: '导入技能包' })).not.toBeInTheDocument()
+  })
+
+  it('requires fresh confirmation when the reviewed Skill Pack copy changed', async () => {
+    const { pack, skill } = await renderPackPage()
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack',
+      version: 2,
+      name: 'Shared review pack',
+      description: '',
+      tags: [],
+      skillIds: [skill.id],
+      skillFingerprints: { [skill.id]: 'a'.repeat(64) },
+    }
+    const firstReview = [{ skillId: skill.id, missing: false, fingerprint: 'b'.repeat(64) }]
+    const secondReview = [{ skillId: skill.id, missing: false, fingerprint: 'c'.repeat(64) }]
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/shared.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    vi.spyOn(skillApiV2, 'getPackFingerprints')
+      .mockResolvedValueOnce(firstReview)
+      .mockResolvedValueOnce(secondReview)
+    const saved = vi.spyOn(skillApiV2, 'importReviewedPack')
+      .mockRejectedValueOnce('The selected library changed since review.')
+      .mockResolvedValueOnce({ ...pack, id: 'pack-shared', name: manifest.name })
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const preview = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    const confirm = preview.getByRole('button', { name: '创建技能包' })
+    const useCopy = preview.getByRole('checkbox', { name: /使用当前库中的技能/ })
+    expect(preview.getByText('内容不同')).toBeInTheDocument()
+    expect(confirm).toBeDisabled()
+    fireEvent.click(useCopy)
+    fireEvent.click(confirm)
+    expect(await preview.findByRole('alert')).toHaveTextContent('changed since review')
+    expect(saved).toHaveBeenCalledWith(manifest, firstReview, true, LOCAL_RUNTIME_ENVIRONMENT_ID)
+
+    fireEvent.click(preview.getByRole('button', { name: '重新比对技能' }))
+    await waitFor(() => expect(useCopy).not.toBeChecked())
+    expect(confirm).toBeDisabled()
+    fireEvent.click(useCopy)
+    fireEvent.click(confirm)
+    expect(await screen.findByText('已将「Shared review pack」导入为新技能包。')).toBeInTheDocument()
+    expect(saved).toHaveBeenLastCalledWith(manifest, secondReview, true, LOCAL_RUNTIME_ENVIRONMENT_ID)
+  })
+
+  it('discards a late pack preview when the selected Agent and mode change', async () => {
+    const { pack, skill, dialog } = await openPackApplication()
+    let resolvePreview!: (value: DistributionPreview) => void
+    const pending = new Promise<DistributionPreview>((resolve) => { resolvePreview = resolve })
+    const older: DistributionPreview = {
+      skillIds: [skill.id],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    const latest: DistributionPreview = {
+      ...older,
+      targetAgents: ['codex'],
+      requestedMode: 'copy',
+      changes: [{
+        skillId: skill.id,
+        agentId: 'codex',
+        action: 'reinstall',
+        actualMode: 'copy',
+        targetPath: 'C:\\Users\\Tester\\.codex\\skills\\example',
+        targetFingerprint: 'directory:reviewed-version',
+      }],
+    }
+    const preview = vi.spyOn(skillApiV2, 'previewApplyPack').mockReturnValueOnce(pending).mockResolvedValue(latest)
+    const execute = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue(latest)
+    fireEvent.click(dialog.getByRole('button', { name: /Claude Code/ }))
+    fireEvent.click(dialog.getByRole('button', { name: '预览影响' }))
+    expect(preview).toHaveBeenCalledWith(pack.id, ['claude-code'], 'link')
+
+    fireEvent.click(dialog.getByRole('button', { name: /Claude Code/ }))
+    fireEvent.click(dialog.getByRole('button', { name: /Codex/ }))
+    fireEvent.change(dialog.getByLabelText('分发方式'), { target: { value: 'copy' } })
+    await act(async () => { resolvePreview(older) })
+
+    expect(screen.queryByRole('dialog', { name: '确认应用预览' })).not.toBeInTheDocument()
+    expect(execute).not.toHaveBeenCalled()
+    fireEvent.click(dialog.getByRole('button', { name: '预览影响' }))
+    expect(preview).toHaveBeenLastCalledWith(pack.id, ['codex'], 'copy')
+    const review = await screen.findByRole('dialog', { name: '确认应用预览' })
+    expect(review).toHaveTextContent('Codex')
+    expect(review).toHaveTextContent('复制')
+    fireEvent.click(within(review).getByRole('button', { name: '执行应用' }))
+    await waitFor(() => expect(execute).toHaveBeenCalledWith(pack.id, ['codex'], 'copy', [], latest))
+  })
+
+  it.each([false, true])('invalidates a pack review after changing runtime (returned: %s)', async (returnToLocal) => {
+    const { skill, dialog } = await openPackApplication()
+    const prepared: DistributionPreview = {
+      skillIds: [skill.id],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    vi.spyOn(skillApiV2, 'previewApplyPack').mockResolvedValue(prepared)
+    const execute = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue(prepared)
+    fireEvent.click(dialog.getByRole('button', { name: /Claude Code/ }))
+    fireEvent.click(dialog.getByRole('button', { name: '预览影响' }))
+    const confirm = await screen.findByRole('button', { name: '执行应用' })
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    try {
+      act(() => {
+        selectEnvironment('other-test-machine')
+        if (returnToLocal) selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      })
+      fireEvent.click(confirm)
+
+      expect(execute).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: '执行应用' })).not.toBeInTheDocument()
+    } finally {
+      act(() => selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID))
+    }
+  })
+
+  it('keeps the current pack detail when the previous selection responds late', async () => {
+    const slowPack: SkillPackDetail = {
+      id: 'slow-pack', name: 'Slow Pack', description: '', tags: [], members: [], appliedAgents: [],
+      createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+    }
+    const fastPack: SkillPackDetail = { ...slowPack, id: 'fast-pack', name: 'Fast Pack' }
+    let resolveSlow!: (detail: SkillPackDetail) => void
+    const pending = new Promise<SkillPackDetail>((resolve) => { resolveSlow = resolve })
+    const getDetail = vi.spyOn(skillApiV2, 'getPackDetail').mockImplementation((id) =>
+      id === slowPack.id ? pending : Promise.resolve(fastPack),
+    )
+    const packs = [slowPack, fastPack].map(({ id, name, tags, description }) => ({
+      id, name, tags, description, memberCount: 0, appliedAgentCount: 0, healthy: true,
+    }))
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue({ ...makeOverview(), packs })
+    useSkillStoreV2.setState({ packs, selectedPackId: fastPack.id, selectedPackDetail: fastPack })
+
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    render(<SkillPackPage />)
+    fireEvent.click(screen.getByRole('button', { name: /^Slow Pack/ }))
+    expect(getDetail).toHaveBeenCalledWith(slowPack.id, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    fireEvent.click(screen.getByRole('button', { name: /^Fast Pack/ }))
+    expect(await screen.findByRole('heading', { name: fastPack.name })).toBeInTheDocument()
+
+    await act(async () => { resolveSlow(slowPack) })
+
+    expect(useSkillStoreV2.getState().selectedPackId).toBe(fastPack.id)
+    expect(screen.getByRole('heading', { name: fastPack.name })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: slowPack.name })).not.toBeInTheDocument()
   })
 
   it('opens the pack builder in a dialog instead of replacing the canvas', async () => {
@@ -6533,6 +8742,39 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByLabelText('技能包名称')).toBeInTheDocument()
     expect(screen.queryByText('描述')).not.toBeInTheDocument()
     expect(screen.queryByText('标签')).not.toBeInTheDocument()
+  })
+
+  it.each(['edit', 'duplicate'] as const)('preserves a Skill Pack description and tags on %s', async (mode) => {
+    const { pack, skill } = await renderPackPage({
+      id: 'shared-workflow',
+      description: 'Use this pack for deployment reviews. 部署检查。',
+      tags: ['release', '团队'],
+    })
+    const save = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
+      ...pack,
+      id: mode === 'edit' ? pack.id : 'copy-of-shared-workflow',
+      name: 'Reviewed workflow',
+    })
+
+    if (mode === 'edit') {
+      fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    } else {
+      fireEvent.click(screen.getByLabelText('更多操作'))
+      fireEvent.click(screen.getByRole('menuitem', { name: '复制技能包' }))
+    }
+    const builder = within(screen.getByRole('dialog', { name: mode === 'edit' ? '编辑技能包' : '复制技能包' }))
+    fireEvent.change(builder.getByLabelText('技能包名称'), { target: { value: 'Reviewed workflow' } })
+    await act(async () => {
+      fireEvent.click(builder.getByRole('button', { name: mode === 'edit' ? '保存更改' : '创建技能包' }))
+    })
+
+    expect(save).toHaveBeenCalledExactlyOnceWith({
+      id: mode === 'edit' ? pack.id : '',
+      name: 'Reviewed workflow',
+      description: pack.description,
+      tags: ['release', '团队'],
+      skillIds: [skill.id],
+    }, { deferSync: true, environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
   })
 
   it('keeps pack builder skill choices visible and removable', async () => {
@@ -6653,9 +8895,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     await waitFor(() => expect(upsertPack).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'daily-pack', skillIds: [] }),
-      { deferSync: true },
+      { deferSync: true, environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID },
     ))
-    await waitFor(() => expect(syncPack).toHaveBeenCalledWith('daily-pack', []))
+    await waitFor(() => expect(syncPack).toHaveBeenCalledWith('daily-pack', [], LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(screen.getByText('“Daily Pack”已保存，正在后台同步到 Agent…')).toBeInTheDocument()
   })
 
@@ -6716,11 +8958,90 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     await waitFor(() => expect(upsertPack).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'daily-pack', skillIds: ['release-checklist', 'pireel'] }),
-      { deferSync: true },
+      { deferSync: true, environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID },
     ))
     await waitFor(() => expect(document.body.querySelector('.sm2__pack-builder-modal')).toBeNull())
-    expect(syncPack).toHaveBeenCalledWith('daily-pack', [])
+    expect(syncPack).toHaveBeenCalledWith('daily-pack', [], LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(screen.getByText('“Daily Pack”已保存，正在后台同步到 Agent…')).toBeInTheDocument()
+  })
+
+  it('discards a Skill Pack save response after switching away and back', async () => {
+    const { pack, skill } = await renderPackPage()
+    let resolveSave!: (pack: SkillPackDetail) => void
+    const pending = new Promise<SkillPackDetail>((resolve) => { resolveSave = resolve })
+    const upsert = vi.spyOn(skillApiV2, 'upsertPack').mockReturnValue(pending)
+    const sync = vi.spyOn(skillApiV2, 'syncPackToAgents').mockReturnValue(new Promise(() => {}))
+    fireEvent.click(screen.getByRole('button', { name: /新建技能包/ }))
+    const builder = within(screen.getByRole('dialog', { name: '创建技能包' }))
+    fireEvent.change(builder.getByLabelText('技能包名称'), { target: { value: 'Saved elsewhere' } })
+    fireEvent.click(builder.getByRole('button', { name: `添加 ${skill.name} 到技能包` }))
+    fireEvent.click(builder.getByRole('button', { name: '创建技能包' }))
+    expect(upsert).toHaveBeenCalledTimes(1)
+
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    await act(async () => {
+      resolveSave({ ...pack, id: 'saved-elsewhere', name: 'Saved elsewhere', pendingSyncCount: 1, syncStatus: 'pending' })
+    })
+
+    expect(sync).not.toHaveBeenCalled()
+    expect(useSkillStoreV2.getState().selectedPackId).toBe(pack.id)
+    expect(screen.queryByRole('dialog', { name: '创建技能包' })).not.toBeInTheDocument()
+  })
+
+  it('discards a failed Skill Pack sync response after switching away and back', async () => {
+    const { pack } = await renderPackPage({ id: 'sync-pack', pendingSyncCount: 1, syncStatus: 'pending' })
+    type SyncResult = Awaited<ReturnType<typeof skillApiV2.syncPackToAgents>>
+    let resolveSync!: (result: SyncResult) => void
+    const pending = new Promise<SyncResult>((resolve) => { resolveSync = resolve })
+    const sync = vi.spyOn(skillApiV2, 'syncPackToAgents').mockReturnValue(pending)
+    const preview = vi.spyOn(skillApiV2, 'previewApplyPack')
+    fireEvent.click(screen.getByRole('button', { name: '同步全部' }))
+    expect(sync).toHaveBeenCalledTimes(1)
+
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    await act(async () => {
+      resolveSync({
+        packId: pack.id, packName: pack.name, revision: 1, status: 'failed',
+        agents: [{ agentId: 'codex', displayName: 'Codex', status: 'failed', error: 'A target already exists.' }],
+      })
+    })
+
+    expect(preview).not.toHaveBeenCalled()
+    expect(screen.queryByText(/个 Agent 同步失败/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '同步全部' })).toBeEnabled()
+  })
+
+  it('keeps the newly selected Skill Pack after the previous sync finishes', async () => {
+    const { pack, overview } = await renderPackPage({ id: 'sync-pack', pendingSyncCount: 1, syncStatus: 'pending' })
+    const other = { ...pack, id: 'other-pack', name: 'Other Pack' }
+    const packs = [...overview.packs, { ...overview.packs[0], id: other.id, name: other.name }]
+    act(() => useSkillStoreV2.setState({ packs }))
+    vi.mocked(skillApiV2.overview).mockResolvedValue({ ...overview, packs })
+    vi.mocked(skillApiV2.getPackDetail).mockImplementation(async (id) => id === other.id ? other : pack)
+    type SyncResult = Awaited<ReturnType<typeof skillApiV2.syncPackToAgents>>
+    let resolveSync!: (result: SyncResult) => void
+    const pending = new Promise<SyncResult>((resolve) => { resolveSync = resolve })
+    const sync = vi.spyOn(skillApiV2, 'syncPackToAgents').mockReturnValue(pending)
+    fireEvent.click(screen.getByRole('button', { name: '同步全部' }))
+    expect(sync).toHaveBeenCalledWith(pack.id, [], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    fireEvent.click(screen.getByRole('button', { name: /^Other Pack/ }))
+    expect(await screen.findByRole('heading', { name: other.name })).toBeInTheDocument()
+
+    await act(async () => {
+      resolveSync({ packId: pack.id, packName: pack.name, revision: 1, status: 'synced', agents: [] })
+    })
+
+    expect(useSkillStoreV2.getState().selectedPackId).toBe(other.id)
+    expect(screen.getByRole('heading', { name: other.name })).toBeInTheDocument()
+    expect(screen.queryByText('已同步 0 个 Agent。')).not.toBeInTheDocument()
   })
 
   it('filters pack builder skill choices by source', async () => {
@@ -6817,11 +9138,11 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '查看 Skill 详情 Release Checklist' }))
 
-    await waitFor(() => expect(getSkillDetail).toHaveBeenCalledWith('release-checklist'))
+    await waitFor(() => expect(getSkillDetail).toHaveBeenCalledWith('release-checklist', LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(document.body.querySelector('.sm2__slideover--skill-detail')).not.toBeNull()
   })
 
-  it('opens a blocker resolution dialog when pack sync hits an unmanaged same-name skill', async () => {
+  it.each([false, true])('scopes the pack sync blocker dialog, switch runtime=%s', async (switchRuntime) => {
     const pack: SkillPackDetail = {
       id: 'pack-ant',
       name: '蚂蚁Skill',
@@ -6888,7 +9209,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
         { agentId: 'codex', displayName: 'Codex', status: 'failed', error: '1 blocker(s) need manual resolution before syncing.' },
       ],
     })
-    vi.spyOn(skillApiV2, 'previewApplyPack').mockResolvedValue({
+    const preview: DistributionPreview = {
       skillIds: ['antcode-skill'],
       targetAgents: ['codex'],
       requestedMode: 'link',
@@ -6904,7 +9225,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
         },
       ],
       blockerDecisions: [],
-    })
+    }
+    const previewApply = vi.spyOn(skillApiV2, 'previewApplyPack').mockResolvedValue(preview)
+    const execute = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue({ ...preview, blockers: [] })
 
     const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
     render(<SkillPackPage />)
@@ -6915,7 +9238,89 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getAllByText(/未接管的同名 Skill/).length).toBeGreaterThan(0)
     expect(screen.getByText(/antcode-skill\/codex/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '覆盖安装' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '忽略此目标' })).toBeInTheDocument()
+    expect(previewApply).toHaveBeenCalledWith(pack.id, ['codex'], 'link', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    fireEvent.click(screen.getByRole('button', { name: '忽略此目标' }))
+    const confirm = screen.getByRole('button', { name: '按选择同步' })
+    if (switchRuntime) {
+      const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+      act(() => {
+        selectEnvironment('other-machine')
+        selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      })
+      fireEvent.click(confirm)
+      expect(execute).not.toHaveBeenCalled()
+      expect(screen.queryByText('确认同步冲突')).not.toBeInTheDocument()
+      return
+    }
+
+    fireEvent.click(confirm)
+    expect(execute).toHaveBeenCalledWith(
+      pack.id, ['codex'], 'link', [{ skillId: 'antcode-skill', agentId: 'codex', action: 'skip' }],
+      preview, LOCAL_RUNTIME_ENVIRONMENT_ID,
+    )
+    await waitFor(() => expect(screen.queryByText('确认同步冲突')).not.toBeInTheDocument())
+  })
+
+  it.each([false, true])('drops a Pack deletion review after changing runtimes, already visible=%s', async (visible) => {
+    const { pack } = await renderPackPage({ id: 'review-pack' })
+    const preview = {
+      packId: pack.id, packName: pack.name, appliedAgents: [], affectedTargets: [], removable: true, warnings: [],
+    }
+    let resolveReview!: (value: typeof preview) => void
+    const pending = new Promise<typeof preview>((resolve) => { resolveReview = resolve })
+    vi.spyOn(skillApiV2, 'previewDeletePack').mockReturnValue(pending)
+    const remove = vi.spyOn(skillApiV2, 'deletePack').mockResolvedValue(undefined)
+    fireEvent.click(screen.getByLabelText('更多操作'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除技能包' }))
+
+    if (visible) await act(async () => { resolveReview(preview) })
+    const confirm = screen.queryByRole('button', { name: '删除' })
+    if (visible) expect(confirm).toBeInTheDocument()
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    if (!visible) await act(async () => { resolveReview(preview) })
+    if (confirm) fireEvent.click(confirm)
+
+    expect(remove).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: `删除技能包「${pack.name}」` })).not.toBeInTheDocument()
+    expect(useSkillStoreV2.getState().selectedPackId).toBe(pack.id)
+  })
+
+  it.each([false, true])('preserves the selected Pack after a member removal, switch runtime=%s', async (switchRuntime) => {
+    const { pack, skill, overview } = await renderPackPage({ id: 'removal-pack' })
+    const other = { ...pack, id: 'other-pack', name: 'Other Pack' }
+    const packs = [...overview.packs, { ...overview.packs[0], id: other.id, name: other.name }]
+    act(() => useSkillStoreV2.setState({ packs }))
+    vi.mocked(skillApiV2.overview).mockResolvedValue({ ...overview, packs })
+    vi.mocked(skillApiV2.getPackDetail).mockImplementation(async (id) => id === other.id ? other : pack)
+    vi.spyOn(skillApiV2, 'previewRemoveSkillFromPack').mockResolvedValue({
+      packId: pack.id, packName: pack.name, skillId: skill.id, skillName: skill.name,
+      affectedTargets: [], appliedAgentCount: 0, canKeepStandalone: true, canRemoveTargets: true,
+    })
+    let finishRemoval!: () => void
+    const pending = new Promise<void>((resolve) => { finishRemoval = resolve })
+    const remove = vi.spyOn(skillApiV2, 'removeSkillFromPack').mockReturnValue(pending)
+    fireEvent.click(screen.getByRole('button', { name: '移除' }))
+    fireEvent.click(await screen.findByRole('button', { name: switchRuntime ? '同步从 Agent 移除' : '保留为直接分发' }))
+    expect(remove).toHaveBeenCalledWith(pack.id, skill.id, switchRuntime, LOCAL_RUNTIME_ENVIRONMENT_ID)
+
+    if (switchRuntime) {
+      const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+      act(() => {
+        selectEnvironment('other-machine')
+        selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      })
+    }
+    fireEvent.click(screen.getByRole('button', { name: /^Other Pack/ }))
+    expect(await screen.findByRole('heading', { name: other.name })).toBeInTheDocument()
+    await act(async () => { finishRemoval() })
+
+    expect(useSkillStoreV2.getState().selectedPackId).toBe(other.id)
+    expect(screen.getByRole('heading', { name: other.name })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '保留为直接分发' })).not.toBeInTheDocument()
   })
 
   it('refreshes the selected agent detail after revoking a pack from the pack workspace', async () => {
@@ -7069,7 +9474,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     fireEvent.click(applyButton)
 
-    await waitFor(() => expect(executeApply).toHaveBeenCalledWith('default', ['claude-code'], 'link'))
+    await waitFor(() => expect(executeApply).toHaveBeenCalledWith('default', ['claude-code'], 'link', [], undefined, LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(previewApply).not.toHaveBeenCalled()
     expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
     expect(loadOverview).toHaveBeenCalledWith(true)
@@ -7103,7 +9508,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByText('Skills (2)'))
     fireEvent.click(screen.getByRole('button', { name: '取消应用 全量技能包' }))
 
-    await waitFor(() => expect(removePack).toHaveBeenCalledWith('default', 'claude-code'))
+    await waitFor(() => expect(removePack).toHaveBeenCalledWith('default', 'claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(previewRemove).not.toHaveBeenCalled()
     expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
     expect(loadOverview).toHaveBeenCalledWith(true)
@@ -7141,6 +9546,132 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '取消应用 全量技能包' }))
 
     await waitFor(() => expect(screen.queryByText('Query returned no rows')).not.toBeInTheDocument())
+  })
+
+  it.each([false, true])('ignores a late Agent pack apply error after leaving its runtime (returned: %s)', async (returnToLocal) => {
+    let failApply!: (error: Error) => void
+    const pending = new Promise<DistributionPreview>((_resolve, reject) => { failApply = reject })
+    const apply = vi.spyOn(skillApiV2, 'executeApplyPack').mockReturnValueOnce(pending)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        availablePacks: [
+          { id: 'default', name: '全量技能包', description: '', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true },
+        ],
+      },
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '应用 全量技能包' }))
+    expect(apply).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      const runtime = useRuntimeEnvironmentStore.getState()
+      runtime.selectEnvironment('other-host')
+      if (returnToLocal) runtime.selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({
+        runtimeEnvironmentId: returnToLocal ? LOCAL_RUNTIME_ENVIRONMENT_ID : 'other-host',
+        error: 'Current runtime status',
+      })
+      failApply(new Error('Original runtime pack apply failed'))
+    })
+
+    expect(useSkillStoreV2.getState().error).toBe('Current runtime status')
+    expect(screen.queryByRole('status', { name: '技能包应用进度' })).not.toBeInTheDocument()
+  })
+
+  it('ignores a completed Agent pack revoke after leaving its runtime', async () => {
+    const result = { packId: 'default', agentId: 'claude-code', removedClaims: 1, removedTargets: 1, preservedTargets: 0 }
+    let finishRevoke!: (value: typeof result) => void
+    const pending = new Promise<typeof result>((resolve) => { finishRevoke = resolve })
+    const revoke = vi.spyOn(skillApiV2, 'removePackFromAgent').mockReturnValueOnce(pending)
+    const store = useSkillStoreV2.getState()
+    const loadDetail = vi.spyOn(store, 'loadAgentDetail').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(store, 'loadOverview').mockResolvedValue(undefined)
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        appliedPacks: [
+          { packId: 'default', packName: '全量技能包', memberCount: 1, agentId: 'claude-code', displayName: 'Claude Code' },
+        ],
+      },
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '取消应用 全量技能包' }))
+    expect(revoke).toHaveBeenCalledTimes(1)
+    loadDetail.mockClear()
+    loadOverview.mockClear()
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'other-host', error: 'Current runtime status' })
+      finishRevoke(result)
+    })
+
+    expect(loadDetail).not.toHaveBeenCalled()
+    expect(loadOverview).not.toHaveBeenCalled()
+    expect(useSkillStoreV2.getState().error).toBe('Current runtime status')
+    expect(screen.queryByText('技能包已取消应用')).not.toBeInTheDocument()
+  })
+
+  it.each([false, true])('applies a reviewed Agent pack only in the original runtime view (switched: %s)', async (switched) => {
+    const resolved: DistributionPreview = {
+      skillIds: ['release-checklist'], targetAgents: ['claude-code'], requestedMode: 'link',
+      changes: [], blockers: [], blockerDecisions: [],
+    }
+    const review: DistributionPreview = {
+      ...resolved,
+      blockers: [{
+        skillId: 'release-checklist', agentId: 'claude-code', reason: 'Conflicting Skill',
+        existingPath: '/c/skills/release-checklist',
+      }],
+    }
+    const execute = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValueOnce(review).mockResolvedValueOnce(resolved)
+    const store = useSkillStoreV2.getState()
+    vi.spyOn(store, 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(store, 'loadOverview').mockResolvedValue(undefined)
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        availablePacks: [
+          { id: 'default', name: '全量技能包', description: '', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true },
+        ],
+      },
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '应用 全量技能包' }))
+    const dialog = await screen.findByRole('dialog', { name: '应用「全量技能包」' })
+    fireEvent.click(within(dialog).getByRole('button', { name: '忽略此目标' }))
+    const confirm = within(dialog).getByRole('button', { name: '按选择执行' })
+
+    if (switched) {
+      await act(async () => {
+        const runtime = useRuntimeEnvironmentStore.getState()
+        runtime.selectEnvironment('other-host')
+        runtime.selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      })
+      expect(dialog).not.toBeInTheDocument()
+      fireEvent.click(confirm)
+      expect(execute).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('status', { name: '技能包应用进度' })).not.toBeInTheDocument()
+    } else {
+      fireEvent.click(confirm)
+      await waitFor(() => expect(execute).toHaveBeenNthCalledWith(
+        2, 'default', ['claude-code'], 'link',
+        [{ skillId: 'release-checklist', agentId: 'claude-code', action: 'skip' }],
+        review, LOCAL_RUNTIME_ENVIRONMENT_ID,
+      ))
+      await waitFor(() => expect(dialog).not.toBeInTheDocument())
+    }
   })
 
   it('shows a floating progress toast immediately while applying a pack', async () => {
@@ -7280,7 +9811,9 @@ function makeOverview() {
 describe('Skill manager settings page', () => {
   beforeEach(() => {
     cleanup()
+    useRuntimeEnvironmentStore.setState({ selectedEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
     useSkillStoreV2.setState({
+      runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
       settings: {
         centerPath: '/Users/mac/.agentbro/skills',
         sqlitePath: '/Users/mac/.agentbro/skill-manager/skill-manager.db',
@@ -7293,15 +9826,41 @@ describe('Skill manager settings page', () => {
     })
   })
 
-  it('reveals the SQLite database in Finder and shows feedback', async () => {
+  it('shows a database load error and can retry after it becomes available', async () => {
+    const { loadOverview, loadProjects } = useSkillStoreV2.getInitialState()
+    useSkillStoreV2.setState({ settings: null, overview: null, loadOverview, loadProjects })
+    const overview = vi.spyOn(skillApiV2, 'overview')
+      .mockRejectedValueOnce('Could not initialize Skill Manager database: database is locked')
+      .mockResolvedValueOnce(makeOverview())
+    const unmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const projects = vi.spyOn(skillApiV2, 'listProjects').mockResolvedValue([])
+    const { SettingsPageV2 } = await import('../components/skills-v2/SettingsPageV2')
+
+    try {
+      render(<SettingsPageV2 />)
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('database is locked')
+      fireEvent.click(screen.getByRole('button', { name: i18n.t('settings.retry') }))
+
+      expect(await screen.findByRole('button', { name: i18n.t('skills.revealSqlite') })).toBeInTheDocument()
+      expect(overview).toHaveBeenCalledTimes(2)
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    } finally {
+      overview.mockRestore()
+      unmanaged.mockRestore()
+      projects.mockRestore()
+    }
+  })
+
+  it('reveals the SQLite database in the file manager and shows feedback', async () => {
     const revealPath = vi.spyOn(skillApiV2, 'revealPath').mockResolvedValue(undefined)
     const { SettingsPageV2 } = await import('../components/skills-v2/SettingsPageV2')
 
     render(<SettingsPageV2 />)
-    fireEvent.click(screen.getByText('在 Finder 中显示 SQLite'))
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('skills.revealSqlite') }))
 
     await waitFor(() => expect(revealPath).toHaveBeenCalledWith('/Users/mac/.agentbro/skill-manager/skill-manager.db'))
-    expect(screen.getByText('已在 Finder 中定位 SQLite')).toBeInTheDocument()
+    expect(await screen.findByText(i18n.t('skills.sqliteRevealed'))).toBeInTheDocument()
   })
 
   it('does not expose a center library path editor', async () => {

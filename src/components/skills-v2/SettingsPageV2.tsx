@@ -12,11 +12,24 @@ export function SettingsPageV2() {
   const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!settings) state.loadOverview()
+    if (!settings && state.initialized) void state.loadOverview()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   if (!settings) {
+    if (state.error) {
+      return (
+        <div className="sm2">
+          <div className="sm2__main">
+            <div className="sm2__error" role="alert">{state.error}</div>
+            <button className="sm2__btn" onClick={() => {
+              state.setError(null)
+              void state.init()
+            }}>{t('settings.retry')}</button>
+          </div>
+        </div>
+      )
+    }
     return <div className="sm2__empty">加载设置中…</div>
   }
 
@@ -46,9 +59,10 @@ export function SettingsPageV2() {
   const revealSqlite = async () => {
     setBusy(true)
     setNotice(null)
+    state.setError(null)
     try {
       await skillApiV2.revealPath(settings.sqlitePath)
-      setNotice('已在 Finder 中定位 SQLite')
+      setNotice(t('skills.sqliteRevealed'))
     } catch (e) {
       state.setError(String(e))
     } finally {
@@ -132,7 +146,7 @@ export function SettingsPageV2() {
           </div>
           <div className="sm2__btn-row">
             <button className="sm2__btn" onClick={exportSnapshot} disabled={busy}>导出/刷新 JSON 快照</button>
-            <button className="sm2__btn" onClick={revealSqlite} disabled={busy}>在 Finder 中显示 SQLite</button>
+            <button className="sm2__btn" onClick={revealSqlite} disabled={busy}>{t('skills.revealSqlite')}</button>
           </div>
           <p className="sm2__settings-help">
             SQLite 是主存储；JSON 仅作为备份、快照与人工排查用途。

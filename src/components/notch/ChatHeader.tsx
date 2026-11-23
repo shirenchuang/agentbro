@@ -1,4 +1,5 @@
 /* ChatHeader — Back button + session info + badges */
+import type { Ref } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
 import { AgentIcon } from './AgentIcon'
@@ -9,11 +10,12 @@ import './ChatHeader.css'
 
 interface ChatHeaderProps {
   session: SessionState
+  backRef?: Ref<HTMLButtonElement>
   onBack: () => void
   onJump?: () => void
 }
 
-export function ChatHeader({ session, onBack, onJump }: ChatHeaderProps) {
+export function ChatHeader({ session, backRef, onBack, onJump }: ChatHeaderProps) {
   const { t } = useTranslation()
   const agentName = getAgentDisplayName(session)
   const appLabel = getSessionAppLabel(session)
@@ -23,7 +25,7 @@ export function ChatHeader({ session, onBack, onJump }: ChatHeaderProps) {
 
   return (
     <div className="chat-header">
-      <button className="chat-header__back" onClick={onBack} aria-label={t('notch.back')}>
+      <button ref={backRef} className="chat-header__back" onClick={onBack} aria-label={t('notch.back')}>
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
           <path d="M10 2L4 8l6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>

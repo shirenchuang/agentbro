@@ -104,9 +104,9 @@ function PluginDetailContent({
         <div className="sm2__skill-detail sm2__plugin-drawer-content">
           <div className="sm2__detail-pills">
             <span className={`sm2__tag sm2__tag--${detail.enabled ? 'ok' : 'unmanaged'}`}>
-              {t(detail.enabled
-                ? 'skills.pluginManagement.enabledTag'
-                : 'skills.pluginManagement.disabledTag')}
+              {t(detail.enabled === null
+                ? 'skills.pluginManagement.unknownTag'
+                : detail.enabled ? 'skills.pluginManagement.enabledTag' : 'skills.pluginManagement.disabledTag')}
             </span>
             <span className="sm2__tag">{source}</span>
             {detail.version && <span className="sm2__tag">v{detail.version}</span>}

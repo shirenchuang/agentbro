@@ -75,6 +75,7 @@ export function getAgentDisplayName(session: SessionState): string {
     case 'deepseek-harness': return 'DeepSeek Harness'
     case 'qwenwork-cn': return '千问办公'
     case 'workbuddy': return 'WorkBuddy'
+    case 'workbuddy-ai': return 'WorkBuddy AI'
     case 'zcode': return 'ZCode'
     case 'doubao': return 'Doubao'
     default: return session.agentType.charAt(0).toUpperCase() + session.agentType.slice(1)
@@ -145,6 +146,7 @@ export function getSessionAppLabel(session: SessionState): string | null {
 }
 
 export function getSessionTerminalLabel(session: SessionState): string | null {
+  if (session.wslDistribution) return `WSL · ${session.wslDistribution}`
   const appLabel = getSessionAppLabel(session)
   if (appLabel) return null
 

@@ -1,13 +1,16 @@
 import { createConnection } from 'node:net'
 import { randomUUID } from 'node:crypto'
+import { createRequire } from 'node:module'
 
 const agent = 'deepseek-harness'
-const socketPath = process.env.AGENTBRO_HOOK_SOCKET ?? '/tmp/agentbro-' + process.getuid?.() + '.sock'
+const endpoint = process.platform === 'win32'
+  ? { host: '127.0.0.1', port: createRequire(import.meta.url)('./package.json').agentbroHookPort }
+  : { path: process.env.AGENTBRO_HOOK_SOCKET ?? '/tmp/agentbro-' + process.getuid?.() + '.sock' }
 
 function send(payload, timeout, signal) {
-  if (signal?.aborted || !process.getuid) return Promise.resolve(null)
+  if (signal?.aborted) return Promise.resolve(null)
   return new Promise((resolve) => {
-    const socket = createConnection(socketPath)
+    const socket = createConnection(endpoint)
     let response = ''
     const finish = (value) => {
       signal?.removeEventListener('abort', abort)
@@ -42,7 +45,7 @@ function envelope(session, event) {
     event,
     session_id: agent + ':' + session.id,
     cwd: session.header?.cwd ?? '',
-    _term_bundle_id: 'com.deepseek.dsh',
+    ...(process.platform === 'darwin' && { _term_bundle_id: 'com.deepseek.dsh' }),
   }
 }
 

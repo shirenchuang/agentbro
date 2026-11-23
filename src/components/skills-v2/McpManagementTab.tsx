@@ -10,13 +10,27 @@ import {
   type McpServerEntry,
   type McpTransport,
 } from '../../services/skillApiV2'
-import { McpInspectorDrawer } from './McpInspectorDrawer'
+import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
+import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import { McpInspectorDrawer, type McpInspectorTarget } from './McpInspectorDrawer'
 import { PreviewDialog } from './PreviewDialog'
 import { SlideOver } from './SlideOver'
 
 interface EditorState {
   originalName: string | null
   draft: McpServerDraft
+  selection: ReturnType<typeof readMcpEditorSelection>
+}
+
+function readMcpEditorSelection() {
+  const runtime = useRuntimeEnvironmentStore.getState()
+  const skill = useSkillStoreV2.getState()
+  return {
+    environmentId: runtime.selectedEnvironmentId,
+    runtimeRevision: runtime.selectionRevision,
+    agentId: skill.selectedAgentId,
+    agentRevision: skill.agentSelectionRevision,
+  }
 }
 
 const SECRET_PLACEHOLDER = '••••••••'
@@ -31,7 +45,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [editorError, setEditorError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<McpServerEntry | null>(null)
-  const [inspectorTarget, setInspectorTarget] = useState<McpServerEntry | null>(null)
+  const [inspectorTarget, setInspectorTarget] = useState<McpInspectorTarget | null>(null)
   const [inspectionResults, setInspectionResults] = useState<Record<string, McpInspectionReport>>({})
 
   const load = async () => {
@@ -65,11 +79,13 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
 
   const enabledCount = inventory.servers.filter((server) => server.enabled).length
   const invalidCount = inventory.servers.filter((server) => !server.valid).length
+  const actionsDisabled = loading || busyAction !== null
 
   const startAdd = () => {
     setEditorError(null)
     setEditor({
       originalName: null,
+      selection: readMcpEditorSelection(),
       draft: emptyDraft(firstSupportedTransport(inventory)),
     })
   }
@@ -78,6 +94,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
     setEditorError(null)
     setEditor({
       originalName: server.name,
+      selection: readMcpEditorSelection(),
       draft: {
         name: server.name,
         transport: server.transport,
@@ -91,8 +108,25 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
     })
   }
 
+  const startInspection = (server: McpServerEntry) => {
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    setInspectorTarget({ server, environmentId: selectedEnvironmentId, selectionRevision })
+  }
+
   const save = async () => {
     if (!editor) return
+    const matchesSelection = () => {
+      const current = readMcpEditorSelection()
+      const reviewed = editor.selection
+      if (current.environmentId === reviewed.environmentId
+        && current.runtimeRevision === reviewed.runtimeRevision
+        && current.agentId === reviewed.agentId
+        && current.agentRevision === reviewed.agentRevision) return true
+
+      setEditor((active) => active?.selection === reviewed ? null : active)
+      return false
+    }
+    if (!matchesSelection()) return
     const draft = normalizeDraft(editor.draft)
     setBusyAction('save')
     setEditorError(null)
@@ -102,6 +136,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         draft,
         editor.originalName,
       )
+      if (!matchesSelection()) return
       if (!validation.valid) {
         setEditorError(validation.message)
         return
@@ -112,12 +147,13 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         inventory.revision,
         editor.originalName,
       )
+      if (!matchesSelection()) return
       setInventory(next)
       setEditor(null)
       setNotice(t('skills.mcpManagement.saved', { name: draft.name }))
       setError(null)
     } catch (nextError) {
-      setEditorError(String(nextError))
+      if (matchesSelection()) setEditorError(String(nextError))
     } finally {
       setBusyAction(null)
     }
@@ -185,11 +221,11 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
           <McpStat value={invalidCount} label={t('skills.mcpManagement.invalidCount')} tone={invalidCount ? 'warn' : 'muted'} />
         </div>
         <div className="sm2__btn-row sm2__mcp-toolbar-actions">
-          <button className="sm2__btn" type="button" disabled={loading || Boolean(busyAction)} onClick={() => void load()}>
+          <button className="sm2__btn" type="button" disabled={actionsDisabled || editor !== null || deleteTarget !== null} onClick={() => void load()}>
             {loading ? t('skills.mcpManagement.scanning') : t('skills.mcpManagement.rescan')}
           </button>
           {inventory.capabilities.editable && (
-            <button className="sm2__btn sm2__btn--primary" type="button" disabled={Boolean(busyAction)} onClick={startAdd}>
+            <button className="sm2__btn sm2__btn--primary" type="button" disabled={actionsDisabled} onClick={startAdd}>
               {t('skills.mcpManagement.add')}
             </button>
           )}
@@ -215,7 +251,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
           <strong>{t('skills.mcpManagement.emptyTitle')}</strong>
           <span>{t('skills.mcpManagement.emptyDescription')}</span>
           {inventory.capabilities.editable && (
-            <button className="sm2__btn sm2__btn--primary" type="button" onClick={startAdd}>
+            <button className="sm2__btn sm2__btn--primary" type="button" disabled={actionsDisabled} onClick={startAdd}>
               {t('skills.mcpManagement.addFirst')}
             </button>
           )}
@@ -228,9 +264,9 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
               server={server}
               result={inspectionResults[server.name]}
               toggleBusy={busyAction === `toggle:${server.name}`}
-              actionsDisabled={Boolean(busyAction)}
+              actionsDisabled={actionsDisabled}
               onToggle={() => void toggle(server)}
-              onInspect={() => setInspectorTarget(server)}
+              onInspect={() => startInspection(server)}
               onEdit={() => startEdit(server)}
               onDelete={() => setDeleteTarget(server)}
             />
@@ -266,7 +302,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
       <McpInspectorDrawer
         agentId={detail.id}
         agentName={detail.displayName}
-        server={inspectorTarget}
+        target={inspectorTarget}
         onClose={() => setInspectorTarget(null)}
         onReport={storeInspectionReport}
       />
@@ -372,7 +408,8 @@ function McpServerRow({
             role="switch"
             aria-checked={server.enabled}
             aria-label={t('skills.mcpManagement.toggleLabel', { name: server.name })}
-            disabled={actionsDisabled && !toggleBusy}
+            aria-busy={toggleBusy}
+            disabled={actionsDisabled}
             onClick={onToggle}
           >
             <span />

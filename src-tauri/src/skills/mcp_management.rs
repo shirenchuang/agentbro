@@ -1,3 +1,4 @@
+use crate::platform::process::background_tokio_command;
 use regex::Regex;
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
@@ -11,7 +12,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdout, Command};
+use tokio::process::{Child, ChildStdout};
 use tokio::sync::Notify;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -1944,7 +1945,6 @@ enum InspectionSession {
         stdin: tokio::process::ChildStdin,
         lines: tokio::io::Lines<BufReader<ChildStdout>>,
         child: Child,
-        stderr_task: Option<tokio::task::JoinHandle<String>>,
         process_group: ProcessGroupCleanup,
         next_id: i64,
     },
@@ -1952,7 +1952,7 @@ enum InspectionSession {
         client: Client,
         draft: McpServerDraft,
         url: String,
-        session_id: Option<String>,
+        headers: StreamableHeaders,
         next_id: i64,
     },
     LegacySse {
@@ -1960,9 +1960,55 @@ enum InspectionSession {
         draft: McpServerDraft,
         endpoint: String,
         stream: reqwest::Response,
-        buffer: String,
+        buffer: SseBuffer,
         next_id: i64,
     },
+}
+
+const MCP_SESSION_HEADER: &str = "mcp-session-id";
+const MCP_VERSION_HEADER: &str = "mcp-protocol-version";
+
+#[derive(Default)]
+struct StreamableHeaders {
+    session_id: Option<reqwest::header::HeaderValue>,
+    protocol_version: Option<reqwest::header::HeaderValue>,
+}
+
+impl StreamableHeaders {
+    fn request(
+        &self,
+        request: reqwest::RequestBuilder,
+        draft: &McpServerDraft,
+    ) -> Result<reqwest::Request, TestFailure> {
+        let mut request = apply_http_headers(request, draft)?
+            .build()
+            .map_err(network_failure)?;
+        let headers = request.headers_mut();
+        for (key, value) in [
+            (MCP_SESSION_HEADER, &self.session_id),
+            (MCP_VERSION_HEADER, &self.protocol_version),
+        ] {
+            if let Some(value) = value {
+                headers.insert(key, value.clone());
+            } else {
+                headers.remove(key);
+            }
+        }
+        Ok(request)
+    }
+
+    async fn close(
+        &self,
+        client: &Client,
+        draft: &McpServerDraft,
+        url: &str,
+    ) -> Result<(), TestFailure> {
+        if self.session_id.is_some() {
+            let request = self.request(client.delete(url), draft)?;
+            let _ = client.execute(request).await;
+        }
+        Ok(())
+    }
 }
 
 struct ProcessGroupCleanup {
@@ -2694,7 +2740,7 @@ async fn open_inspection_session(draft: &McpServerDraft) -> Result<InspectionSes
             client: mcp_http_client()?,
             draft: draft.clone(),
             url: draft.url.clone().unwrap_or_default(),
-            session_id: None,
+            headers: StreamableHeaders::default(),
             next_id: 1,
         }),
         McpTransport::Sse => open_legacy_inspection_session(draft).await,
@@ -2716,12 +2762,12 @@ async fn open_stdio_inspection_session(
     } else {
         crate::agents::executable::command_path(command)
     };
-    let mut process = Command::new(command_path);
+    let mut process = background_tokio_command(command_path);
     process
         .args(&draft.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true);
     if let Some(path) = crate::agents::executable::augmented_path_env() {
         process.env("PATH", path);
@@ -2749,18 +2795,10 @@ async fn open_stdio_inspection_session(
         category: "startup_failed",
         message: "MCP process stdout is unavailable".to_string(),
     })?;
-    let stderr_task = child.stderr.take().map(|stderr| {
-        tokio::spawn(async move {
-            let mut output = Vec::new();
-            let _ = stderr.take(8192).read_to_end(&mut output).await;
-            String::from_utf8_lossy(&output).to_string()
-        })
-    });
     Ok(InspectionSession::Stdio {
         stdin,
         lines: BufReader::new(stdout).lines(),
         child,
-        stderr_task,
         process_group,
         next_id: 1,
     })
@@ -2789,7 +2827,7 @@ async fn open_legacy_inspection_session(
             message: format!("SSE endpoint returned HTTP {}", stream.status()),
         });
     }
-    let mut buffer = String::new();
+    let mut buffer = SseBuffer::legacy();
     let (event, endpoint) = next_sse_event(&mut stream, &mut buffer).await?;
     if event.as_deref() != Some("endpoint") {
         return Err(TestFailure {
@@ -2797,12 +2835,7 @@ async fn open_legacy_inspection_session(
             message: "Legacy SSE server did not provide an endpoint event".to_string(),
         });
     }
-    let endpoint = Url::parse(url)
-        .and_then(|base| base.join(endpoint.trim()))
-        .map_err(|error| TestFailure {
-            category: "invalid_config",
-            message: format!("Invalid SSE message endpoint: {error}"),
-        })?;
+    let endpoint = legacy_sse_endpoint(stream.url(), &endpoint)?;
     Ok(InspectionSession::LegacySse {
         client,
         draft: draft.clone(),
@@ -2890,21 +2923,9 @@ impl InspectionSession {
                 client,
                 draft,
                 url,
-                session_id,
+                headers,
                 ..
-            } => {
-                let (response, next_session) = send_streamable_rpc(
-                    client,
-                    draft,
-                    url,
-                    body,
-                    session_id.as_deref(),
-                    id.is_none(),
-                )
-                .await?;
-                *session_id = next_session;
-                Ok(response)
-            }
+            } => send_streamable_rpc(client, draft, url, body, headers, id).await,
             InspectionSession::LegacySse {
                 client,
                 draft,
@@ -2928,32 +2949,21 @@ impl InspectionSession {
             InspectionSession::Stdio {
                 stdin,
                 mut child,
-                stderr_task,
                 mut process_group,
                 ..
             } => {
                 drop(stdin);
                 terminate_child(&mut child).await;
                 process_group.disarm();
-                if let Some(task) = stderr_task {
-                    let _ = tokio::time::timeout(Duration::from_millis(250), task).await;
-                }
                 Ok(())
             }
             InspectionSession::Streamable {
                 client,
                 draft,
                 url,
-                session_id,
+                headers,
                 ..
-            } => {
-                if let Some(session_id) = session_id {
-                    let mut request = client.delete(url).header("Mcp-Session-Id", session_id);
-                    request = apply_http_headers(request, &draft)?;
-                    let _ = request.send().await;
-                }
-                Ok(())
-            }
+            } => headers.close(&client, &draft, &url).await,
             InspectionSession::LegacySse { .. } => Ok(()),
         }
     }
@@ -3418,7 +3428,7 @@ async fn test_stdio_connection(draft: &McpServerDraft) -> Result<HandshakeInfo, 
     } else {
         crate::agents::executable::command_path(command)
     };
-    let mut process = Command::new(command_path);
+    let mut process = background_tokio_command(command_path);
     process
         .args(&draft.args)
         .stdin(Stdio::piped())
@@ -3450,77 +3460,87 @@ async fn test_stdio_connection(draft: &McpServerDraft) -> Result<HandshakeInfo, 
         category: "startup_failed",
         message: "MCP process stdout is unavailable".to_string(),
     })?;
-    let stderr_task = child.stderr.take().map(|stderr| {
-        tokio::spawn(async move {
-            let mut output = Vec::new();
-            let _ = stderr.take(8192).read_to_end(&mut output).await;
-            String::from_utf8_lossy(&output).to_string()
-        })
-    });
+    let child_stderr = child.stderr.take();
     let mut lines = BufReader::new(stdout).lines();
-    let result = async {
-        let mut initialize = None;
-        let mut last_error = None;
-        for protocol_version in std::iter::once(MCP_PROTOCOL_VERSION).chain(MCP_PROTOCOL_FALLBACKS)
-        {
-            write_stdio_message(&mut stdin, &initialize_request(1, protocol_version)).await?;
-            match read_stdio_response(&mut lines, 1).await {
-                Ok(response) => {
-                    initialize = Some(response);
-                    break;
+    let exchange = async {
+        let result = async {
+            let mut initialize = None;
+            let mut last_error = None;
+            for protocol_version in
+                std::iter::once(MCP_PROTOCOL_VERSION).chain(MCP_PROTOCOL_FALLBACKS)
+            {
+                write_stdio_message(&mut stdin, &initialize_request(1, protocol_version)).await?;
+                match read_stdio_response(&mut lines, 1).await {
+                    Ok(response) => {
+                        initialize = Some(response);
+                        break;
+                    }
+                    Err(error) if error.category == "protocol_incompatible" => {
+                        last_error = Some(error);
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) if error.category == "protocol_incompatible" => {
-                    last_error = Some(error);
-                }
-                Err(error) => return Err(error),
             }
-        }
-        let initialize = initialize.ok_or_else(|| {
-            last_error.unwrap_or(TestFailure {
-                category: "protocol_incompatible",
-                message: "MCP server rejected all supported protocol versions".to_string(),
-            })
-        })?;
-        let info = handshake_info(&initialize)?;
-        write_stdio_message(
-            &mut stdin,
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized"
-            }),
-        )
-        .await?;
-        let tools = initialize.pointer("/result/capabilities/tools").is_some();
-        let tool_count = if tools {
+            let initialize = initialize.ok_or_else(|| {
+                last_error.unwrap_or(TestFailure {
+                    category: "protocol_incompatible",
+                    message: "MCP server rejected all supported protocol versions".to_string(),
+                })
+            })?;
+            let info = handshake_info(&initialize)?;
             write_stdio_message(
                 &mut stdin,
                 &serde_json::json!({
                     "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/list",
-                    "params": {}
+                    "method": "notifications/initialized"
                 }),
             )
             .await?;
-            let response = read_stdio_response(&mut lines, 2).await?;
-            Some(tool_count_from_response(&response)?)
-        } else {
-            None
-        };
-        Ok(HandshakeInfo { tool_count, ..info })
-    }
-    .await;
-    drop(stdin);
-    terminate_child(&mut child).await;
-    let stderr = if let Some(task) = stderr_task {
-        tokio::time::timeout(Duration::from_millis(250), task)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default()
-    } else {
-        String::new()
+            let tools = initialize.pointer("/result/capabilities/tools").is_some();
+            let tool_count = if tools {
+                write_stdio_message(
+                    &mut stdin,
+                    &serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/list",
+                        "params": {}
+                    }),
+                )
+                .await?;
+                let response = read_stdio_response(&mut lines, 2).await?;
+                Some(tool_count_from_response(&response)?)
+            } else {
+                None
+            };
+            Ok(HandshakeInfo { tool_count, ..info })
+        }
+        .await;
+        drop(stdin);
+        terminate_child(&mut child).await;
+        result
     };
+    let mut stderr_output = Vec::new();
+    let result = {
+        let drain = async {
+            if let Some(mut stderr) = child_stderr {
+                let _ = (&mut stderr)
+                    .take(8192)
+                    .read_to_end(&mut stderr_output)
+                    .await;
+                let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+            }
+        };
+        tokio::pin!(exchange, drain);
+        tokio::select! {
+            result = &mut exchange => {
+                let _ = tokio::time::timeout(Duration::from_millis(250), &mut drain).await;
+                result
+            }
+            _ = &mut drain => exchange.await,
+        }
+    };
+    let stderr = String::from_utf8_lossy(&stderr_output);
     result.map_err(|mut error: TestFailure| {
         if !stderr.trim().is_empty() && error.message.len() < 1200 {
             error.message = format!("{} · {}", error.message, stderr.trim());
@@ -3606,6 +3626,7 @@ async fn test_streamable_http_connection(
 ) -> Result<HandshakeInfo, TestFailure> {
     let client = mcp_http_client()?;
     let url = draft.url.as_deref().unwrap_or_default();
+    let mut headers = StreamableHeaders::default();
     let mut initialized = None;
     let mut last_error = None;
     for protocol_version in std::iter::once(MCP_PROTOCOL_VERSION).chain(MCP_PROTOCOL_FALLBACKS) {
@@ -3614,8 +3635,8 @@ async fn test_streamable_http_connection(
             draft,
             url,
             &initialize_request(1, protocol_version),
-            None,
-            false,
+            &mut headers,
+            Some(1),
         )
         .await
         {
@@ -3632,7 +3653,7 @@ async fn test_streamable_http_connection(
             Err(error) => return Err(error),
         }
     }
-    let (initialize, session_id) = initialized.ok_or_else(|| {
+    let initialize = initialized.ok_or_else(|| {
         last_error.unwrap_or(TestFailure {
             category: "protocol_incompatible",
             message: "MCP server rejected all supported protocol versions".to_string(),
@@ -3647,12 +3668,12 @@ async fn test_streamable_http_connection(
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
         }),
-        session_id.as_deref(),
-        true,
+        &mut headers,
+        None,
     )
     .await?;
     let tool_count = if initialize.pointer("/result/capabilities/tools").is_some() {
-        let (response, _) = send_streamable_rpc(
+        let response = send_streamable_rpc(
             &client,
             draft,
             url,
@@ -3662,19 +3683,15 @@ async fn test_streamable_http_connection(
                 "method": "tools/list",
                 "params": {}
             }),
-            session_id.as_deref(),
-            false,
+            &mut headers,
+            Some(2),
         )
         .await?;
         Some(tool_count_from_response(&response)?)
     } else {
         None
     };
-    if let Some(session_id) = session_id {
-        let mut request = client.delete(url).header("Mcp-Session-Id", session_id);
-        request = apply_http_headers(request, draft)?;
-        let _ = request.send().await;
-    }
+    headers.close(&client, draft, url).await?;
     Ok(HandshakeInfo { tool_count, ..info })
 }
 
@@ -3683,6 +3700,16 @@ fn mcp_http_client() -> Result<Client, TestFailure> {
         .connect_timeout(Duration::from_secs(8))
         .timeout(MCP_TEST_TIMEOUT)
         .user_agent("AgentBro-MCP-Test/1")
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt
+                .previous()
+                .first()
+                .is_some_and(|configured| configured.origin() != attempt.url().origin())
+            {
+                return attempt.error("MCP redirects must stay on the configured server origin");
+            }
+            reqwest::redirect::Policy::default().redirect(attempt)
+        }))
         .build()
         .map_err(|error| TestFailure {
             category: "network_error",
@@ -3695,20 +3722,18 @@ async fn send_streamable_rpc(
     draft: &McpServerDraft,
     url: &str,
     body: &Value,
-    session_id: Option<&str>,
-    notification: bool,
-) -> Result<(Value, Option<String>), TestFailure> {
-    let mut request = client
-        .post(url)
-        .header("Accept", "application/json, text/event-stream")
-        .header("Content-Type", "application/json");
-    if let Some(session_id) = session_id {
-        request = request
-            .header("Mcp-Session-Id", session_id)
-            .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION);
-    }
-    request = apply_http_headers(request, draft)?;
-    let response = request.json(body).send().await.map_err(network_failure)?;
+    headers: &mut StreamableHeaders,
+    id: Option<i64>,
+) -> Result<Value, TestFailure> {
+    let request = headers.request(
+        client
+            .post(url)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .json(body),
+        draft,
+    )?;
+    let mut response = client.execute(request).await.map_err(network_failure)?;
     if matches!(
         response.status(),
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
@@ -3718,7 +3743,7 @@ async fn send_streamable_rpc(
             message: format!("Authentication required ({})", response.status()),
         });
     }
-    if session_id.is_none()
+    if headers.protocol_version.is_none()
         && matches!(
             response.status(),
             StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
@@ -3737,16 +3762,45 @@ async fn send_streamable_rpc(
     }
     let next_session = response
         .headers()
-        .get("Mcp-Session-Id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
-        .or_else(|| session_id.map(str::to_string));
-    if notification {
-        return Ok((Value::Null, next_session));
+        .get(MCP_SESSION_HEADER)
+        .filter(|value| value.to_str().is_ok())
+        .cloned();
+    let reply = if let Some(id) = id {
+        let is_event_stream = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"));
+        if is_event_stream {
+            next_sse_rpc_response(&mut response, &mut SseBuffer::default(), id).await?
+        } else {
+            let text = response.text().await.map_err(network_failure)?;
+            rpc_result(parse_rpc_response_text(&text, id)?)?
+        }
+    } else {
+        Value::Null
+    };
+    if let Some(session_id) = next_session {
+        headers.session_id = Some(session_id);
     }
-    let text = response.text().await.map_err(network_failure)?;
-    let value = parse_rpc_response_text(&text)?;
-    Ok((rpc_result(value)?, next_session))
+    if body["method"] == "initialize" {
+        let negotiated = reply
+            .pointer("/result/protocolVersion")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                body.pointer("/params/protocolVersion")
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or(MCP_PROTOCOL_VERSION);
+        headers.protocol_version = Some(
+            reqwest::header::HeaderValue::from_str(negotiated).map_err(|_| TestFailure {
+                category: "protocol_error",
+                message: "MCP server returned an invalid protocol version".to_string(),
+            })?,
+        );
+    }
+    Ok(reply)
 }
 
 fn apply_http_headers(
@@ -3794,7 +3848,7 @@ async fn test_legacy_sse_connection(draft: &McpServerDraft) -> Result<HandshakeI
             message: format!("SSE endpoint returned HTTP {}", stream.status()),
         });
     }
-    let mut buffer = String::new();
+    let mut buffer = SseBuffer::legacy();
     let (event, endpoint) = next_sse_event(&mut stream, &mut buffer).await?;
     if event.as_deref() != Some("endpoint") {
         return Err(TestFailure {
@@ -3802,12 +3856,7 @@ async fn test_legacy_sse_connection(draft: &McpServerDraft) -> Result<HandshakeI
             message: "Legacy SSE server did not provide an endpoint event".to_string(),
         });
     }
-    let endpoint = Url::parse(url)
-        .and_then(|base| base.join(endpoint.trim()))
-        .map_err(|error| TestFailure {
-            category: "invalid_config",
-            message: format!("Invalid SSE message endpoint: {error}"),
-        })?;
+    let endpoint = legacy_sse_endpoint(stream.url(), &endpoint)?;
     let mut initialize = None;
     let mut last_error = None;
     for protocol_version in std::iter::once(MCP_PROTOCOL_VERSION).chain(MCP_PROTOCOL_FALLBACKS) {
@@ -3867,6 +3916,22 @@ async fn test_legacy_sse_connection(draft: &McpServerDraft) -> Result<HandshakeI
     Ok(HandshakeInfo { tool_count, ..info })
 }
 
+fn legacy_sse_endpoint(stream_url: &Url, endpoint: &str) -> Result<Url, TestFailure> {
+    let endpoint = stream_url
+        .join(endpoint.trim())
+        .map_err(|error| TestFailure {
+            category: "invalid_config",
+            message: format!("Invalid SSE message endpoint: {error}"),
+        })?;
+    if endpoint.origin() != stream_url.origin() {
+        return Err(TestFailure {
+            category: "protocol_error",
+            message: "The SSE message endpoint must use the configured server origin".to_string(),
+        });
+    }
+    Ok(endpoint)
+}
+
 async fn post_legacy_sse(
     client: &Client,
     draft: &McpServerDraft,
@@ -3898,7 +3963,7 @@ async fn post_legacy_sse(
 
 async fn next_sse_rpc_response(
     response: &mut reqwest::Response,
-    buffer: &mut String,
+    buffer: &mut SseBuffer,
     id: i64,
 ) -> Result<Value, TestFailure> {
     loop {
@@ -3906,47 +3971,106 @@ async fn next_sse_rpc_response(
         let Ok(value) = serde_json::from_str::<Value>(&data) else {
             continue;
         };
-        if value.get("id").and_then(Value::as_i64) == Some(id) {
+        if matches_rpc_reply(&value, id) {
             return rpc_result(value);
+        }
+    }
+}
+
+fn matches_rpc_reply(value: &Value, id: i64) -> bool {
+    value.get("id").and_then(Value::as_i64) == Some(id)
+        && value.get("method").is_none()
+        && (value.get("result").is_some() || value.get("error").is_some())
+}
+
+#[derive(Default)]
+struct SseBuffer {
+    bytes: Vec<u8>,
+    scan_from: usize,
+    trailing_cr: bool,
+    seen_frame: bool,
+    limit: Option<usize>,
+}
+
+impl SseBuffer {
+    fn legacy() -> Self {
+        Self {
+            limit: Some(256 * 1024),
+            ..Self::default()
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> Result<(), TestFailure> {
+        for &byte in chunk {
+            let preceded_by_cr = std::mem::replace(&mut self.trailing_cr, byte == b'\r');
+            match byte {
+                b'\n' if preceded_by_cr => {}
+                b'\r' => self.bytes.push(b'\n'),
+                _ => self.bytes.push(byte),
+            }
+        }
+        if self.limit.is_some_and(|limit| self.bytes.len() > limit) {
+            return Err(TestFailure {
+                category: "protocol_error",
+                message: "SSE handshake exceeded the response limit".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn next_event(&mut self) -> Option<(Option<String>, String)> {
+        loop {
+            let Some(relative_end) = self.bytes[self.scan_from..]
+                .windows(2)
+                .position(|pair| pair == b"\n\n")
+            else {
+                self.scan_from = self.bytes.len().saturating_sub(1);
+                return None;
+            };
+            let end = self.scan_from + relative_end;
+            let frame = String::from_utf8_lossy(&self.bytes[..end]);
+            let frame = if self.seen_frame {
+                frame.as_ref()
+            } else {
+                self.seen_frame = true;
+                frame.strip_prefix('\u{feff}').unwrap_or(&frame)
+            };
+            let mut event_name = None;
+            let mut data = Vec::new();
+            for line in frame.lines() {
+                let (field, value) = line.split_once(':').unwrap_or((line, ""));
+                let value = value.strip_prefix(' ').unwrap_or(value);
+                match field {
+                    "event" => event_name = Some(value.to_string()),
+                    "data" => data.push(value),
+                    _ => {}
+                }
+            }
+            let event = (!data.is_empty()).then(|| (event_name, data.join("\n")));
+            self.bytes.drain(..end + 2);
+            self.scan_from = 0;
+            if event.is_some() {
+                return event;
+            }
         }
     }
 }
 
 async fn next_sse_event(
     response: &mut reqwest::Response,
-    buffer: &mut String,
+    buffer: &mut SseBuffer,
 ) -> Result<(Option<String>, String), TestFailure> {
     loop {
-        if let Some(index) = buffer.find("\n\n") {
-            let event = buffer[..index].to_string();
-            buffer.drain(..index + 2);
-            let mut event_name = None;
-            let mut data = Vec::new();
-            for line in event.lines() {
-                if let Some(value) = line.strip_prefix("event:") {
-                    event_name = Some(value.trim().to_string());
-                } else if let Some(value) = line.strip_prefix("data:") {
-                    data.push(value.trim_start().to_string());
-                }
-            }
-            if !data.is_empty() {
-                return Ok((event_name, data.join("\n")));
-            }
-            continue;
+        if let Some(event) = buffer.next_event() {
+            return Ok(event);
         }
         let Some(chunk) = response.chunk().await.map_err(network_failure)? else {
             return Err(TestFailure {
                 category: "startup_failed",
-                message: "SSE connection closed before the handshake completed".to_string(),
+                message: "SSE stream closed before the expected event arrived".to_string(),
             });
         };
-        buffer.push_str(&String::from_utf8_lossy(&chunk).replace("\r\n", "\n"));
-        if buffer.len() > 256 * 1024 {
-            return Err(TestFailure {
-                category: "protocol_error",
-                message: "SSE handshake exceeded the response limit".to_string(),
-            });
-        }
+        buffer.push(&chunk)?;
     }
 }
 
@@ -3966,18 +4090,18 @@ fn initialize_request(id: i64, protocol_version: &str) -> Value {
     })
 }
 
-fn parse_rpc_response_text(text: &str) -> Result<Value, TestFailure> {
+fn parse_rpc_response_text(text: &str, id: i64) -> Result<Value, TestFailure> {
     if let Ok(value) = serde_json::from_str::<Value>(text.trim()) {
         return Ok(value);
     }
-    for event in text.replace("\r\n", "\n").split("\n\n") {
-        let data = event
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .map(str::trim_start)
-            .collect::<Vec<_>>()
-            .join("\n");
+    let mut events = SseBuffer::default();
+    events.push(text.as_bytes())?;
+    events.push(b"\n\n")?;
+    while let Some((_, data)) = events.next_event() {
         if let Ok(value) = serde_json::from_str::<Value>(&data) {
+            if !matches_rpc_reply(&value, id) {
+                continue;
+            }
             return Ok(value);
         }
     }
@@ -4053,7 +4177,11 @@ fn redact_message(message: &str, draft: &McpServerDraft) -> String {
         }
     }
     if redacted.len() > 1600 {
-        redacted.truncate(1600);
+        let mut end = 1600;
+        while !redacted.is_char_boundary(end) {
+            end -= 1;
+        }
+        redacted.truncate(end);
         redacted.push('…');
     }
     redacted
@@ -4075,6 +4203,21 @@ mod tests {
             url: None,
             headers: Vec::new(),
         }
+    }
+
+    #[test]
+    fn diagnostic_redaction_keeps_utf8_boundary_after_masking_secrets() {
+        let mut draft = stdio_draft("remote", "agent");
+        draft.env.push(McpConfigValue {
+            key: "TOKEN".to_string(),
+            value: Some("example-token".to_string()),
+            secret: true,
+            configured: true,
+        });
+        let prefix = "a".repeat(1596);
+        let message = format!("example-token{prefix}中🙂");
+
+        assert_eq!(redact_message(&message, &draft), format!("***{prefix}…"));
     }
 
     fn config(kind: ConfigKind) -> AgentConfig {
@@ -4341,6 +4484,112 @@ done"#
         assert_eq!(result.tool_count, Some(2));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_mcp_keeps_serving_after_verbose_stderr() {
+        let mut draft = stdio_draft("verbose", "python3");
+        draft.args = vec![
+            "-c".to_string(),
+            r#"import json
+import sys
+
+request = json.loads(sys.stdin.readline())
+sys.stderr.write("startup marker\n" + "fixture log\n" * 100000 + "final marker\n")
+sys.stderr.flush()
+if sys.argv[1] == "fail":
+    sys.exit(1)
+print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {
+    "protocolVersion": request["params"]["protocolVersion"],
+    "serverInfo": {"name": "verbose"},
+    "capabilities": {},
+}}), flush=True)
+sys.stdin.readline()
+"#
+            .to_string(),
+            "respond".to_string(),
+        ];
+
+        let connection = test_stdio_connection(&draft).await.unwrap();
+        assert_eq!(connection.server_name.as_deref(), Some("verbose"));
+        let report = perform_mcp_inspection("verbose", &draft, Vec::new()).await;
+        assert_eq!(report.status, "connected", "{:?}", report.warnings);
+        assert_eq!(report.server_name.as_deref(), Some("verbose"));
+
+        *draft.args.last_mut().unwrap() = "fail".to_string();
+        let error = test_stdio_connection(&draft).await.unwrap_err();
+        assert!(error.message.contains("startup marker"));
+        assert!(!error.message.contains("final marker"));
+        assert!(error.message.len() < 8 * 1024 + 200);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn windows_stdio_mcp_checks_run_without_a_console() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        let powershell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let mut draft = stdio_draft("Windows console probe", powershell.to_str().unwrap());
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -Namespace AgentBroTest -Name ConsoleProbe -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+'@
+$name = if ([AgentBroTest.ConsoleProbe]::GetConsoleWindow() -eq [IntPtr]::Zero) {
+    'no-console'
+} else {
+    'has-console'
+}
+$request = [Console]::ReadLine() | ConvertFrom-Json
+[Console]::Error.WriteLine('fixture log' * 32768)
+[Console]::Error.Flush()
+$response = @{
+    jsonrpc = '2.0'
+    id = $request.id
+    result = @{
+        protocolVersion = $request.params.protocolVersion
+        capabilities = @{}
+        serverInfo = @{ name = $name; version = '1' }
+    }
+}
+[Console]::WriteLine(($response | ConvertTo-Json -Compress -Depth 5))
+[void][Console]::ReadLine()
+"#;
+        let encoded = STANDARD.encode(
+            script
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+        draft.args = vec![
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-EncodedCommand".into(),
+            encoded,
+        ];
+
+        let connection = tokio::time::timeout(MCP_TEST_TIMEOUT, test_stdio_connection(&draft))
+            .await
+            .expect("Windows stdio MCP connection test timed out")
+            .unwrap();
+        assert_eq!(connection.server_name.as_deref(), Some("no-console"));
+
+        tokio::time::timeout(MCP_INSPECTION_TIMEOUT, async {
+            let mut inspection = open_stdio_inspection_session(&draft).await.unwrap();
+            let response = initialize_inspection_session(&mut inspection)
+                .await
+                .unwrap();
+            assert_eq!(
+                handshake_info(&response).unwrap().server_name.as_deref(),
+                Some("no-console")
+            );
+            inspection.notify_initialized().await.unwrap();
+            inspection.shutdown().await.unwrap();
+        })
+        .await
+        .expect("Windows stdio MCP inspection timed out");
+    }
+
     async fn fake_http_mcp(Json(body): Json<Value>) -> Json<Value> {
         let id = body.get("id").cloned().unwrap_or(Value::Null);
         let result = match body.get("method").and_then(Value::as_str) {
@@ -4522,6 +4771,302 @@ done"#
         assert_eq!(result.server_name.as_deref(), Some("fake-http"));
         assert_eq!(result.tool_count, Some(3));
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn streamable_http_uses_the_negotiated_version_with_and_without_a_session() {
+        use axum::extract::Path as RoutePath;
+        use axum::http::HeaderMap;
+        use axum::response::IntoResponse;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        fn has_header(headers: &HeaderMap, name: &str, expected: Option<&str>) -> bool {
+            let all = headers.get_all(name);
+            let mut values = all.iter();
+            values.next().and_then(|value| value.to_str().ok()) == expected
+                && values.next().is_none()
+        }
+
+        const NEGOTIATED: &str = "2025-06-18";
+        const SESSION: &str = "fixture-session";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let closed = Arc::new(AtomicUsize::new(0));
+        let delete_count = closed.clone();
+        let task = tokio::spawn(async move {
+            let router = Router::new().route(
+                "/:mode",
+                post(
+                    |RoutePath(mode): RoutePath<String>, headers: HeaderMap, Json(body): Json<Value>| async move {
+                        let method = body["method"].as_str();
+                        let stateful = mode == "stateful";
+                        let initialized = method != Some("initialize");
+                        if !has_header(&headers, "authorization", Some("Bearer fixture"))
+                            || !has_header(&headers, "mcp-protocol-version", initialized.then_some(NEGOTIATED))
+                            || !has_header(&headers, "mcp-session-id", (initialized && stateful).then_some(SESSION))
+                        {
+                            return StatusCode::BAD_REQUEST.into_response();
+                        }
+                        let id = &body["id"];
+                        match method {
+                            Some("initialize") => {
+                                let mut response = Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "result": {
+                                        "protocolVersion": NEGOTIATED,
+                                        "capabilities": { "tools": {} },
+                                        "serverInfo": { "name": "negotiated" }
+                                    }
+                                }))
+                                .into_response();
+                                if stateful {
+                                    response.headers_mut().insert("mcp-session-id", SESSION.parse().unwrap());
+                                }
+                                response
+                            }
+                            Some("notifications/initialized") => StatusCode::ACCEPTED.into_response(),
+                            Some("tools/list") => Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id, "result": { "tools": [{ "name": "fixture" }] }
+                            })).into_response(),
+                            _ => StatusCode::BAD_REQUEST.into_response(),
+                        }
+                    },
+                )
+                .delete(move |RoutePath(mode): RoutePath<String>, headers: HeaderMap| {
+                    let delete_count = delete_count.clone();
+                    async move {
+                        if mode == "stateful"
+                            && has_header(&headers, "authorization", Some("Bearer fixture"))
+                            && has_header(&headers, "mcp-protocol-version", Some(NEGOTIATED))
+                            && has_header(&headers, "mcp-session-id", Some(SESSION))
+                        {
+                            delete_count.fetch_add(1, Ordering::Relaxed);
+                            StatusCode::NO_CONTENT
+                        } else {
+                            StatusCode::BAD_REQUEST
+                        }
+                    }
+                }),
+            );
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        for mode in ["stateless", "stateful"] {
+            let mut draft = stdio_draft(mode, "");
+            draft.transport = McpTransport::Http;
+            draft.command = None;
+            draft.url = Some(format!("http://{address}/{mode}"));
+            let header = |key: &str, value: &str| McpConfigValue {
+                key: key.to_string(),
+                value: Some(value.to_string()),
+                secret: true,
+                configured: true,
+            };
+            draft
+                .headers
+                .push(header("Authorization", "Bearer fixture"));
+            if mode == "stateful" {
+                draft
+                    .headers
+                    .push(header("MCP-Protocol-Version", "unused-version"));
+                draft
+                    .headers
+                    .push(header("mcp-SESSION-id", "unused-session"));
+            }
+            let connection = test_streamable_http_connection(&draft).await.unwrap();
+            assert_eq!(connection.protocol_version.as_deref(), Some(NEGOTIATED));
+            assert_eq!(connection.tool_count, Some(1));
+            let report = perform_mcp_inspection(mode, &draft, Vec::new()).await;
+            assert_eq!(report.status, "connected", "{:?}", report.warnings);
+            assert_eq!(report.tools[0].name, "fixture");
+        }
+        assert_eq!(closed.load(Ordering::Relaxed), 2);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn streamable_http_redirects_stay_on_the_configured_origin() {
+        use axum::response::Redirect;
+        use axum::routing::get;
+
+        let other_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let other_address = other_listener.local_addr().unwrap();
+        let other_task = tokio::spawn(async move {
+            axum::serve(
+                other_listener,
+                Router::new().route("/", get(|| async { StatusCode::NO_CONTENT })),
+            )
+            .await
+            .unwrap();
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let router =
+                Router::new()
+                    .route("/same", get(|| async { Redirect::temporary("/target") }))
+                    .route("/target", get(|| async { StatusCode::NO_CONTENT }))
+                    .route(
+                        "/other",
+                        get(move || async move {
+                            Redirect::temporary(&format!("http://{other_address}/"))
+                        }),
+                    );
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let client = mcp_http_client().unwrap();
+        let same = client
+            .get(format!("http://{address}/same"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(same.status(), StatusCode::NO_CONTENT);
+        assert_eq!(same.url().path(), "/target");
+        let other = client.get(format!("http://{address}/other")).send().await;
+        assert!(other.is_err_and(|error| error.is_redirect()));
+        task.abort();
+        other_task.abort();
+    }
+
+    async fn stream_http_tools(
+        Json(body): Json<Value>,
+        keep_open: bool,
+    ) -> axum::response::Response {
+        use axum::body::{Body, Bytes};
+        use axum::response::IntoResponse;
+        use futures_util::StreamExt;
+
+        match body.get("method").and_then(Value::as_str) {
+            Some("tools/list") => {
+                let reply = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": { "tools": [{ "name": "fixture", "title": "雪" }] }
+                });
+                let mut events = concat!(
+                    "\u{feff}: sending tools\r\n",
+                    "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",",
+                    "\"params\":{\"level\":\"info\",\"data\":\"tools\"}}\r\n\r\n",
+                )
+                .to_string();
+                for line in serde_json::to_string_pretty(&reply).unwrap().lines() {
+                    events.push_str("data: ");
+                    events.push_str(line);
+                    events.push('\r');
+                }
+                events.push('\r');
+                let cr = events.find('\r').unwrap() + 1;
+                let utf8 = events.find('雪').unwrap() + 1;
+                let frames = [0..cr, cr..utf8, utf8..events.len()]
+                    .into_iter()
+                    .map(|range| {
+                        Ok::<_, std::convert::Infallible>(Bytes::copy_from_slice(
+                            &events.as_bytes()[range],
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                let stream = futures_util::stream::iter(frames);
+                let response = if keep_open {
+                    Body::from_stream(stream.chain(futures_util::stream::pending()))
+                } else {
+                    Body::from_stream(stream)
+                };
+                (
+                    [("content-type", "text/event-stream; charset=utf-8")],
+                    response,
+                )
+                    .into_response()
+            }
+            Some("notifications/initialized") => StatusCode::ACCEPTED.into_response(),
+            _ => fake_http_mcp(Json(body)).await.into_response(),
+        }
+    }
+
+    #[tokio::test]
+    async fn streamable_http_uses_the_matching_event_before_stream_close() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let router = Router::new()
+                .route("/finite", post(|body| stream_http_tools(body, false)))
+                .route("/open", post(|body| stream_http_tools(body, true)));
+            axum::serve(listener, router).await.unwrap();
+        });
+        let mut draft = McpServerDraft {
+            name: "events".to_string(),
+            transport: McpTransport::Http,
+            command: None,
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+            url: Some(format!("http://{address}/finite")),
+            headers: Vec::new(),
+        };
+        let connection = test_streamable_http_connection(&draft).await.unwrap();
+        assert_eq!(connection.tool_count, Some(1));
+
+        draft.url = Some(format!("http://{address}/open"));
+        let report = tokio::time::timeout(
+            Duration::from_secs(3),
+            perform_mcp_inspection("stream", &draft, Vec::new()),
+        )
+        .await
+        .expect("the inspector should complete before the server closes the stream");
+        assert_eq!(report.status, "connected", "{:?}", report.warnings);
+        assert_eq!(report.tools[0].title.as_deref(), Some("雪"));
+        task.abort();
+    }
+
+    #[test]
+    fn legacy_sse_decodes_endpoint_and_reply_across_chunk_boundaries() {
+        let input = concat!(
+            "\u{feff}event: endpoint\r\n",
+            "data: /messages?session=fixture\r\n\r\n",
+            "data: {\"id\":2,\r",
+            "data: \"result\":\"雪\"}\r\r",
+        )
+        .as_bytes();
+        for split in 0..=input.len() {
+            let mut buffer = SseBuffer::legacy();
+            buffer.push(&input[..split]).unwrap();
+            let mut endpoint = buffer.next_event();
+            buffer.push(&input[split..]).unwrap();
+            endpoint = endpoint.or_else(|| buffer.next_event());
+            assert_eq!(
+                endpoint,
+                Some((
+                    Some("endpoint".to_string()),
+                    "/messages?session=fixture".to_string()
+                )),
+                "split at byte {split}"
+            );
+            let (_, data) = buffer.next_event().unwrap();
+            let reply: Value = serde_json::from_str(&data).unwrap();
+            assert!(matches_rpc_reply(&reply, 2));
+            assert_eq!(reply["result"], "雪");
+        }
+    }
+
+    #[test]
+    fn legacy_sse_resolves_relative_endpoints_on_the_stream_origin() {
+        let stream = Url::parse("https://mcp.example.test/redirected/events").unwrap();
+        let endpoint = legacy_sse_endpoint(&stream, " messages?client=fixture ").unwrap();
+        assert_eq!(
+            endpoint.as_str(),
+            "https://mcp.example.test/redirected/messages?client=fixture"
+        );
+        assert!(legacy_sse_endpoint(&stream, "https://mcp.example.test:443/messages").is_ok());
+        for endpoint in [
+            "http://mcp.example.test/messages",
+            "https://mcp.example.test:8443/messages",
+            "//other.example.test/messages",
+        ] {
+            assert_eq!(
+                legacy_sse_endpoint(&stream, endpoint).unwrap_err().category,
+                "protocol_error"
+            );
+        }
     }
 
     #[tokio::test]

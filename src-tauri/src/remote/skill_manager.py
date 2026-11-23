@@ -8,11 +8,17 @@ import pathlib
 import re
 import select
 import shutil
+import signal
+import stat
 import subprocess
 import tempfile
 import time
 import urllib.parse
 import urllib.request
+import uuid
+from contextlib import contextmanager
+from itertools import count
+from os import readlink
 
 MARKER = "__AGENTBRO_REMOTE_SKILL_MANAGER__"
 REQUEST = json.loads(base64.b64decode("__AGENTBRO_REQUEST_B64__").decode())
@@ -22,7 +28,12 @@ HOME = pathlib.Path.home().resolve()
 STATE_PATH = HOME / ".agentbro" / "skill-manager-remote.json"
 FIXED_CENTER_PATH = HOME / ".agentbro" / "skills"
 SHARED_SKILLS_AGENT_ID = "agents"
+DEFAULT_PACK_NAME = "全量技能包"
 SHARED_SKILL_CONSUMERS = ("codex", "kimi", "openclaw")
+MCP_INSPECTION_MAX_PAGES = 10
+MCP_INSPECTION_MAX_ITEMS = 500
+MCP_INSPECTION_CATALOG_TIMEOUT = 15
+MCP_SSE_LINE_END = re.compile(br"\r\n?|\n")
 STATE_MUTATING_COMMANDS = {
     "skill_manager_bootstrap",
     "skill_manager_init",
@@ -43,6 +54,8 @@ STATE_MUTATING_COMMANDS = {
     "execute_sync_copy_target",
     "execute_fix_diagnosis_issue",
     "execute_upsert_skill_pack",
+    "execute_import_skill_pack_manifest",
+    "restore_skill_pack_member",
     "execute_delete_skill_pack",
     "execute_apply_skill_pack",
     "execute_sync_skill_pack_to_agents",
@@ -53,6 +66,11 @@ STATE_MUTATING_COMMANDS = {
     "get_skill_project_detail_v2",
     "scan_skill_project_v2",
     "execute_move_direct_skill_to_pack",
+    "write_agent_config_file_v2",
+    "set_plugin_enabled_v2",
+    "save_mcp_server_cmd",
+    "set_mcp_server_enabled_cmd",
+    "delete_mcp_server_v2_cmd",
     "add_custom_agent",
     "update_custom_agent",
     "remove_custom_agent",
@@ -242,6 +260,7 @@ def default_state():
         },
         "sources": {},
         "packs": {},
+        "packTargetClaims": {},
         "projects": {},
         "customAgents": {},
     }
@@ -252,7 +271,7 @@ def load_state():
     if STATE_PATH.is_file():
         try:
             saved = json.loads(STATE_PATH.read_text())
-            for key in ("settings", "sources", "packs", "projects", "customAgents"):
+            for key in ("settings", "sources", "packs", "packTargetClaims", "projects", "customAgents"):
                 if isinstance(saved.get(key), dict):
                     state[key].update(saved[key])
         except Exception:
@@ -265,26 +284,30 @@ CONFIGURED_CENTER_PATH = str(STATE["settings"].get("centerPath") or FIXED_CENTER
 STATE["settings"]["centerPath"] = str(FIXED_CENTER_PATH)
 
 
-def save_state():
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+def write_json_atomically(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
-            dir=STATE_PATH.parent,
-            prefix=f".{STATE_PATH.name}.",
+            dir=path.parent,
+            prefix=f".{path.name}.",
             suffix=".tmp",
             delete=False,
         ) as temp:
-            json.dump(STATE, temp, ensure_ascii=False, indent=2)
+            temp_path = pathlib.Path(temp.name)
+            json.dump(value, temp, ensure_ascii=False, indent=2)
             temp.flush()
             os.fsync(temp.fileno())
-            temp_path = pathlib.Path(temp.name)
-        temp_path.replace(STATE_PATH)
+        temp_path.replace(path)
     finally:
         if temp_path is not None:
             unlink_if_exists(temp_path)
+
+
+def save_state():
+    write_json_atomically(STATE_PATH, STATE)
 
 
 def expand_path(value):
@@ -387,8 +410,51 @@ def project_root_path(value):
     return resolved
 
 
+def custom_agent_spec(record):
+    root = safe_home_path(record["configDir"]).absolute()
+    settings = safe_home_path(record.get("settingsFile") or root / "settings.json").absolute()
+    return {
+        "id": record["id"],
+        "displayName": record["displayName"],
+        "iconKey": record.get("icon") or "custom",
+        "commands": [],
+        "configDir": root,
+        "config": settings,
+        "mcp": safe_home_path(record.get("mcpConfig") or settings).absolute(),
+        "plugins": safe_home_path(record.get("pluginDir") or root / "plugins" / "cache").absolute(),
+        "skills": safe_home_path(record["skillsDir"]).absolute(),
+        "category": record.get("category") or (
+            "claude-compatible" if record.get("icon") == "claude-code" else "custom"
+        ),
+    }
+
+
 def agent_spec(agent_id):
-    return next((item for item in AGENTS if item["id"] == agent_id), None)
+    built_in = next((item for item in AGENTS if item["id"] == agent_id), None)
+    if built_in or agent_id == SHARED_SKILLS_AGENT_ID:
+        return built_in
+    record = STATE["customAgents"].get(agent_id)
+    if record:
+        try:
+            return custom_agent_spec(record)
+        except (OSError, ValueError, RuntimeError):
+            return None
+    return None
+
+
+def management_agent_specs():
+    yield from AGENTS
+    for agent_id in STATE["customAgents"]:
+        spec = agent_spec(agent_id)
+        if spec and "configDir" in spec:
+            yield spec
+
+
+def is_claude_agent(agent_id):
+    if agent_id == "claude-code":
+        return True
+    spec = agent_spec(agent_id)
+    return bool(spec and spec.get("category") == "claude-compatible")
 
 
 def openclaw_state_path():
@@ -408,6 +474,10 @@ def agent_config_path(agent_id):
     if agent_id == "openclaw":
         configured = os.environ.get("OPENCLAW_CONFIG_PATH")
         return expand_path(configured) if configured else openclaw_state_path() / "openclaw.json"
+    if agent_id == "codex" and os.environ.get("CODEX_HOME"):
+        return expand_path(os.environ["CODEX_HOME"]) / "config.toml"
+    if agent_id == "claude-code" and os.environ.get("CLAUDE_CONFIG_DIR"):
+        return expand_path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
     return HOME / spec["config"]
 
 
@@ -415,7 +485,7 @@ def agent_mcp_path(agent_id):
     spec = agent_spec(agent_id)
     if not spec:
         raise ValueError("Unknown Agent: " + str(agent_id))
-    return agent_config_path(agent_id) if agent_id == "openclaw" else HOME / spec["mcp"]
+    return agent_config_path(agent_id) if agent_id in ("openclaw", "codex") else HOME / spec["mcp"]
 
 
 def agent_plugin_path(agent_id):
@@ -424,6 +494,8 @@ def agent_plugin_path(agent_id):
         raise ValueError("Unknown Agent: " + str(agent_id))
     if agent_id == "openclaw":
         return openclaw_state_path() / "extensions"
+    if agent_id in ("codex", "claude-code"):
+        return agent_config_path(agent_id).parent / "plugins" / "cache"
     return HOME / spec["plugins"]
 
 
@@ -484,6 +556,8 @@ def agent_binary(spec):
 def agent_installed(spec, binary=None):
     if binary:
         return True
+    if "configDir" in spec:
+        return spec["configDir"].is_dir() or spec["skills"].parent.is_dir()
     if spec["id"] == "openclaw" and openclaw_state_path().exists():
         return True
     return agent_skills_path(spec["id"]).exists()
@@ -536,6 +610,263 @@ def hash_dir(path):
         return digest.hexdigest()
     except Exception:
         return ""
+
+
+def add_pack_content_file(digest, relative, source):
+    with source.open("rb") as handle:
+        size = 0
+        crlf = 0
+        binary = False
+        previous = b""
+        for chunk in iter(lambda: handle.read(65536), b""):
+            size += len(chunk)
+            binary = binary or b"\0" in chunk
+            crlf += chunk.count(b"\r\n") + (previous == b"\r" and chunk.startswith(b"\n"))
+            previous = chunk[-1:]
+        normalize = not binary and crlf > 0
+        expected_size = size - crlf if normalize else size
+        digest.update(f"{relative}\0{expected_size}\0".encode())
+
+        handle.seek(0)
+        pending = b""
+        written = 0
+        for chunk in iter(lambda: handle.read(65536), b""):
+            if normalize:
+                chunk = pending + chunk
+                pending = b"\r" if chunk.endswith(b"\r") else b""
+                if pending:
+                    chunk = chunk[:-1]
+                chunk = chunk.replace(b"\r\n", b"\n")
+            digest.update(chunk)
+            written += len(chunk)
+        digest.update(pending)
+        if written + len(pending) != expected_size:
+            raise ValueError("A Skill file changed while it was being verified")
+
+
+def valid_pack_component(name):
+    return bool(name) and not (
+        name.endswith((".", " "))
+        or any(ord(ch) < 32 or 127 <= ord(ch) <= 159 or ch in '<>:"/\\|?*' for ch in name)
+        or re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", name.split(".", 1)[0], re.I | re.ASCII)
+    )
+
+
+def pack_content_fingerprint(directory, staged=None, local_import_layout=False):
+    root = directory.resolve(strict=True)
+    if not stat.S_ISREG((root / "SKILL.md").lstat().st_mode):
+        raise ValueError("The installed path is not a Skill directory")
+    files = {}
+
+    def collect(directory, prefix, ancestors):
+        for entry in directory.iterdir():
+            name = entry.name
+            if has_surrogate(name):
+                raise ValueError("Skill file names must be UTF-8")
+            if local_import_layout and (
+                entry.is_symlink() or name in (
+                    ".git", ".DS_Store", "node_modules", "target", "__pycache__", ".idea",
+                    ".venv", "venv", "output",
+                ) or name.endswith((".tmp", ".swp"))
+            ):
+                continue
+            source = entry
+            if entry.is_symlink():
+                try:
+                    source = entry.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    continue
+                if source != root and root not in source.parents:
+                    continue
+            mode = source.stat().st_mode
+            if stat.S_ISDIR(mode) and name in (".git", "__pycache__", "__pypackages__"):
+                continue
+            if not valid_pack_component(name) or name.lower() == ".git":
+                raise ValueError("Unsupported Skill file name: " + name)
+            relative = prefix + name
+            if stat.S_ISDIR(mode) and source not in ancestors:
+                collect(source, relative + "/", ancestors | {source})
+            elif stat.S_ISREG(mode):
+                files[relative] = source
+
+    collect(root, "", {root})
+    digest = hashlib.sha256()
+    for relative, file in sorted(files.items()):
+        if staged is not None:
+            target = staged / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(file, target)
+            file = target
+        add_pack_content_file(digest, relative, file)
+    return digest.hexdigest()
+
+
+def valid_pack_git_source(source):
+    if (not isinstance(source, dict) or set(source) != {"repository", "commit", "skillPath"}
+            or not all(isinstance(value, str) for value in source.values())):
+        return False
+    repository = source["repository"]
+    parts = repository.split("/")
+    return (
+        len(parts) == 2 and all(re.fullmatch(r"[A-Za-z0-9._-]+", part) and not part.endswith(".") for part in parts)
+        and not parts[1].endswith(".git")
+        and re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", source["commit"])
+        and source["skillPath"].split("/")[-1] == "SKILL.md"
+        and all(valid_pack_component(part) and part.lower() != ".git" for part in source["skillPath"].split("/"))
+    )
+
+
+def pack_git_source_from_record(record):
+    uri, commit = record.get("sourceUri"), record.get("sourceRef")
+    if not isinstance(uri, str) or not isinstance(commit, str):
+        return None
+    prefix = "https://github.com/"
+    encoded = uri.startswith(prefix)
+    if not encoded:
+        prefix = "github:"
+    if not uri.startswith(prefix) or "?" in uri or "#" in uri:
+        return None
+    parts = uri[len(prefix):].rstrip("/").split("/")
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[:2]
+    repo = repo[:-4] if repo.endswith(".git") else repo
+    path = parts[2:]
+    if path and path[0] == "tree":
+        if len(path) < 2 or not path[1]:
+            return None
+        path = path[2:]
+    if encoded:
+        try:
+            if any(re.search(r"%(?![0-9a-fA-F]{2})", part) for part in path):
+                return None
+            path = [urllib.parse.unquote(part, errors="strict") for part in path]
+        except UnicodeError:
+            return None
+        if any("/" in part for part in path):
+            return None
+    if not path or path[-1] != "SKILL.md":
+        path.append("SKILL.md")
+    source = {
+        "repository": owner + "/" + repo,
+        "commit": commit.lower(),
+        "skillPath": "/".join(path),
+    }
+    return source if valid_pack_git_source(source) else None
+
+
+def skill_pack_fingerprints(skill_ids, include_sources=False):
+    paths = {path.name: path for path in center_path().iterdir()}
+    items = []
+    for skill_id in skill_ids:
+        entry = {"skillId": skill_id, "missing": False, "fingerprint": None}
+        path = paths.get(skill_id)
+        try:
+            if path is None:
+                raise FileNotFoundError()
+            (path / "SKILL.md").lstat()
+            entry["fingerprint"] = pack_content_fingerprint(path)
+        except (FileNotFoundError, NotADirectoryError):
+            entry["missing"] = True
+        except (OSError, RuntimeError, ValueError):
+            pass
+        if (include_sources and entry["fingerprint"]
+                and valid_pack_component(skill_id) and not skill_id.startswith((".", " "))):
+            source = pack_git_source_from_record(STATE["sources"].get(skill_id, {}))
+            if source:
+                entry["source"] = source
+        items.append(entry)
+    return items
+
+
+def validate_reviewable_skill_pack(manifest):
+    if manifest.get("version") not in (2, 3) or manifest.get("format") != "agentbro-skill-pack":
+        raise ValueError("A content review requires Skill Pack version 2 or later")
+    ids = manifest["skillIds"]
+    expected = manifest.get("skillFingerprints", {})
+    if (not manifest["name"].strip() or len(set(ids)) != len(ids)
+            or any(key not in ids or not re.fullmatch(r"[0-9a-f]{64}", value) for key, value in expected.items())):
+        raise ValueError("Invalid Skill Pack manifest")
+    sources = manifest.get("skillSources", {})
+    if manifest["version"] < 3 and sources:
+        raise ValueError("Pinned GitHub sources require Skill Pack version 3")
+    for skill_id, source in sources.items():
+        if (skill_id not in expected or not valid_pack_component(skill_id)
+                or skill_id.startswith((".", " ")) or not valid_pack_git_source(source)):
+            raise ValueError(f"Invalid pinned GitHub source for '{skill_id}'")
+
+
+def restore_pack_skill(manifest, skill_id):
+    validate_reviewable_skill_pack(manifest)
+    source = manifest.get("skillSources", {}).get(skill_id)
+    if not source:
+        raise ValueError("The Skill has no pinned GitHub source")
+    center = center_path().resolve()
+    destination = center / skill_id
+    if path_present(destination):
+        raise ValueError("The Skill already exists in the selected library")
+    repository = "https://github.com/" + source["repository"] + ".git"
+    commit = source["commit"]
+    checkout, temporary = clone_repository(repository, commit)
+    try:
+        if run_repository_git(checkout, "rev-parse", "HEAD").lower() != commit.lower():
+            raise ValueError("Git did not return the recorded Skill commit")
+        directory = repository_relative_path(checkout.resolve(), source["skillPath"]).parent
+        expected = manifest["skillFingerprints"][skill_id]
+        with tempfile.TemporaryDirectory(prefix=".agentbro-skill-import-", dir=str(center)) as staging:
+            staged = pathlib.Path(staging) / "skill"
+            # The local library filters some entries that SSH imports retain.
+            if pack_content_fingerprint(directory, staged, local_import_layout=True) != expected:
+                shutil.rmtree(staged)
+                pack_content_fingerprint(directory, staged)
+            if pack_content_fingerprint(staged) != expected:
+                raise ValueError("Skill content does not match the recorded fingerprint")
+            try:
+                destination.mkdir()
+            except FileExistsError:
+                raise ValueError("The Skill already exists in the selected library")
+            try:
+                staged.rename(destination)
+            except OSError:
+                destination.rmdir()
+                raise
+            relative = pathlib.PurePosixPath(source["skillPath"]).parent.as_posix()
+            STATE["sources"][skill_id] = {
+                "sourceType": "github",
+                "sourceUri": repository_skill_source(repository, commit, relative),
+                "sourceRef": commit,
+                "importedFromAgent": None,
+                "importedFromPath": None,
+                "installedVia": "remote_git",
+                "createdAt": now(),
+                "updatedAt": now(),
+            }
+            try:
+                save_state()
+            except OSError:
+                destination.rename(staged)
+                raise
+    finally:
+        temporary.cleanup()
+
+
+def import_reviewed_skill_pack(manifest, reviewed, accept_local_copies):
+    validate_reviewable_skill_pack(manifest)
+    ids = manifest["skillIds"]
+    expected = manifest.get("skillFingerprints", {})
+    current = skill_pack_fingerprints(ids)
+    if current != reviewed:
+        raise ValueError("The selected library changed since review. Recheck the Skill Pack.")
+    for item in current:
+        skill_id = item["skillId"]
+        if item["missing"]:
+            raise ValueError(f"Skill '{skill_id}' is missing from the center library.")
+        if not item["fingerprint"]:
+            raise ValueError(f"Could not verify Skill '{skill_id}' in the center library.")
+        if accept_local_copies is not True and expected.get(skill_id) != item["fingerprint"]:
+            raise ValueError(f"Confirm the local copy of Skill '{skill_id}' before importing.")
+    return upsert_pack({**manifest, "id": ""})
+
 
 
 def skill_directories(root):
@@ -610,10 +941,20 @@ def independent_center_skill_hash(path):
         return None
 
 
-def atomic_replace_skill_directory(source, destination, after_replace=None):
+def atomic_replace_skill_directory(
+    source, destination, after_replace=None, preserve_symlinks=False, link=False
+):
     source = pathlib.Path(source)
     destination = pathlib.Path(destination)
     expected_hash = verified_skill_hash(source, "Source Skill")
+    resolved_source = source.resolve()
+    resolved_parent = destination.parent.resolve()
+    if resolved_source == resolved_parent or resolved_source in resolved_parent.parents:
+        raise ValueError("Source Skill overlaps the staging directory")
+    if link and paths_overlap(source, destination):
+        raise ValueError("Center Skill overlaps the Agent copy")
+    if preserve_symlinks and not destination.is_symlink() and paths_overlap(source, destination):
+        raise ValueError("Source Skill overlaps its destination")
     destination.parent.mkdir(parents=True, exist_ok=True)
     recovery_root = pathlib.Path(tempfile.mkdtemp(
         prefix=".shared-skill-replace-",
@@ -625,7 +966,10 @@ def atomic_replace_skill_directory(source, destination, after_replace=None):
     keep_recovery = False
     had_destination = path_present(destination)
     try:
-        shutil.copytree(source, staged, symlinks=False)
+        if link:
+            staged.symlink_to(source, target_is_directory=True)
+        else:
+            shutil.copytree(source, staged, symlinks=preserve_symlinks)
         if (
             verified_skill_hash(staged, "Staged Skill") != expected_hash
             or verified_skill_hash(source, "Source Skill") != expected_hash
@@ -633,15 +977,17 @@ def atomic_replace_skill_directory(source, destination, after_replace=None):
             raise ValueError("Source Skill changed while its replacement was staged")
         if had_destination:
             os.replace(str(destination), str(backup))
+        activated = False
         try:
             os.replace(str(staged), str(destination))
+            activated = True
             if verified_skill_hash(destination, "Replaced Skill") != expected_hash:
                 raise ValueError("Replaced Skill failed final verification")
             if after_replace is not None:
                 after_replace()
         except Exception as replace_error:
             rollback_errors = []
-            if path_present(destination):
+            if activated and path_present(destination):
                 try:
                     os.replace(str(destination), str(failed_replacement))
                 except Exception as error:
@@ -846,24 +1192,50 @@ def copy_or_link(source, target, mode):
     return "copy"
 
 
+def pack_applied_agent_ids(pack_id):
+    agents = set(STATE["packs"].get(pack_id, {}).get("appliedAgents", []))
+    agents.update(
+        target_id.partition("::")[0]
+        for target_id in STATE["packTargetClaims"].get(pack_id, {})
+    )
+    return sorted(agents)
+
+
 def applied_pack_ids(agent_id):
-    return [
-        pack_id for pack_id, pack in STATE["packs"].items()
-        if agent_id in pack.get("appliedAgents", [])
-    ]
+    pack_ids = dict.fromkeys(list(STATE["packs"]) + list(STATE["packTargetClaims"]))
+    return [pack_id for pack_id in pack_ids if agent_id in pack_applied_agent_ids(pack_id)]
+
+
+def add_pack_target_claims(pack_id, target_ids):
+    claims = dict.fromkeys(target_ids, True)
+    if claims:
+        STATE["packTargetClaims"].setdefault(pack_id, {}).update(claims)
+
+
+def filter_pack_target_claims(pack_id, keep):
+    claims = STATE["packTargetClaims"].get(pack_id, {})
+    remaining = {target_id: True for target_id in claims if keep(target_id)}
+    if remaining:
+        STATE["packTargetClaims"][pack_id] = remaining
+    else:
+        STATE["packTargetClaims"].pop(pack_id, None)
+    return remaining != claims
 
 
 def pack_claims(agent_id, skill_id):
     claims = []
     stamp = now()
-    for pack_id in applied_pack_ids(agent_id):
+    target_id = agent_id + "::" + skill_id
+    for pack_id in dict.fromkeys(list(STATE["packs"]) + list(STATE["packTargetClaims"])):
         pack = STATE["packs"].get(pack_id, {})
-        if skill_id in pack.get("skillIds", []):
+        explicit = target_id in STATE["packTargetClaims"].get(pack_id, {})
+        legacy = agent_id in pack.get("appliedAgents", []) and skill_id in pack.get("skillIds", [])
+        if explicit or legacy:
             claims.append({
                 "id": "pack::" + pack_id + "::" + agent_id + "::" + skill_id,
                 "claimType": "pack",
                 "packId": pack_id,
-                "packName": pack.get("name", pack_id),
+                "packName": DEFAULT_PACK_NAME if pack_id == "default" else pack.get("name", pack_id),
                 "createdAt": pack.get("createdAt", stamp),
             })
     if not claims:
@@ -899,7 +1271,7 @@ def inventory():
     unmanaged = []
     agents = []
     targets = {}
-    for spec in AGENTS:
+    for spec in management_agent_specs():
         root = agent_skills_path(spec["id"])
         installed = agent_installed(spec, agent_binary(spec))
         managed_count = 0
@@ -1047,11 +1419,10 @@ def pack_detail(pack_id, skills=None, agents=None):
     if pack_id == "default":
         data = {
             "id": "default",
-            "name": "全量技能包",
+            "name": DEFAULT_PACK_NAME,
             "description": "中心库全部 Skills。应用时按当前中心库全量分发。",
             "tags": [],
             "skillIds": list(skills),
-            "appliedAgents": [],
             "revision": 1,
             "createdAt": now(),
             "updatedAt": now(),
@@ -1071,7 +1442,7 @@ def pack_detail(pack_id, skills=None, agents=None):
             "missing": skill is None,
         })
     applied = []
-    for agent_id in data.get("appliedAgents", []):
+    for agent_id in pack_applied_agent_ids(pack_id):
         agent = next((item for item in agents if item["id"] == agent_id), None)
         applied.append({
             "packId": data["id"],
@@ -1193,6 +1564,13 @@ def affected_target(target, agents):
         "mode": target["actualMode"],
         "claimCount": len(target["claims"]),
     }
+
+
+def targets_claimed_by_pack(pack_id, targets):
+    return (
+        target for target in targets.values()
+        if any(claim["packId"] == pack_id for claim in target["claims"])
+    )
 
 
 def preview_delete(skill_ids):
@@ -1472,6 +1850,27 @@ def find_unmanaged(unmanaged_id):
     return item
 
 
+def takeover_center_agent_skill(agent_id, unmanaged_id, skills, targets):
+    # Remote inventory represents same-name copies as Skill targets.
+    target = targets.get(unmanaged_id)
+    if not target:
+        raise ValueError("The requested Agent Skill is not present in the center library")
+    if target["agentId"] != agent_id or agent_id == SHARED_SKILLS_AGENT_ID:
+        raise ValueError("The requested Skill does not belong to this Agent's own directory")
+    skill_id = target["skillId"]
+    center = pathlib.Path(skills[skill_id]["centerPath"])
+    agent_copy = pathlib.Path(target["targetPath"])
+    if not (center / "SKILL.md").is_file() or not (agent_copy / "SKILL.md").is_file():
+        raise ValueError("The center or Agent Skill is unavailable on disk")
+    if agent_copy.is_symlink():
+        link_target = normalized_lexical_path(agent_copy.parent / readlink(agent_copy))
+        if link_target == normalized_lexical_path(center):
+            return skill_id
+        raise ValueError("The Agent Skill already links to a different location")
+    atomic_replace_skill_directory(center, agent_copy, link=True)
+    return skill_id
+
+
 def remove_unmanaged_item(item, requested_agent_id):
     owner = item.get("agentId")
     if owner != requested_agent_id:
@@ -1485,8 +1884,13 @@ def remove_unmanaged_item(item, requested_agent_id):
 def remove_target_distribution(target):
     if target.get("agentId") == SHARED_SKILLS_AGENT_ID:
         remove_shared_skill_path(target["targetPath"])
-        return
-    remove_path(pathlib.Path(target["targetPath"]))
+    else:
+        remove_path(pathlib.Path(target["targetPath"]))
+    changed = False
+    for pack_id in list(STATE["packTargetClaims"]):
+        if filter_pack_target_claims(pack_id, lambda target_id: target_id != target["id"]):
+            changed = True
+    return changed
 
 
 def adopt_preview(agent_id, unmanaged_id):
@@ -1651,13 +2055,13 @@ def normalize_repository(source):
         parts = [item for item in spec.split("/") if item]
         if len(parts) < 3:
             raise ValueError("skills.sh source must be owner/repository/skill-id")
-        return "https://github.com/" + parts[0] + "/" + parts[1] + ".git", "/".join(parts[2:])
+        return "https://github.com/" + parts[0] + "/" + parts[1] + ".git", "/".join(parts[2:]), None
     if source.startswith("https://skills.sh/"):
         spec = source[len("https://skills.sh/"):].strip("/")
         parts = [item for item in spec.split("/") if item]
         if len(parts) < 3:
             raise ValueError("skills.sh source must be owner/repository/skill-id")
-        return "https://github.com/" + parts[0] + "/" + parts[1] + ".git", "/".join(parts[2:])
+        return "https://github.com/" + parts[0] + "/" + parts[1] + ".git", "/".join(parts[2:]), None
     if source.startswith("https://raw.githubusercontent.com/"):
         parts = [
             item for item in urllib.parse.urlparse(source).path.strip("/").split("/")
@@ -1669,48 +2073,71 @@ def normalize_repository(source):
                 requested = requested[:-1]
             return (
                 "https://github.com/" + parts[0] + "/" + parts[1] + ".git",
-                "/".join(requested) or None,
+                "/".join(urllib.parse.unquote(item) for item in requested) or None,
+                urllib.parse.unquote(parts[2]),
             )
     if source.startswith("https://github.com/"):
         parsed = urllib.parse.urlparse(source)
         parts = [item for item in parsed.path.strip("/").split("/") if item]
-        if len(parts) >= 5 and parts[2] in ("tree", "blob"):
+        if len(parts) >= 4 and parts[2] in ("tree", "blob"):
             requested = parts[4:]
             if requested and requested[-1] == "SKILL.md":
                 requested = requested[:-1]
             return (
                 "https://github.com/" + parts[0] + "/" + parts[1] + ".git",
-                "/".join(requested) or None,
+                "/".join(urllib.parse.unquote(item) for item in requested) or None,
+                urllib.parse.unquote(parts[3]),
             )
     if source.startswith(("https://github.com/", "https://gitlab.com/", "git@github.com:", "git@gitlab.com:")):
-        return source, None
-    return None, None
+        return source, None, None
+    return None, None, None
+
+
+def resolve_repository_source(source):
+    repository, requested, reference = normalize_repository(source)
+    if (not requested or not reference or "/" in reference or reference == "HEAD"
+            or re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", reference)):
+        return repository, requested, reference
+
+    pieces = [reference, *requested.split("/")]
+    names = [
+        "/".join(pieces[:length])
+        for length in range(1, len(pieces) + 1)
+    ]
+    if not all(re.fullmatch(r"[A-Za-z0-9._/-]+", name) for name in names):
+        return repository, requested, reference
+    patterns = [f"refs/{namespace}/{name}" for name in names for namespace in ("heads", "tags")]
+    output = run_repository_git(HOME, "ls-remote", "--refs", "--", repository, *patterns)
+    advertised = {line.partition("\t")[2] for line in output.splitlines()}
+    for index in range(len(names) - 1, -1, -1):
+        name = names[index]
+        if "refs/heads/" + name in advertised or "refs/tags/" + name in advertised:
+            return repository, "/".join(pieces[index + 1:]) or None, name
+    return repository, requested, reference
 
 
 def source_candidates(input_value):
     source_path = str(input_value.get("sourcePath") or "")
-    repository, requested = normalize_repository(
+    repository, requested, reference = resolve_repository_source(
         input_value.get("sourceUri") or source_path
     )
-    temporary = None
     if repository:
-        temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-skill-")
-        root = pathlib.Path(temporary.name) / "repo"
-        subprocess.run(
-            ["git", "clone", "--depth", "1", repository, str(root)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    else:
-        root = safe_home_path(source_path, allow_missing=False)
-        if root.is_file() and root.suffix.lower() == ".zip":
-            temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-archive-")
-            extracted = pathlib.Path(temporary.name) / "extracted"
-            extracted.mkdir(parents=True, exist_ok=True)
-            shutil.unpack_archive(str(root), str(extracted), "zip")
-            root = extracted
+        root, temporary = clone_repository(repository, reference)
+        try:
+            candidates = repository_skill_directories(root, requested, reference is not None)
+        except Exception:
+            temporary.cleanup()
+            raise
+        return root, candidates, temporary, repository, reference
+
+    temporary = None
+    root = safe_home_path(source_path, allow_missing=False)
+    if root.is_file() and root.suffix.lower() == ".zip":
+        temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-archive-")
+        extracted = pathlib.Path(temporary.name) / "extracted"
+        extracted.mkdir(parents=True, exist_ok=True)
+        shutil.unpack_archive(str(root), str(extracted), "zip")
+        root = extracted
     candidates = []
     if root.is_dir() and (root / "SKILL.md").is_file():
         candidates = [root]
@@ -1719,18 +2146,11 @@ def source_candidates(input_value):
             path.parent for path in root.rglob("SKILL.md")
             if len(path.relative_to(root).parts) <= 7
         ]
-    if requested:
-        requested_parts = tuple(item for item in requested.split("/") if item)
-        candidates = [
-            item for item in candidates
-            if item.name == requested_parts[-1]
-            or item.relative_to(root).parts[-len(requested_parts):] == requested_parts
-        ]
-    return root, candidates, temporary
+    return root, candidates, temporary, None, None
 
 
 def preview_add(input_value):
-    root, candidates, temporary = source_candidates(input_value)
+    _root, candidates, temporary, _repository, _reference = source_candidates(input_value)
     try:
         center = center_path()
         result = []
@@ -1776,9 +2196,10 @@ def preview_add(input_value):
 
 
 def execute_add(input_value, decisions):
-    root, candidates, temporary = source_candidates(input_value)
+    root, candidates, temporary, repository, reference = source_candidates(input_value)
     try:
         decision_map = {item["skillId"]: item for item in decisions}
+        revision = run_repository_git(root, "rev-parse", "HEAD") if repository else None
         center = center_path()
         installed = []
         updated = []
@@ -1811,8 +2232,9 @@ def execute_add(input_value, decisions):
                 installed.append(skill_id)
             STATE["sources"][skill_id] = {
                 "sourceType": input_value.get("sourceType", "remote_import"),
-                "sourceUri": input_value.get("sourceUri"),
-                "sourceRef": None,
+                "sourceUri": (repository_skill_source(repository, reference, source.relative_to(root).as_posix())
+                              if repository else input_value.get("sourceUri")),
+                "sourceRef": revision,
                 "importedFromAgent": input_value.get("importedFromAgent"),
                 "importedFromPath": input_value.get("importedFromPath"),
                 "installedVia": "remote",
@@ -1827,17 +2249,19 @@ def execute_add(input_value, decisions):
 
 
 def upsert_pack(pack):
-    pack_id = safe_id(pack["id"])
+    pack_id = "pack-" + uuid.uuid4().hex if pack["id"] == "" else safe_id(pack["id"])
     if pack_id == "default":
         raise ValueError("The default Skill Pack cannot be edited")
     existing = STATE["packs"].get(pack_id, {})
+    skill_ids = [safe_id(item) for item in pack.get("skillIds", [])]
+    filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[2] in skill_ids)
     stamp = now()
     STATE["packs"][pack_id] = {
         "id": pack_id,
         "name": str(pack.get("name") or pack_id),
         "description": str(pack.get("description") or ""),
         "tags": [str(item) for item in pack.get("tags", [])],
-        "skillIds": [safe_id(item) for item in pack.get("skillIds", [])],
+        "skillIds": skill_ids,
         "appliedAgents": existing.get("appliedAgents", []),
         "revision": int(existing.get("revision", 0)) + 1,
         "createdAt": existing.get("createdAt", stamp),
@@ -1881,7 +2305,7 @@ def agent_detail_from_inventory(
     applied = []
     for pack_id in applied_pack_ids(agent_id):
         detail = pack_detail(pack_id, skills, agents)
-        applied.extend(detail["appliedAgents"])
+        applied.extend(item for item in detail["appliedAgents"] if item["agentId"] == agent_id)
     return {
         "id": agent_id,
         "displayName": spec["displayName"],
@@ -1892,7 +2316,7 @@ def agent_detail_from_inventory(
         "configPath": str(agent_config_path(agent_id)),
         "mcpConfigPath": str(agent_mcp_path(agent_id)),
         "pluginDir": str(agent_plugin_path(agent_id)),
-        "agentDir": str(agent_skills_path(agent_id).parent),
+        "agentDir": str(spec.get("configDir") or agent_skills_path(agent_id).parent),
         "skills": [item for item in targets.values() if item["agentId"] == agent_id],
         "inheritsSharedSkills": agent_id in SHARED_SKILL_CONSUMERS,
         "inheritedManagedSkills": inherited_managed,
@@ -1905,7 +2329,7 @@ def agent_detail_from_inventory(
             targets,
         )["packs"],
         "mcpServers": [],
-        "plugins": [],
+        "plugins": plugin_inventory(agent_id)["plugins"],
         "health": [],
     }
 
@@ -1928,21 +2352,36 @@ def agent_skill_view_snapshot(agent_id):
     }
 
 
-def config_document(path):
+def config_file_state(path):
     path = safe_home_path(path)
-    content = path.read_text(errors="replace") if path.is_file() else ""
-    revision = hashlib.sha256(content.encode()).hexdigest()
+    target = path.resolve()
+    try:
+        mode = target.stat().st_mode
+    except FileNotFoundError:
+        return path, target, b""
+    if not stat.S_ISREG(mode):
+        raise ValueError("The remote configuration must be a regular file")
+    return path, target, target.read_bytes()
+
+
+def config_file_revision(target, content):
+    return hashlib.sha256(os.fsencode(target) + b"\0" + content).hexdigest()
+
+
+def config_document(path):
+    path, target, content = config_file_state(path)
+    revision = config_file_revision(target, content)
+    content = content.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
     return {"path": str(path), "content": content, "revision": revision}
 
 
 def write_config(path, content, expected_revision):
-    current = config_document(path)
-    if current["revision"] != expected_revision:
-        raise ValueError("The remote configuration changed after it was opened")
-    target = safe_home_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
-    return config_document(target)
+    path, target, current = config_file_state(path)
+    conflict = "The remote configuration changed after it was opened. Reload before saving."
+    if config_file_revision(target, current) != expected_revision:
+        raise ValueError(conflict)
+    replace_remote_config(path, target, current, content.encode("utf-8"), conflict)
+    return config_document(path)
 
 
 def project_summary(project):
@@ -2047,11 +2486,16 @@ def install_to_project(project_id, agent_id, skill_ids, mode):
     project = STATE["projects"].get(project_id)
     if not project:
         raise ValueError("Project not found: " + project_id)
-    root = project_root_path(project["rootPath"])
-    spec = agent_spec(agent_id)
+    registered_root = pathlib.Path(project["rootPath"])
+    root = project_root_path(registered_root)
+    if root != registered_root:
+        raise ValueError("The registered project path now points to a different location")
+    spec = next((item for item in AGENTS if item["id"] == agent_id), None)
     if not spec:
-        raise ValueError("Unknown Agent: " + agent_id)
-    target_root = root / spec["skills"]
+        raise ValueError("Project-level Skills are not supported for " + agent_id)
+    target_root = (root / spec["skills"]).resolve(strict=False)
+    if root not in target_root.parents:
+        raise ValueError("The Skill directory is outside the registered project")
     for skill_id in skill_ids:
         skill_id = safe_id(skill_id)
         source = center_path() / skill_id
@@ -2064,23 +2508,78 @@ def install_to_project(project_id, agent_id, skill_ids, mode):
     return scan_project_data(project)
 
 
-def clone_repository(repo_url):
-    repository, requested = normalize_repository(repo_url)
-    if not repository:
-        raise ValueError("Only GitHub, GitLab, and skills.sh repositories are supported")
-    temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-repo-")
-    root = pathlib.Path(temporary.name) / "repo"
-    subprocess.run(
-        ["git", "clone", "--depth", "1", repository, str(root)],
-        check=True,
+def run_repository_git(root, *args):
+    result = subprocess.run(
+        ["git", "-C", str(root), *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        check=True,
     )
-    return repository, requested, root, temporary
+    return result.stdout.strip()
 
 
-def repository_info(repo_url):
+def clone_repository(repository, reference=None):
+    if not repository:
+        raise ValueError("Only GitHub, GitLab, and skills.sh repositories are supported")
+    temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-repo-")
+    directory = pathlib.Path(temporary.name)
+    root = directory / "repo"
+    try:
+        if reference is None:
+            run_repository_git(directory, "clone", "--depth", "1", "--", repository, str(root))
+        else:
+            if not reference or reference.startswith(("-", "+")) or ":" in reference:
+                raise ValueError("Invalid Git revision")
+            root.mkdir()
+            run_repository_git(root, "check-ref-format", "--allow-onelevel", reference)
+            run_repository_git(root, "init", "--quiet", "--template=")
+            run_repository_git(root, "fetch", "--quiet", "--depth=1", "--no-tags",
+                               "--no-recurse-submodules", "--", repository, reference)
+            run_repository_git(root, "-c", "core.hooksPath=.git/agentbro-no-hooks",
+                               "checkout", "--quiet", "--detach", "FETCH_HEAD")
+        return root, temporary
+    except BaseException:
+        temporary.cleanup()
+        raise
+
+
+def repository_relative_path(root, relative):
+    path = pathlib.PurePosixPath(relative)
+    if path.is_absolute() or ".." in path.parts or "\\" in str(path):
+        raise ValueError("Invalid repository Skill path")
+    canonical = (root / path).resolve()
+    if canonical != root and root not in canonical.parents:
+        raise ValueError("Skill path resolves outside the repository")
+    return root / path
+
+
+def repository_skill_directories(root, requested=None, exact=False):
+    if not root.is_dir():
+        return []
+    canonical = root.resolve()
+    scoped = repository_relative_path(canonical, requested) if requested and exact else canonical
+    if not scoped.is_dir():
+        return []
+    candidates = [scoped] if (scoped / "SKILL.md").is_file() else [
+        path.parent for path in scoped.rglob("SKILL.md")
+        if len(path.relative_to(scoped).parts) <= 7
+    ]
+    if requested and not exact:
+        parts = tuple(item for item in requested.split("/") if item)
+        candidates = [
+            item for item in candidates
+            if item.name == parts[-1] or item.relative_to(canonical).parts[-len(parts):] == parts
+        ]
+    return [
+        root / item.relative_to(canonical)
+        for item in candidates
+        if (item.resolve() == canonical or canonical in item.resolve().parents)
+        and not (item / "SKILL.md").is_symlink()
+    ]
+
+
+def repository_info(repo_url, reference=None, revision=None, requested=None):
     clean = str(repo_url).split("#", 1)[0].rstrip("/")
     path = clean
     if clean.startswith("git@"):
@@ -2095,25 +2594,19 @@ def repository_info(repo_url):
     return {
         "owner": owner,
         "repo": repo,
-        "branch": "HEAD",
+        "branch": reference or "HEAD",
         "normalizedUrl": clean,
+        "revision": revision,
+        "requestedPath": requested,
     }
 
 
 def github_preview(repo_url):
-    repository, requested, root, temporary = clone_repository(repo_url)
+    repository, requested, reference = resolve_repository_source(repo_url)
+    root, temporary = clone_repository(repository, reference)
     try:
-        candidates = [root] if (root / "SKILL.md").is_file() else [
-            item.parent for item in root.rglob("SKILL.md")
-            if len(item.relative_to(root).parts) <= 7
-        ]
-        if requested:
-            parts = tuple(item for item in requested.split("/") if item)
-            candidates = [
-                item for item in candidates
-                if item.name == parts[-1]
-                or item.relative_to(root).parts[-len(parts):] == parts
-            ]
+        revision = run_repository_git(root, "rev-parse", "HEAD")
+        candidates = repository_skill_directories(root, requested, reference is not None)
         center = center_path()
         skills = []
         for path in candidates:
@@ -2139,23 +2632,37 @@ def github_preview(repo_url):
                 "downloadUrl": repository,
                 "conflict": conflict,
             })
-        return {"repo": repository_info(repository), "skills": skills}
+        return {"repo": repository_info(repository, reference, revision, requested), "skills": skills}
     finally:
         temporary.cleanup()
 
 
-def github_import(repo_url, selections):
-    repository, requested, root, temporary = clone_repository(repo_url)
+def repository_skill_source(repository, reference, relative):
+    if not repository.startswith("https://github.com/"):
+        return repository
+    suffix = "/" + urllib.parse.quote(relative, safe="/") if relative != "." else ""
+    base = repository[:-4] if repository.endswith(".git") else repository
+    return base + "/tree/" + urllib.parse.quote(reference or "HEAD", safe="") + suffix
+
+
+def github_import(repo_url, selections, expected_commit=None):
+    repository, requested, reference = resolve_repository_source(repo_url)
+    if expected_commit is not None and not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", expected_commit):
+        raise ValueError("Invalid reviewed Git commit")
+    root, temporary = clone_repository(repository, expected_commit or reference)
     try:
+        revision = run_repository_git(root, "rev-parse", "HEAD")
+        if expected_commit and revision.lower() != expected_commit.lower():
+            raise ValueError("The checked out Git commit differs from the preview")
+        approved_paths = set(repository_skill_directories(root, requested, reference is not None))
         imported = []
         skipped = []
         for selection in selections:
-            relative = pathlib.Path(str(selection.get("sourcePath") or ""))
-            if relative.is_absolute() or ".." in relative.parts:
-                raise ValueError("Invalid repository Skill path")
-            source = root / relative
-            if not source.is_dir() or not (source / "SKILL.md").is_file():
-                raise ValueError("Skill path not found in repository: " + str(relative))
+            relative = str(selection.get("sourcePath") or ".")
+            source = repository_relative_path(root.resolve(), relative)
+            source = root / source.relative_to(root.resolve())
+            if source not in approved_paths:
+                raise ValueError("Skill path not found in repository: " + relative)
             original_id = safe_id(source.name)
             resolution = selection.get("resolution", "overwrite")
             if resolution == "skip":
@@ -2184,8 +2691,8 @@ def github_import(repo_url, selections):
             })
             STATE["sources"][skill_id] = {
                 "sourceType": "github",
-                "sourceUri": repository,
-                "sourceRef": str(relative),
+                "sourceUri": repository_skill_source(repository, reference, relative),
+                "sourceRef": revision,
                 "importedFromAgent": None,
                 "importedFromPath": None,
                 "installedVia": "remote_git",
@@ -2194,7 +2701,7 @@ def github_import(repo_url, selections):
             }
         save_state()
         return {
-            "repo": repository_info(repository),
+            "repo": repository_info(repository, reference, revision, requested),
             "importedSkills": imported,
             "skippedSkills": skipped,
         }
@@ -2202,65 +2709,203 @@ def github_import(repo_url, selections):
         temporary.cleanup()
 
 
-def mcp_inventory(agent_id):
-    spec = agent_spec(agent_id)
-    if not spec:
-        raise ValueError("Unknown Agent: " + agent_id)
-    path = agent_mcp_path(agent_id)
-    content = path.read_text(errors="replace") if path.is_file() else ""
-    revision = hashlib.sha256(content.encode()).hexdigest()
-    editable = path.suffix == ".json"
-    data = {}
-    if content and editable:
+def read_config_bytes(path):
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return b""
+
+
+def parse_mcp_config(content):
+    message = "Fix the remote MCP JSON before editing this configuration"
+    try:
+        data = json.loads(content) if content else {}
+    except ValueError as error:
+        raise ValueError(message) from error
+    if not isinstance(data, dict) or not isinstance(data.get("mcpServers", {}), dict):
+        raise ValueError(message)
+    disabled = data.get("disabledMcpServers", [])
+    if not isinstance(disabled, list) or any(not isinstance(name, str) for name in disabled):
+        raise ValueError(message)
+    for server in data.get("mcpServers", {}).values():
+        if isinstance(server, dict) and any(
+            server.get(key) and not isinstance(server[key], dict) for key in ("env", "headers")
+        ):
+            raise ValueError(message)
+    return data
+
+
+def toml_config_parser():
+    try:
+        import tomllib as parser
+    except ImportError:
         try:
-            data = json.loads(content)
-        except Exception:
-            data = {}
-    raw_servers = data.get("mcpServers", {}) if isinstance(data, dict) else {}
-    disabled = set(data.get("disabledMcpServers", [])) if isinstance(data, dict) else set()
+            import tomli as parser
+        except ImportError:
+            return None
+    return parser
+
+
+def parse_codex_mcp_config(content):
+    if not content.strip():
+        return {}
+    parser = toml_config_parser()
+    if parser is None:
+        raise ValueError("Reading remote Codex MCP TOML requires Python 3.11+ or an installed tomli parser.")
+
+    message = "Fix the remote Codex MCP TOML configuration before inspecting its servers."
+    try:
+        servers = parser.loads(content.decode("utf-8")).get("mcp_servers", {})
+    except ValueError:
+        raise ValueError(message) from None
+    if not isinstance(servers, dict) or any(not isinstance(server, dict) for server in servers.values()):
+        raise ValueError(message)
+    return servers
+
+
+def codex_mcp_connection(config, include_sensitive):
+    env = config.get("env", {})
+    headers = config.get("http_headers", {})
+    header_vars = config.get("env_http_headers", {})
+    args = config.get("args", [])
+    env_vars = config.get("env_vars", [])
+    string_fields = ("command", "cwd", "url", "bearer_token_env_var", "environment_id")
+    if (
+        any(key in config and not isinstance(config[key], str) for key in string_fields)
+        or not isinstance(config.get("enabled", True), bool)
+        or not isinstance(args, list)
+        or any(not isinstance(arg, str) for arg in args)
+        or not isinstance(env_vars, list)
+        or any(
+            not isinstance(values, dict) or any(not isinstance(value, str) for value in values.values())
+            for values in (env, headers, header_vars)
+        )
+    ):
+        return {}, {}, "Invalid remote Codex MCP server configuration."
+    if bool(config.get("command")) == bool(config.get("url")):
+        return {}, {}, "A remote Codex MCP server requires either a command or a URL."
+
+    env = dict(env)
+    headers = {key.title(): value for key, value in headers.items()}
+    unsupported = ""
+    for entry in env_vars:
+        if isinstance(entry, str):
+            name = entry
+        elif isinstance(entry, dict) and isinstance(entry.get("name"), str):
+            name = entry["name"]
+            if entry.get("source", "local") != "local":
+                unsupported = "This MCP server uses environment variables from a Codex executor."
+                continue
+        else:
+            return {}, {}, "Invalid remote Codex MCP environment variable configuration."
+        env.setdefault(name, os.environ.get(name) if include_sensitive else "")
+
+    for key, name in header_vars.items():
+        resolved = os.environ.get(name) if include_sensitive else ""
+        if resolved is not None:
+            headers[key.title()] = resolved
+    bearer_var = config.get("bearer_token_env_var")
+    if bearer_var:
+        bearer = os.environ.get(bearer_var) if include_sensitive else ""
+        if bearer is not None:
+            headers["Authorization"] = "Bearer " + bearer
+
+    if config.get("environment_id", "local") != "local":
+        unsupported = "This MCP server uses a Codex executor."
+    elif config.get("http_headers_helper"):
+        unsupported = "This MCP server uses a Codex HTTP headers helper."
+    return env, headers, unsupported
+
+
+def mcp_config_values(values, include_sensitive, redact_all=False):
+    items = []
+    for key, raw in values.items():
+        secret = redact_all or bool(re.search(r"authorization|token|key|secret|password|passwd", key, re.I))
+        configured = raw is not None
+        items.append({
+            "key": key,
+            "value": str(raw) if configured and (include_sensitive or not secret) else None,
+            "secret": secret,
+            "configured": configured,
+        })
+    return items
+
+
+def resolve_mcp_config_values(draft, previous):
+    values = {}
+    for item in draft:
+        key = item.get("key")
+        if not key:
+            continue
+        value = item.get("value")
+        if value == "••••••••" or (value is None and item.get("configured")):
+            value = previous.get(key)
+            if value is None:
+                raise ValueError("No existing sensitive value for " + key)
+        values[key] = "" if value is None else value
+    return values
+
+
+def mcp_inventory(agent_id, include_sensitive=False):
+    path = agent_mcp_path(agent_id)
+    content = read_config_bytes(path)
+    revision = hashlib.sha256(content).hexdigest()
+    codex = agent_id == "codex"
+    editable = not codex and path.suffix == ".json"
+    data = parse_mcp_config(content) if editable else {}
+    raw_servers = parse_codex_mcp_config(content) if codex else data.get("mcpServers", {})
+    disabled = set(data.get("disabledMcpServers", []))
     servers = []
     for name, value in raw_servers.items():
         if not isinstance(value, dict):
             continue
-        transport = value.get("type")
+        transport = None if codex else value.get("type")
         if not transport:
             transport = "http" if value.get("url") else "stdio"
-        env = [
-            {
-                "key": str(key),
-                "value": str(item),
-                "secret": bool(re.search(r"(token|secret|password|key)", str(key), re.I)),
-                "configured": True,
-            }
-            for key, item in (value.get("env") or {}).items()
-        ]
-        headers = [
-            {
-                "key": str(key),
-                "value": str(item),
-                "secret": bool(re.search(r"(authorization|token|secret|key)", str(key), re.I)),
-                "configured": True,
-            }
-            for key, item in (value.get("headers") or {}).items()
-        ]
-        servers.append({
+        if codex:
+            env, headers, message = codex_mcp_connection(value, include_sensitive)
+        else:
+            env, headers, message = value.get("env") or {}, value.get("headers") or {}, ""
+        command, args, cwd, url = (
+            value.get("command"), value.get("args", []), value.get("cwd"), value.get("url")
+        )
+        if codex:
+            command = command if isinstance(command, str) else None
+            cwd = cwd if isinstance(cwd, str) else None
+            url = url if isinstance(url, str) else None
+            if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+                args = []
+        if codex and url:
+            try:
+                parts = urllib.parse.urlsplit(url)
+                if parts.scheme not in ("http", "https") or not parts.hostname or parts.username is not None:
+                    message = "The remote Codex MCP server requires an HTTP URL without embedded credentials."
+                if not include_sensitive:
+                    url = urllib.parse.urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, "", ""))
+            except ValueError:
+                url = None
+                message = "Invalid remote Codex MCP server URL."
+        server = {
             "name": name,
             "transport": transport,
-            "command": value.get("command"),
-            "args": value.get("args", []),
-            "env": env,
-            "cwd": value.get("cwd"),
-            "url": value.get("url"),
-            "headers": headers,
-            "enabled": name not in disabled,
+            "command": command,
+            "args": args,
+            "env": mcp_config_values(env, include_sensitive, redact_all=codex),
+            "cwd": cwd,
+            "url": url,
+            "headers": mcp_config_values(headers, include_sensitive, redact_all=codex),
+            "enabled": value.get("enabled", True) is not False if codex else name not in disabled,
             "disabledByAgentbro": name in disabled,
-            "valid": bool(value.get("command") or value.get("url")),
-            "message": "",
+            "valid": not message and bool(command or url),
+            "message": message,
             "warnings": [],
             "configPath": str(path),
             "editable": editable,
             "sourceKind": "remote_config",
-        })
+        }
+        if codex and include_sensitive:
+            server["codexConnection"] = True
+        servers.append(server)
     return {
         "agentId": agent_id,
         "configPath": str(path),
@@ -2269,24 +2914,25 @@ def mcp_inventory(agent_id):
             "editable": editable,
             "supportsStdio": True,
             "supportsHttp": True,
-            "supportsSse": True,
+            "supportsSse": not codex,
             "supportsNativeToggle": editable,
         },
         "servers": servers,
     }
 
 
-def write_mcp_inventory(agent_id, server=None, original_name=None, delete_name=None, toggle=None):
-    current = mcp_inventory(agent_id)
-    if not current["capabilities"]["editable"]:
+def write_mcp_inventory(
+    agent_id, revision, server=None, original_name=None, delete_name=None, toggle=None
+):
+    path = agent_mcp_path(agent_id)
+    if agent_id == "codex" or path.suffix != ".json":
         raise ValueError("This remote Agent MCP format is read-only")
-    path = pathlib.Path(current["configPath"])
-    data = {}
-    if path.is_file():
-        try:
-            data = json.loads(path.read_text())
-        except Exception:
-            data = {}
+    target = path.resolve()
+    content = read_config_bytes(target)
+    conflict = "The remote MCP configuration changed after it was opened. Reload before saving."
+    if hashlib.sha256(content).hexdigest() != revision:
+        raise ValueError(conflict)
+    data = parse_mcp_config(content)
     servers = data.setdefault("mcpServers", {})
     disabled = set(data.get("disabledMcpServers", []))
     if delete_name:
@@ -2300,34 +2946,55 @@ def write_mcp_inventory(agent_id, server=None, original_name=None, delete_name=N
             disabled.add(name)
     elif server:
         name = safe_id(server["name"])
+        if name in servers and name != original_name:
+            raise ValueError("An MCP server with that name already exists")
+        previous = servers.get(original_name or name)
+        previous = previous if isinstance(previous, dict) else {}
+        value = dict(previous)
         if original_name and original_name != name:
             servers.pop(original_name, None)
-            disabled.discard(original_name)
-        value = {"type": server.get("transport", "stdio")}
+            if original_name in disabled:
+                disabled.remove(original_name)
+                disabled.add(name)
+        value["type"] = server.get("transport", "stdio")
+        for key in ("command", "args", "cwd", "url", "env", "headers"):
+            value.pop(key, None)
         for key in ("command", "args", "cwd", "url"):
             if server.get(key) not in (None, "", []):
                 value[key] = server[key]
-        if server.get("env"):
-            value["env"] = {
-                item["key"]: item.get("value", "")
-                for item in server["env"]
-                if item.get("key")
-            }
-        if server.get("headers"):
-            value["headers"] = {
-                item["key"]: item.get("value", "")
-                for item in server["headers"]
-                if item.get("key")
-            }
+        for key in ("env", "headers"):
+            if server.get(key):
+                value[key] = resolve_mcp_config_values(server[key], previous.get(key) or {})
         servers[name] = value
     data["disabledMcpServers"] = sorted(disabled)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    updated = json.dumps(data, ensure_ascii=False, indent=2).encode()
+    replace_remote_config(path, target, content, updated, conflict)
     return mcp_inventory(agent_id)
 
 
+def replace_remote_config(path, target, content, updated, conflict):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=target.parent, suffix=".tmp", delete=False
+        ) as temp:
+            temp_path = pathlib.Path(temp.name)
+            if target.is_file():
+                temp_path.chmod(stat.S_IMODE(target.stat().st_mode))
+            temp.write(updated)
+            temp.flush()
+            os.fsync(temp.fileno())
+        if path.resolve() != target or read_config_bytes(target) != content:
+            raise ValueError(conflict)
+        temp_path.replace(target)
+    finally:
+        if temp_path is not None:
+            unlink_if_exists(temp_path)
+
+
 def mcp_server(agent_id, server_name):
-    inventory_value = mcp_inventory(agent_id)
+    inventory_value = mcp_inventory(agent_id, include_sensitive=True)
     server = next(
         (item for item in inventory_value["servers"] if item["name"] == server_name),
         None,
@@ -2336,32 +3003,141 @@ def mcp_server(agent_id, server_name):
         raise ValueError("MCP server not found: " + server_name)
     if not server["enabled"]:
         raise ValueError("MCP server is disabled")
+    if agent_id == "codex" and not server["valid"]:
+        raise ValueError(server["message"] or "The remote Codex MCP server requires a command or URL.")
     return server
 
 
-def read_json_line(stream, timeout):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        ready, _, _ = select.select([stream], [], [], max(0.1, deadline - time.time()))
-        if not ready:
-            continue
-        line = stream.readline()
-        if not line:
-            raise ValueError("MCP process exited before responding")
+def mcp_cancel_marker(kind, request_id):
+    owner = os.getuid()
+    scope = hashlib.sha256(os.fsencode(HOME)).hexdigest()[:16]
+    root = pathlib.Path(tempfile.gettempdir()) / "agentbro-mcp-cancel-{}-{}".format(owner, scope)
+    root.mkdir(mode=0o700, exist_ok=True)
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & 0o077:
+        raise RuntimeError("MCP cancellation directory must be private")
+
+    # Separate SSH connections can deliver cancellation before the operation starts.
+    cutoff = time.time() - 180
+    for entry in root.iterdir():
         try:
-            value = json.loads(line)
-        except Exception:
+            if re.fullmatch(r"[0-9a-f]{64}", entry.name):
+                info = entry.lstat()
+                if stat.S_ISREG(info.st_mode) and info.st_mtime < cutoff:
+                    entry.unlink()
+        except FileNotFoundError:
+            pass
+    key = json.dumps([kind, request_id]).encode()
+    return root / hashlib.sha256(key).hexdigest()
+
+
+def cancel_mcp_request(kind, request_id):
+    marker = mcp_cancel_marker(kind, request_id)
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return
+    os.close(fd)
+
+
+def stop_mcp_worker(_signal, _frame):
+    raise SystemExit(1)
+
+
+def supervise_mcp_request(kind, request_id):
+    marker = mcp_cancel_marker(kind, request_id)
+    cancelled = "MCP " + kind + " cancelled"
+    if marker.is_file():
+        unlink_if_exists(marker)
+        raise RuntimeError(cancelled)
+
+    reader, writer = os.pipe()
+    try:
+        worker = os.fork()
+    except OSError:
+        os.close(reader)
+        os.close(writer)
+        raise
+    if worker == 0:
+        os.close(reader)
+        signal.signal(signal.SIGUSR1, stop_mcp_worker)
+        os.setpgid(0, 0)
+        return
+
+    os.close(writer)
+    try:
+        try:
+            os.setpgid(worker, worker)
+        except ProcessLookupError:
+            pass
+        # Poll for a separate SSH request while the worker can block in either transport.
+        while not select.select([reader], [], [], 0.1)[0]:
+            if marker.is_file():
+                try:
+                    os.kill(worker, signal.SIGUSR1)
+                except ProcessLookupError:
+                    pass
+                select.select([reader], [], [], 2.5)
+                raise RuntimeError(cancelled)
+        _, status = os.waitpid(worker, 0)
+        worker = None
+        if os.WIFEXITED(status):
+            raise SystemExit(os.WEXITSTATUS(status))
+        raise SystemExit(128 + os.WTERMSIG(status))
+    finally:
+        try:
+            if worker is not None:
+                try:
+                    os.killpg(worker, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                os.waitpid(worker, 0)
+        finally:
+            os.close(reader)
+            unlink_if_exists(marker)
+
+
+def read_json_line(descriptor, pending, deadline):
+    scanned = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("MCP server response timed out")
+        end = pending.find(b"\n", scanned)
+        if end >= 0:
+            line = pending[:end]
+            del pending[:end + 1]
+            scanned = 0
+            try:
+                value = json.loads(line.decode("utf-8"))
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(value, dict):
+                return value
             continue
-        if isinstance(value, dict):
-            return value
-    raise TimeoutError("MCP server response timed out")
+        scanned = len(pending)
+        ready, _, _ = select.select([descriptor], [], [], remaining)
+        if not ready:
+            raise TimeoutError("MCP server response timed out")
+        chunk = os.read(descriptor, 65536)
+        if not chunk:
+            raise ValueError("MCP process exited before responding")
+        pending.extend(chunk)
 
 
-def stdio_mcp_request(server, method, params=None):
+@contextmanager
+def stdio_mcp_session(server):
     command = server.get("command")
     if not command:
         raise ValueError("MCP stdio server has no command")
     environment = os.environ.copy()
+    if server.get("codexConnection"):
+        environment = {
+            name: environment[name] for name in (
+                "HOME", "LANG", "LC_ALL", "LOGNAME", "PATH", "SHELL", "TERM",
+                "TMPDIR", "TZ", "USER", "__CF_USER_TEXT_ENCODING",
+            ) if name in environment
+        }
     for item in server.get("env", []):
         if item.get("key") and item.get("value") is not None:
             environment[item["key"]] = item["value"]
@@ -2371,83 +3147,144 @@ def stdio_mcp_request(server, method, params=None):
         env=environment,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
+        stderr=subprocess.DEVNULL,
     )
+    stdout = process.stdout.fileno()
+    pending = bytearray()
 
     def send(value):
-        process.stdin.write(json.dumps(value, separators=(",", ":")) + "\n")
+        line = json.dumps(value, separators=(",", ":")) + "\n"
+        process.stdin.write(line.encode("utf-8"))
         process.stdin.flush()
 
-    def request(request_id, request_method, request_params=None):
+    request_ids = count(1)
+
+    def request(method, params=None, *, timeout=15):
+        request_id = next(request_ids)
         payload = {
             "jsonrpc": "2.0",
             "id": request_id,
-            "method": request_method,
+            "method": method,
         }
-        if request_params is not None:
-            payload["params"] = request_params
+        if params is not None:
+            payload["params"] = params
         send(payload)
+        deadline = time.monotonic() + timeout
         while True:
-            response = read_json_line(process.stdout, 15)
+            response = read_json_line(stdout, pending, deadline)
             if response.get("id") == request_id:
                 if response.get("error"):
                     raise ValueError(json.dumps(response["error"], ensure_ascii=False))
                 return response.get("result")
 
     try:
-        initialized = request(1, "initialize", {
+        initialized = request("initialize", {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": {"name": "AgentBro", "version": "remote"},
         })
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        result = request(2, method, params)
-        return initialized, result
+        yield initialized, request
     finally:
         process.terminate()
         try:
             process.wait(timeout=2)
-        except Exception:
+        except subprocess.TimeoutExpired:
             process.kill()
+            process.wait()
 
 
-def http_mcp_post(url, headers, payload, session_id=None):
-    request_headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-    for item in headers:
-        if item.get("key") and item.get("value") is not None:
-            request_headers[item["key"]] = item["value"]
-    if session_id:
-        request_headers["Mcp-Session-Id"] = session_id
+def mcp_event_lines(response, deadline):
+    pending = bytearray()
+    trailing_cr = False
+    while time.monotonic() < deadline:
+        chunk = response.read1(8192)
+        if not chunk:
+            return
+        start = int(trailing_cr and chunk.startswith(b"\n"))
+        trailing_cr = chunk.endswith(b"\r")
+        for match in MCP_SSE_LINE_END.finditer(chunk, start):
+            pending.extend(chunk[start:match.start()])
+            yield bytes(pending)
+            pending.clear()
+            start = match.end()
+        pending.extend(chunk[start:])
+    raise TimeoutError("MCP event stream response timed out")
+
+
+def read_mcp_event_response(response, request_id, deadline):
+    data = []
+    for index, line in enumerate(mcp_event_lines(response, deadline)):
+        if index == 0 and line.startswith(b"\xef\xbb\xbf"):
+            line = line[3:]
+        if not line and data:
+            payload = b"\n".join(data)
+            data.clear()
+            try:
+                value = json.loads(payload.decode("utf-8"))
+            except (ValueError, RecursionError):
+                continue
+            if (
+                isinstance(value, dict)
+                and value.get("id") == request_id
+                and "method" not in value
+                and ("result" in value or "error" in value)
+            ):
+                return value
+        else:
+            field, _, text = line.partition(b":")
+            if field == b"data":
+                data.append(text[1:] if text.startswith(b" ") else text)
+    raise ValueError("MCP event stream closed before the request received a response")
+
+
+def http_mcp_exchange(url, headers, payload=None, session_id=None, protocol_version=None, *, timeout=20):
+    has_payload = payload is not None
     request = urllib.request.Request(
         url,
-        data=json.dumps(payload).encode(),
-        headers=request_headers,
-        method="POST",
+        data=json.dumps(payload).encode() if has_payload else None,
+        headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+        method="POST" if has_payload else "DELETE",
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        raw = response.read().decode(errors="replace")
+    for item in headers:
+        key = item.get("key")
+        if key and key.lower() not in ("mcp-session-id", "mcp-protocol-version") and item.get("value") is not None:
+            request.add_unredirected_header(key, item["value"])
+    if session_id:
+        request.add_unredirected_header("Mcp-Session-Id", session_id)
+    if protocol_version:
+        request.add_unredirected_header("MCP-Protocol-Version", protocol_version)
+
+    deadline = time.monotonic() + timeout
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        if not has_payload:
+            return None, session_id
         session = response.headers.get("Mcp-Session-Id") or session_id
-    if raw.startswith("event:") or "\ndata:" in raw:
-        data_lines = [
-            line[5:].strip() for line in raw.splitlines()
-            if line.startswith("data:")
-        ]
-        raw = data_lines[-1] if data_lines else "{}"
-    value = json.loads(raw or "{}")
+        if "id" in payload and response.headers.get_content_type() == "text/event-stream":
+            value = read_mcp_event_response(response, payload["id"], deadline)
+        else:
+            raw = response.read().decode(errors="replace")
+            if raw.startswith("event:") or "\ndata:" in raw:
+                data_lines = [
+                    line[5:].strip() for line in raw.splitlines()
+                    if line.startswith("data:")
+                ]
+                raw = data_lines[-1] if data_lines else "{}"
+            value = json.loads(raw or "{}")
     if value.get("error"):
         raise ValueError(json.dumps(value["error"], ensure_ascii=False))
     return value.get("result"), session
 
 
-def http_mcp_request(server, method, params=None):
+@contextmanager
+def http_mcp_session(server):
     url = server.get("url")
     if not url:
         raise ValueError("Remote MCP server has no URL")
-    initialized, session_id = http_mcp_post(
+    headers = server.get("headers", [])
+    initialized, session_id = http_mcp_exchange(
         url,
-        server.get("headers", []),
+        headers,
         {
             "jsonrpc": "2.0",
             "id": 1,
@@ -2459,44 +3296,136 @@ def http_mcp_request(server, method, params=None):
             },
         },
     )
-    result, _ = http_mcp_post(
-        url,
-        server.get("headers", []),
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": method,
-            "params": params or {},
-        },
-        session_id,
-    )
-    return initialized, result
+    protocol_version = "2025-03-26"
+    try:
+        if initialized is not None and not isinstance(initialized, dict):
+            raise ValueError("Invalid remote MCP initialization result.")
+        negotiated = (initialized or {}).get("protocolVersion", protocol_version)
+        if not isinstance(negotiated, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", negotiated):
+            raise ValueError("Invalid remote MCP protocol version.")
+        protocol_version = negotiated
+        http_mcp_exchange(
+            url,
+            headers,
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            session_id=session_id,
+            protocol_version=protocol_version,
+        )
+        request_ids = count(2)
+
+        def request(method, params=None, *, timeout=20):
+            result, _ = http_mcp_exchange(
+                url,
+                headers,
+                {"jsonrpc": "2.0", "id": next(request_ids), "method": method, "params": params or {}},
+                session_id=session_id,
+                protocol_version=protocol_version,
+                timeout=timeout,
+            )
+            return result
+
+        yield initialized, request
+    finally:
+        if session_id:
+            try:
+                http_mcp_exchange(
+                    url, headers, session_id=session_id, protocol_version=protocol_version, timeout=1
+                )
+            except (OSError, ValueError):
+                # Remote peers may reject DELETE or be unavailable after cancellation.
+                pass
+
+
+def mcp_error_message(server, error):
+    message = str(error)
+    if not server.get("codexConnection"):
+        return message
+    values = {item["value"] for item in server["env"] + server["headers"] if item["value"]}
+    values.update(value[7:] for value in list(values) if value.lower().startswith("bearer "))
+    if server["url"]:
+        query = urllib.parse.urlsplit(server["url"]).query
+        values.update(value for _, value in urllib.parse.parse_qsl(query) if value)
+    for value in sorted(values, key=len, reverse=True):
+        if value:
+            message = message.replace(value, "***")
+    return message
+
+
+@contextmanager
+def mcp_session(server):
+    transport = stdio_mcp_session if server["transport"] == "stdio" else http_mcp_session
+    try:
+        with transport(server) as (initialized, request):
+            if initialized is not None and not isinstance(initialized, dict):
+                raise ValueError("Invalid remote MCP initialization result.")
+            yield initialized or {}, request
+    except Exception as error:
+        if not server.get("codexConnection"):
+            raise
+        raise ValueError(mcp_error_message(server, error)) from None
 
 
 def mcp_request(agent_id, server_name, method, params=None):
     server = mcp_server(agent_id, server_name)
-    if server["transport"] == "stdio":
-        initialized, result = stdio_mcp_request(server, method, params)
-    else:
-        initialized, result = http_mcp_request(server, method, params)
-    return server, initialized, result
+    with mcp_session(server) as (_, request):
+        return request(method, params)
+
+
+def advertised_mcp_capabilities(initialized):
+    capabilities = initialized.get("capabilities")
+    return capabilities if isinstance(capabilities, dict) else None
+
+
+def discover_mcp_catalog(request, capability):
+    entries = []
+    seen_cursors = set()
+    params = {}
+    deadline = time.monotonic() + MCP_INSPECTION_CATALOG_TIMEOUT
+    for page in range(MCP_INSPECTION_MAX_PAGES):
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Catalog discovery timed out")
+            result = request(capability + "/list", params, timeout=remaining)
+            page_entries = result.get(capability) if isinstance(result, dict) else None
+            if not isinstance(page_entries, list) or any(not isinstance(item, dict) for item in page_entries):
+                raise ValueError("Invalid remote MCP catalog.")
+        except Exception as error:
+            return (entries if page else None), error
+
+        space = MCP_INSPECTION_MAX_ITEMS - len(entries)
+        entries.extend(page_entries[:space])
+        cursor = result.get("nextCursor")
+        if len(page_entries) > space or (cursor is not None and len(entries) == MCP_INSPECTION_MAX_ITEMS):
+            return entries, "Catalog stopped at the {}-item limit".format(MCP_INSPECTION_MAX_ITEMS)
+        if cursor is None:
+            return entries, None
+        if not isinstance(cursor, str):
+            return entries, "Server returned an invalid pagination cursor"
+        if cursor in seen_cursors:
+            return entries, "Server repeated a pagination cursor"
+        seen_cursors.add(cursor)
+        params = {"cursor": cursor}
+    return entries, "Catalog stopped at the {}-page limit".format(MCP_INSPECTION_MAX_PAGES)
 
 
 def inspect_mcp(agent_id, server_name, inspection_id):
     started = time.time()
-    server, initialized, tools = mcp_request(agent_id, server_name, "tools/list", {})
+    server = mcp_server(agent_id, server_name)
     warnings = []
-    try:
-        _, _, resources = mcp_request(agent_id, server_name, "resources/list", {})
-    except Exception as error:
-        resources = {"resources": []}
-        warnings.append(str(error))
-    try:
-        _, _, prompts = mcp_request(agent_id, server_name, "prompts/list", {})
-    except Exception as error:
-        prompts = {"prompts": []}
-        warnings.append(str(error))
-    server_info = (initialized or {}).get("serverInfo", {})
+    catalogs = {}
+    with mcp_session(server) as (initialized, request):
+        advertised = advertised_mcp_capabilities(initialized)
+        for capability in ("tools", "resources", "prompts"):
+            if advertised is not None and capability not in advertised:
+                continue
+            entries, warning = discover_mcp_catalog(request, capability)
+            if entries is not None:
+                catalogs[capability] = entries
+            if warning is not None:
+                warnings.append(capability + "/list: " + mcp_error_message(server, warning))
+    available = advertised if advertised is not None else catalogs
+    server_info = initialized.get("serverInfo", {})
     return {
         "inspectionId": inspection_id,
         "status": "partial" if warnings else "connected",
@@ -2504,15 +3433,12 @@ def inspect_mcp(agent_id, server_name, inspection_id):
         "summary": "Remote MCP inspection completed",
         "inspectedAtMs": int(time.time() * 1000),
         "durationMs": int((time.time() - started) * 1000),
-        "protocolVersion": (initialized or {}).get("protocolVersion"),
+        "protocolVersion": initialized.get("protocolVersion"),
         "serverName": server_info.get("name"),
         "serverVersion": server_info.get("version"),
         "transport": server["transport"],
         "capabilities": {
-            "tools": bool((tools or {}).get("tools")),
-            "resources": bool((resources or {}).get("resources")),
-            "prompts": bool((prompts or {}).get("prompts")),
-            "logging": False,
+            name: name in available for name in ("tools", "resources", "prompts", "logging")
         },
         "tools": [
             {
@@ -2530,7 +3456,7 @@ def inspect_mcp(agent_id, server_name, inspection_id):
                 },
                 "hasAnnotations": bool(item.get("annotations")),
             }
-            for item in (tools or {}).get("tools", [])
+            for item in catalogs.get("tools", [])
         ],
         "resources": [
             {
@@ -2541,7 +3467,7 @@ def inspect_mcp(agent_id, server_name, inspection_id):
                 "mimeType": item.get("mimeType"),
                 "size": item.get("size"),
             }
-            for item in (resources or {}).get("resources", [])
+            for item in catalogs.get("resources", [])
         ],
         "prompts": [
             {
@@ -2550,7 +3476,7 @@ def inspect_mcp(agent_id, server_name, inspection_id):
                 "description": item.get("description"),
                 "arguments": item.get("arguments", []),
             }
-            for item in (prompts or {}).get("prompts", [])
+            for item in catalogs.get("prompts", [])
         ],
         "steps": [],
         "warnings": warnings,
@@ -2558,40 +3484,217 @@ def inspect_mcp(agent_id, server_name, inspection_id):
     }
 
 
-def plugin_inventory(agent_id):
-    spec = agent_spec(agent_id)
-    if not spec:
-        raise ValueError("Unknown Agent: " + agent_id)
-    root = agent_plugin_path(agent_id)
-    plugins = []
-    if root.is_dir():
-        for path in sorted(root.iterdir(), key=lambda item: item.name.lower()):
-            if not path.is_dir():
+def read_plugin_json(path):
+    try:
+        document = json.loads(path.read_bytes())
+        return document if isinstance(document, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def plugin_manifest_path(agent_id, directory):
+    if agent_id == "codex":
+        return directory / ".codex-plugin" / "plugin.json"
+    if is_claude_agent(agent_id):
+        return directory / ".claude-plugin" / "plugin.json"
+    return directory / "package.json"
+
+
+def plugin_configuration(agent_id):
+    if agent_id != "codex" and not is_claude_agent(agent_id):
+        return None
+    try:
+        path = safe_home_path(agent_config_path(agent_id))
+        target = path.resolve()
+        content = read_config_bytes(target)
+        if agent_id == "codex":
+            parser = toml_config_parser()
+            if parser is None:
+                return None
+            document = parser.loads(content.decode("utf-8"))
+            plugins = document.get("plugins", {})
+            if not isinstance(plugins, dict) or any(
+                not isinstance(item, dict) or not isinstance(item.get("enabled", True), bool)
+                for item in plugins.values()
+            ):
+                return None
+            states = {key: item.get("enabled", True) for key, item in plugins.items()}
+        else:
+            document = json.loads(content) if content.strip() else {}
+            if not isinstance(document, dict):
+                return None
+            states = document.get("enabledPlugins", {})
+            if not isinstance(states, dict) or any(not isinstance(value, bool) for value in states.values()):
+                return None
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return path, target, content, document, states
+
+
+def discovered_plugins(agent_id, root):
+    records = {}
+    native = agent_id == "codex" or is_claude_agent(agent_id)
+    if not root.is_dir():
+        return records
+    directories = root.glob("*/*/*") if native else root.iterdir()
+    for directory in sorted(directories):
+        if not directory.is_dir():
+            continue
+        manifest = plugin_manifest_path(agent_id, directory)
+        resolved = manifest.resolve()
+        if root not in resolved.parents:
+            continue
+        metadata = read_plugin_json(manifest)
+        if native:
+            name = metadata.get("name")
+            if not isinstance(name, str) or not name:
                 continue
-            manifest = path / "package.json"
-            metadata = {}
-            if manifest.is_file():
-                try:
-                    metadata = json.loads(manifest.read_text())
-                except Exception:
-                    metadata = {}
-            plugins.append({
-                "id": path.name,
-                "name": metadata.get("name", path.name),
-                "version": metadata.get("version"),
-                "enabled": not (path / ".disabled").exists(),
-                "source": str(path),
-            })
-    revision = hashlib.sha256(
-        json.dumps(plugins, sort_keys=True).encode()
-    ).hexdigest()
+            plugin_id = f"{name}@{directory.parent.parent.name}"
+        else:
+            plugin_id = directory.name
+        current = records.get(plugin_id)
+        if current is None or current.name < directory.name:
+            records[plugin_id] = directory
+    return records
+
+
+def claude_user_plugins(config):
+    registry = read_plugin_json(config.parent / "plugins" / "installed_plugins.json").get("plugins", {})
+    if not isinstance(registry, dict):
+        return set()
+    return {
+        plugin_id for plugin_id, entries in registry.items()
+        if any(
+            isinstance(entry, dict) and entry.get("scope", "user") == "user"
+            for entry in (entries if isinstance(entries, list) else [entries])
+        )
+    }
+
+
+def plugin_inventory(agent_id, configuration=None):
+    if not agent_spec(agent_id):
+        raise ValueError("Unknown Agent: " + agent_id)
+    native = agent_id == "codex" or is_claude_agent(agent_id)
+    try:
+        root = safe_home_path(agent_plugin_path(agent_id)).resolve()
+        records = discovered_plugins(agent_id, root)
+    except (OSError, ValueError, RuntimeError):
+        records = {}
+    path = agent_config_path(agent_id) if native else None
+    configuration = configuration if configuration is not None else plugin_configuration(agent_id)
+    states = configuration[4] if configuration else {}
+    ids = set(states) if configuration else set(records)
+    if is_claude_agent(agent_id) and configuration:
+        ids.update(claude_user_plugins(path))
+
+    plugins = []
+    for plugin_id in sorted(ids, key=lambda value: (value.lower(), value)):
+        fallback_name = plugin_id.partition("@")[0]
+        directory = records.get(plugin_id)
+        metadata = read_plugin_json(plugin_manifest_path(agent_id, directory)) if directory else {}
+        interface = metadata.get("interface")
+        display_name = interface.get("displayName") if isinstance(interface, dict) else None
+        name = next((value for value in (display_name, metadata.get("displayName"), metadata.get("name"))
+                     if isinstance(value, str) and value), fallback_name)
+        version = metadata.get("version")
+        plugins.append({
+            "id": plugin_id,
+            "name": name,
+            "version": version if isinstance(version, str) else None,
+            "enabled": states.get(plugin_id, True) if configuration else None,
+            "source": str(directory) if directory else None,
+        })
     return {
         "agentId": agent_id,
-        "configPath": str(root),
-        "revision": revision,
-        "capabilities": {"editable": True, "requiresNewSession": True},
+        "configPath": str(path) if path else None,
+        "revision": config_file_revision(configuration[1], configuration[2]) if configuration else "read-only",
+        "capabilities": {"editable": configuration is not None, "requiresNewSession": True},
         "plugins": plugins,
     }
+
+
+def update_codex_plugin_setting(content, document, plugin_id, enabled):
+    parser = toml_config_parser()
+    text = content.decode("utf-8")
+    plugin = document["plugins"][plugin_id]
+    previous = plugin.get("enabled")
+    plugin["enabled"] = enabled
+    value = "true" if enabled else "false"
+
+    # Match the parsed document so comments and strings cannot be mistaken for the setting.
+    def verified(candidate):
+        try:
+            return parser.loads(candidate) == document
+        except ValueError:
+            return False
+
+    if previous is not None:
+        old_value = "true" if previous else "false"
+        for match in re.finditer(r"\b" + old_value + r"\b", text):
+            candidate = text[:match.start()] + value + text[match.end():]
+            if verified(candidate):
+                return candidate.encode()
+    else:
+        newline = "\r\n" if "\r\n" in text else "\n"
+        assignment = "enabled = " + value
+        key = json.dumps(plugin_id, ensure_ascii=False)
+        offset = 0
+        for line in text.splitlines(keepends=True):
+            offset += len(line)
+            if not line.lstrip().startswith("["):
+                continue
+            try:
+                table = parser.loads(line)
+            except ValueError:
+                continue
+            if table == {"plugins": {plugin_id: {}}}:
+                entry = assignment
+            elif table == {"plugins": {}}:
+                entry = key + "." + assignment
+            else:
+                continue
+            separator = "" if line.endswith(("\n", "\r")) else newline
+            candidate = text[:offset] + separator + entry + newline + text[offset:]
+            if verified(candidate):
+                return candidate.encode()
+        for match in re.finditer(r"\{", text):
+            index = match.end()
+            separator = "" if text[index:].lstrip().startswith("}") else ", "
+            candidate = text[:index] + assignment + separator + text[index:]
+            if verified(candidate):
+                return candidate.encode()
+        candidate = "plugins." + key + "." + assignment + newline + text
+        if verified(candidate):
+            return candidate.encode()
+        candidate = text + newline + "[plugins." + key + "]" + newline + assignment + newline
+        if verified(candidate):
+            return candidate.encode()
+    raise ValueError("Could not update this Codex plugin without changing other settings.")
+
+
+def set_plugin_enabled(agent_id, plugin_id, revision, enabled):
+    configuration = plugin_configuration(agent_id)
+    if configuration is None:
+        raise ValueError("This remote Agent's plugin settings are read-only.")
+    path, target, content, document, _states = configuration
+    conflict = "The remote plugin settings changed. Reload before saving."
+    if revision != config_file_revision(target, content):
+        raise ValueError(conflict)
+    if not isinstance(enabled, bool):
+        raise ValueError("Plugin enablement must be true or false.")
+    inventory_value = plugin_inventory(agent_id, configuration)
+    plugin = next((item for item in inventory_value["plugins"] if item["id"] == plugin_id), None)
+    if plugin is None:
+        raise ValueError("Plugin is no longer configured. Reload the plugin list.")
+    if plugin["enabled"] == enabled:
+        return inventory_value
+    if agent_id == "codex":
+        updated = update_codex_plugin_setting(content, document, plugin_id, enabled)
+    else:
+        document.setdefault("enabledPlugins", {})[plugin_id] = enabled
+        updated = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode()
+    replace_remote_config(path, target, content, updated, conflict)
+    return plugin_inventory(agent_id)
 
 
 def plugin_file_tree(path, root):
@@ -2633,14 +3736,11 @@ def plugin_detail(agent_id, plugin_id):
     )
     if not plugin:
         raise ValueError("Plugin not found: " + plugin_id)
-    root = safe_home_path(plugin["source"], allow_missing=False)
-    manifest = root / "package.json"
-    metadata = {}
-    if manifest.is_file():
-        try:
-            metadata = json.loads(manifest.read_text())
-        except Exception:
-            metadata = {}
+    if not plugin["source"]:
+        raise ValueError("Installed files are not available for this plugin.")
+    root = safe_home_path(plugin["source"], allow_missing=False).resolve()
+    manifest = plugin_manifest_path(agent_id, root)
+    metadata = read_plugin_json(manifest)
     file_count = sum(1 for item in root.rglob("*") if item.is_file())
     return {
         **plugin,
@@ -2662,8 +3762,8 @@ def plugin_file(agent_id, plugin_id, relative_path):
     relative = pathlib.Path(relative_path)
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("Invalid plugin file path")
-    path = root / relative
-    if not path.is_file():
+    path = (root / relative).resolve()
+    if root not in path.parents or not path.is_file():
         raise ValueError("Plugin file not found")
     data = path.read_bytes()
     truncated = len(data) > 2 * 1024 * 1024
@@ -2692,6 +3792,11 @@ def move_direct_preview(target_id, pack_id):
     target = targets.get(target_id)
     if not target:
         raise ValueError("Target not found: " + target_id)
+    if not any(
+        claim["claimType"] == "direct" or claim["packId"] == pack_id
+        for claim in target["claims"]
+    ):
+        raise ValueError("Target does not have a direct Skill distribution")
     detail = pack_detail(pack_id, skills, agents)
     skill = skills[target["skillId"]]
     member_ids = [item["skillId"] for item in detail["members"] if not item["missing"]]
@@ -2700,11 +3805,7 @@ def move_direct_preview(target_id, pack_id):
         item["agentId"] for item in detail["appliedAgents"]
     ]
     remaining = [item for item in member_ids if item != target["skillId"]]
-    distribution = distribution_preview(
-        remaining,
-        [target["agentId"]],
-        target["actualMode"],
-    )
+    distribution = distribution_preview([], [target["agentId"]], target["actualMode"])
     return {
         "targetId": target_id,
         "skillId": target["skillId"],
@@ -2715,7 +3816,7 @@ def move_direct_preview(target_id, pack_id):
         "packName": detail["name"],
         "alreadyMember": already_member,
         "alreadyApplied": already_applied,
-        "willAddToPack": not already_member,
+        "willAddToPack": pack_id != "default" and not already_member,
         "otherMemberCount": len(remaining),
         "distribution": distribution,
     }
@@ -2797,8 +3898,53 @@ def agent_programs():
             "skillsDir": str(agent_skills_path(spec["id"])),
             "isCustom": False,
         })
-    result.extend(STATE["customAgents"].values())
+    for agent_id, record in STATE["customAgents"].items():
+        spec = agent_spec(agent_id)
+        if spec and "configDir" in spec:
+            program = {key: value for key, value in record.items()
+                       if key not in ("category", "settingsFile", "mcpConfig", "pluginDir")}
+            program["configDir"] = str(spec["configDir"])
+            program["skillsDir"] = str(spec["skills"])
+            program["status"] = "installed" if agent_installed(spec) else "notInstalled"
+            result.append(program)
     return result
+
+
+def custom_agent_program(agent_id, config):
+    name = config["displayName"].strip()
+    skills_dir = config["globalSkillsDir"].strip()
+    if not name or not skills_dir:
+        raise ValueError("Agent display name and Skills directory are required")
+    root = config.get("configDir")
+    if root and not safe_home_path(root).is_dir():
+        raise ValueError("The Agent configuration directory does not exist on this SSH host")
+    value = {
+        "id": agent_id,
+        "displayName": name,
+        "icon": config.get("iconName") or "custom",
+        "kind": "cli",
+        "packageManager": "custom",
+        "packageName": None,
+        "installedVersion": None,
+        "latestVersion": None,
+        "binaryPath": None,
+        "configDir": root or skills_dir,
+        "appPath": None,
+        "downloadUrl": None,
+        "installCommand": None,
+        "updateCommand": None,
+        "uninstallCommand": None,
+        "hooksInstalled": False,
+        "skillsDir": skills_dir,
+        "isCustom": True,
+        "category": config.get("category") or "custom",
+        "settingsFile": config.get("settingsFile"),
+        "mcpConfig": config.get("mcpConfig"),
+        "pluginDir": config.get("pluginDir"),
+    }
+    spec = custom_agent_spec(value)
+    value["status"] = "installed" if agent_installed(spec) else "notInstalled"
+    return value
 
 
 def run_agent_package_operation(agent_id, operation):
@@ -2945,7 +4091,7 @@ def dispatch():
     if command == "preview_github_repo_import":
         return github_preview(args["repoUrl"])
     if command == "import_github_repo_skills":
-        return github_import(args["repoUrl"], args.get("selections", []))
+        return github_import(args["repoUrl"], args.get("selections", []), args.get("expectedCommit"))
     if command == "preview_delete_center_skill":
         return preview_delete([args["skillId"]])
     if command == "preview_delete_center_skills":
@@ -2971,6 +4117,8 @@ def dispatch():
                     item for item in pack.get("skillIds", [])
                     if item != skill_id
                 ]
+            for pack_id in list(STATE["packTargetClaims"]):
+                filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[2] != skill_id)
         save_state()
         return None
     if command == "preview_distribute_skill":
@@ -3004,26 +4152,28 @@ def dispatch():
             args.get("renamedId"),
         )
     if command in ("execute_adopt_agent_skills", "takeover_center_agent_skills"):
+        takeover = command == "takeover_center_agent_skills"
         items = args.get("items", [])
-        if command == "takeover_center_agent_skills":
+        if takeover:
+            skills, _, _, targets = inventory()
             items = [
-                {
-                    "agentId": args["agentId"],
-                    "unmanagedId": item,
-                    "option": "overwrite_center",
-                    "renamedId": None,
-                }
+                {"agentId": args["agentId"], "unmanagedId": item}
                 for item in args.get("unmanagedIds", [])
             ]
         results = []
         for item in items:
             try:
-                skill_id = execute_adopt(
-                    item["agentId"],
-                    item["unmanagedId"],
-                    item.get("option", "import_link"),
-                    item.get("renamedId"),
-                )
+                if takeover:
+                    skill_id = takeover_center_agent_skill(
+                        item["agentId"], item["unmanagedId"], skills, targets,
+                    )
+                else:
+                    skill_id = execute_adopt(
+                        item["agentId"],
+                        item["unmanagedId"],
+                        item.get("option", "import_link"),
+                        item.get("renamedId"),
+                    )
                 results.append({
                     "unmanagedId": item["unmanagedId"],
                     "skillId": skill_id or None,
@@ -3076,24 +4226,15 @@ def dispatch():
             action = args.get("action", "center_over_agent")
             source = pathlib.Path(skill["centerPath"])
             destination = pathlib.Path(target["targetPath"])
-            if action == "agent_over_center":
-                if target["agentId"] == SHARED_SKILLS_AGENT_ID:
+            if action in ("agent_over_center", "center_over_agent"):
+                shared = target["agentId"] == SHARED_SKILLS_AGENT_ID
+                if shared:
                     destination = prepare_shared_target_write(
-                        destination,
-                        source,
-                        replace_center=True,
+                        destination, source, replace_center=(action == "agent_over_center"),
                     )
-                    atomic_replace_skill_directory(destination, source)
-                else:
-                    remove_path(source)
-                    shutil.copytree(destination, source, symlinks=True)
-            elif action == "center_over_agent":
-                if target["agentId"] == SHARED_SKILLS_AGENT_ID:
-                    destination = prepare_shared_target_write(destination, source)
-                    atomic_replace_skill_directory(source, destination)
-                else:
-                    remove_path(destination)
-                    shutil.copytree(source, destination, symlinks=True)
+                if action == "agent_over_center":
+                    source, destination = destination, source
+                atomic_replace_skill_directory(source, destination, preserve_symlinks=not shared)
             skills, _, _, targets = inventory()
             target = targets[target_id]
             skill = skills[target["skillId"]]
@@ -3133,16 +4274,19 @@ def dispatch():
         _, _, _, targets = inventory()
         failures = []
         deleted = 0
+        claims_changed = False
         for target_id in ids:
             target = targets.get(target_id)
             if not target:
                 failures.append({"targetId": target_id, "error": "Target not found"})
                 continue
             try:
-                remove_target_distribution(target)
+                claims_changed = remove_target_distribution(target) or claims_changed
                 deleted += 1
             except Exception as error:
                 failures.append({"targetId": target_id, "error": str(error)})
+        if claims_changed:
+            save_state()
         if command == "delete_skill_target_distribution":
             if failures:
                 raise ValueError(failures[0]["error"])
@@ -3152,6 +4296,12 @@ def dispatch():
         return overview()["packs"]
     if command == "get_skill_pack_detail":
         return pack_detail(args["packId"])
+    if command == "get_skill_pack_fingerprints":
+        return skill_pack_fingerprints(args["skillIds"], args.get("includeSources", False))
+    if command == "restore_skill_pack_member":
+        return restore_pack_skill(args["manifest"], args["skillId"])
+    if command == "execute_import_skill_pack_manifest":
+        return import_reviewed_skill_pack(args["manifest"], args["reviewed"], args["acceptLocalCopies"])
     if command == "execute_upsert_skill_pack":
         return upsert_pack(args["pack"])
     if command == "preview_delete_skill_pack":
@@ -3171,6 +4321,7 @@ def dispatch():
         if pack_id == "default":
             raise ValueError("The default Skill Pack cannot be deleted")
         STATE["packs"].pop(pack_id, None)
+        STATE["packTargetClaims"].pop(pack_id, None)
         save_state()
         return None
     if command == "preview_apply_skill_pack":
@@ -3209,49 +4360,58 @@ def dispatch():
             ],
         }
     if command == "preview_remove_skill_pack_from_agent":
-        detail = pack_detail(args["packId"])
+        pack_id = args["packId"]
         agent_id = args["agentId"]
-        _, agents, _, targets = inventory()
+        skills, agents, _, targets = inventory()
+        detail = pack_detail(pack_id, skills, agents)
         affected = [
             affected_target(item, agents)
-            for item in targets.values()
+            for item in targets_claimed_by_pack(pack_id, targets)
             if item["agentId"] == agent_id
-            and any(member["skillId"] == item["skillId"] for member in detail["members"])
         ]
+        removed = sum(item["claimCount"] == 1 for item in affected)
         return {
             "packId": detail["id"],
             "packName": detail["name"],
             "agentId": agent_id,
             "displayName": agent_spec(agent_id)["displayName"],
             "affectedTargets": affected,
-            "willRemoveTargets": len(affected),
-            "willPreserveTargets": 0,
+            "willRemoveTargets": removed,
+            "willPreserveTargets": len(affected) - removed,
         }
     if command == "execute_remove_skill_pack_from_agent":
         pack_id = args["packId"]
         agent_id = args["agentId"]
-        detail = pack_detail(pack_id)
+        skills, agents, _, targets = inventory()
+        pack_detail(pack_id, skills, agents)
+        agent_targets = [
+            target for target in targets_claimed_by_pack(pack_id, targets)
+            if target["agentId"] == agent_id
+        ]
         removed = 0
-        for member in detail["members"]:
-            target = agent_skills_path(agent_id) / member["skillId"]
-            if target.exists() or target.is_symlink():
-                remove_path(target)
+        for target in agent_targets:
+            if len(target["claims"]) == 1:
+                remove_target_distribution(target)
                 removed += 1
         if pack_id in STATE["packs"]:
             STATE["packs"][pack_id]["appliedAgents"] = [
                 item for item in STATE["packs"][pack_id].get("appliedAgents", [])
                 if item != agent_id
             ]
-            save_state()
+        filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[0] != agent_id)
+        save_state()
         return {
             "packId": pack_id,
             "agentId": agent_id,
-            "removedClaims": removed,
+            "removedClaims": len(agent_targets),
             "removedTargets": removed,
-            "preservedTargets": 0,
+            "preservedTargets": len(agent_targets) - removed,
         }
     if command == "preview_remove_skill_from_pack":
-        detail = pack_detail(args["packId"])
+        pack_id = args["packId"]
+        skill_id = args["skillId"]
+        skills, agents, _, targets = inventory()
+        detail = pack_detail(pack_id, skills, agents)
         member = next(
             (item for item in detail["members"] if item["skillId"] == args["skillId"]),
             None,
@@ -3261,23 +4421,32 @@ def dispatch():
             "packName": detail["name"],
             "skillId": args["skillId"],
             "skillName": member["skillName"] if member else args["skillId"],
-            "affectedTargets": [],
+            "affectedTargets": [
+                affected_target(target, agents)
+                for target in targets_claimed_by_pack(pack_id, targets)
+                if target["skillId"] == skill_id
+            ],
             "appliedAgentCount": len(detail["appliedAgents"]),
             "canKeepStandalone": True,
             "canRemoveTargets": True,
         }
     if command == "execute_remove_skill_from_pack":
-        pack = STATE["packs"].get(args["packId"])
+        pack_id = args["packId"]
+        skill_id = args["skillId"]
+        pack = STATE["packs"].get(pack_id)
         if not pack:
             raise ValueError("Skill Pack not found")
+        if args.get("alsoRemoveTargets"):
+            _, _, _, targets = inventory()
+            for target in targets_claimed_by_pack(pack_id, targets):
+                if target["skillId"] == skill_id and len(target["claims"]) == 1:
+                    remove_target_distribution(target)
+        filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[2] != skill_id)
         pack["skillIds"] = [
             item for item in pack.get("skillIds", [])
-            if item != args["skillId"]
+            if item != skill_id
         ]
         pack["revision"] = int(pack.get("revision", 1)) + 1
-        if args.get("alsoRemoveTargets"):
-            for agent_id in pack.get("appliedAgents", []):
-                remove_path(agent_skills_path(agent_id) / args["skillId"])
         save_state()
         return None
     if command == "list_managed_agents_v2":
@@ -3293,19 +4462,7 @@ def dispatch():
     if command == "list_plugin_inventory_v2":
         return plugin_inventory(args["agentId"])
     if command == "set_plugin_enabled_v2":
-        inventory_value = plugin_inventory(args["agentId"])
-        plugin = next(
-            (item for item in inventory_value["plugins"] if item["id"] == args["pluginId"]),
-            None,
-        )
-        if not plugin:
-            raise ValueError("Plugin not found")
-        marker = pathlib.Path(plugin["source"]) / ".disabled"
-        if args["enabled"]:
-            unlink_if_exists(marker)
-        else:
-            marker.touch()
-        return plugin_inventory(args["agentId"])
+        return set_plugin_enabled(args["agentId"], args["pluginId"], args["revision"], args["enabled"])
     if command == "get_plugin_detail_v2":
         return plugin_detail(args["agentId"], args["pluginId"])
     if command == "read_plugin_file_v2":
@@ -3327,32 +4484,34 @@ def dispatch():
     if command == "save_mcp_server_cmd":
         return write_mcp_inventory(
             args["agent"],
+            args["revision"],
             server=args["server"],
             original_name=args.get("originalName"),
         )
     if command == "set_mcp_server_enabled_cmd":
         return write_mcp_inventory(
             args["agent"],
+            args["revision"],
             toggle=(args["serverName"], bool(args["enabled"])),
         )
     if command == "delete_mcp_server_v2_cmd":
-        return write_mcp_inventory(args["agent"], delete_name=args["serverName"])
+        return write_mcp_inventory(
+            args["agent"], args["revision"], delete_name=args["serverName"]
+        )
     if command == "test_mcp_server_connection_cmd":
         started = time.time()
         try:
-            _, initialized, tools = mcp_request(
-                args["agent"],
-                args["serverName"],
-                "tools/list",
-                {},
-            )
-            server_info = (initialized or {}).get("serverInfo", {})
+            server = mcp_server(args["agent"], args["serverName"])
+            with mcp_session(server) as (initialized, request):
+                capabilities = advertised_mcp_capabilities(initialized)
+                tools = request("tools/list", {}) if capabilities is None or "tools" in capabilities else {}
+            server_info = initialized.get("serverInfo", {})
             return {
                 "success": True,
                 "category": "success",
                 "message": "Remote MCP connection succeeded",
                 "latencyMs": int((time.time() - started) * 1000),
-                "protocolVersion": (initialized or {}).get("protocolVersion"),
+                "protocolVersion": initialized.get("protocolVersion"),
                 "serverName": server_info.get("name"),
                 "serverVersion": server_info.get("version"),
                 "toolCount": len((tools or {}).get("tools", [])),
@@ -3376,7 +4535,7 @@ def dispatch():
         )
     if command == "call_mcp_tool_cmd":
         started = time.time()
-        _, _, result = mcp_request(
+        result = mcp_request(
             args["agent"],
             args["serverName"],
             "tools/call",
@@ -3396,7 +4555,7 @@ def dispatch():
         }
     if command == "get_mcp_prompt_cmd":
         started = time.time()
-        _, _, result = mcp_request(
+        result = mcp_request(
             args["agent"],
             args["serverName"],
             "prompts/get",
@@ -3414,8 +4573,10 @@ def dispatch():
             "result": result,
             "warnings": [],
         }
-    if command in ("cancel_mcp_inspection_cmd", "cancel_mcp_operation_cmd"):
-        return None
+    if command == "cancel_mcp_inspection_cmd":
+        return cancel_mcp_request("inspection", args["inspectionId"])
+    if command == "cancel_mcp_operation_cmd":
+        return cancel_mcp_request("operation", args["operationId"])
     if command == "list_skill_projects_v2":
         return [
             project_summary(project)
@@ -3480,12 +4641,10 @@ def dispatch():
                 raise ValueError("Target not found")
             source = pathlib.Path(skills[target["skillId"]]["centerPath"])
             destination = pathlib.Path(target["targetPath"])
-            if target["agentId"] == SHARED_SKILLS_AGENT_ID:
+            shared = target["agentId"] == SHARED_SKILLS_AGENT_ID
+            if shared:
                 destination = prepare_shared_target_write(destination, source)
-                atomic_replace_skill_directory(source, destination)
-            else:
-                remove_path(destination)
-                shutil.copytree(source, destination, symlinks=True)
+            atomic_replace_skill_directory(source, destination, preserve_symlinks=not shared)
         return None
     if command == "execute_safe_fixes":
         return 0
@@ -3493,23 +4652,18 @@ def dispatch():
         return move_direct_preview(args["targetId"], args["packId"])
     if command == "execute_move_direct_skill_to_pack":
         preview = move_direct_preview(args["targetId"], args["packId"])
-        pack = STATE["packs"].get(args["packId"])
-        if not pack:
-            raise ValueError("Skill Pack not found")
+        pack_id = preview["packId"]
         if preview["willAddToPack"]:
+            pack = STATE["packs"][pack_id]
             pack["skillIds"].append(preview["skillId"])
             pack["revision"] = int(pack.get("revision", 1)) + 1
-        if preview["agentId"] not in pack.get("appliedAgents", []):
-            pack.setdefault("appliedAgents", []).append(preview["agentId"])
+            pack["updatedAt"] = now()
+        add_pack_target_claims(pack_id, [preview["targetId"]])
         save_state()
-        if preview["distribution"]["skillIds"]:
-            distribution = preview["distribution"]
-            distribution["blockerDecisions"] = args.get("blockerDecisions", [])
-            execute_distribution(distribution)
-        return move_direct_preview(args["targetId"], args["packId"])
+        return preview
     if command == "skill_manager_export_snapshot":
         snapshot = center_path() / "agentbro-skills.snapshot.json"
-        snapshot.write_text(json.dumps(overview(), ensure_ascii=False, indent=2))
+        write_json_atomically(snapshot, overview())
         return str(snapshot)
     if command in ("open_skill_path", "reveal_skill_path", "open_system_path"):
         path = safe_home_path(args["path"], allow_missing=False)
@@ -3530,46 +4684,29 @@ def dispatch():
         return None
     if command == "add_custom_agent":
         config = args["config"]
-        agent_id = safe_id(
-            config.get("id")
-            or "custom-" + re.sub(r"[^a-z0-9]+", "-", config["displayName"].lower()).strip("-")
-        )
-        value = {
-            "id": agent_id,
-            "displayName": config["displayName"],
-            "icon": config.get("iconName") or "custom",
-            "kind": "cli",
-            "status": "installed",
-            "packageManager": "custom",
-            "packageName": None,
-            "installedVersion": None,
-            "latestVersion": None,
-            "binaryPath": None,
-            "configDir": config.get("configDir") or config["globalSkillsDir"],
-            "appPath": None,
-            "downloadUrl": None,
-            "installCommand": None,
-            "updateCommand": None,
-            "uninstallCommand": None,
-            "hooksInstalled": False,
-            "skillsDir": config["globalSkillsDir"],
-            "isCustom": True,
-        }
+        slug = re.sub(r"[^a-z0-9]+", "-", config["displayName"].lower()).strip("-")
+        agent_id = safe_id(config.get("id") or "custom-" + (slug or uuid.uuid4().hex[:10]))
+        if (
+            agent_id == SHARED_SKILLS_AGENT_ID
+            or any(spec["id"] == agent_id for spec in AGENTS)
+            or agent_id in STATE["customAgents"]
+        ):
+            raise ValueError("Agent already exists: " + agent_id)
+        value = custom_agent_program(agent_id, config)
         STATE["customAgents"][agent_id] = value
         save_state()
         return value
     if command == "update_custom_agent":
         agent_id = args["agentId"]
-        if agent_id not in STATE["customAgents"]:
+        existing = STATE["customAgents"].get(agent_id)
+        if existing is None:
             raise ValueError("Custom Agent not found")
-        config = args["config"]
-        value = STATE["customAgents"][agent_id]
-        value.update({
-            "displayName": config["displayName"],
-            "icon": config.get("iconName") or "custom",
-            "configDir": config.get("configDir") or config["globalSkillsDir"],
-            "skillsDir": config["globalSkillsDir"],
-        })
+        config = dict(args["config"])
+        for field in ("category", "settingsFile", "mcpConfig", "pluginDir"):
+            if field not in config:
+                config[field] = existing.get(field)
+        value = custom_agent_program(agent_id, config)
+        STATE["customAgents"][agent_id] = value
         save_state()
         return value
     if command == "remove_custom_agent":
@@ -3583,6 +4720,11 @@ def dispatch():
         raise ValueError("This operation is not available through the remote SSH runtime yet")
     raise ValueError("Unsupported remote Skill Manager command: " + command)
 
+
+if COMMAND == "inspect_mcp_server_cmd":
+    supervise_mcp_request("inspection", ARGS["inspectionId"])
+elif COMMAND in ("call_mcp_tool_cmd", "get_mcp_prompt_cmd"):
+    supervise_mcp_request("operation", ARGS["operationId"])
 
 try:
     RESPONSE = json_safe(dispatch())

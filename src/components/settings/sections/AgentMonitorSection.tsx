@@ -603,7 +603,7 @@ export function AgentMonitorSection({ activeView = 'sessions' }: AgentMonitorSec
           )}
         </div>
         <div className="agent-monitor__network-actions">
-          <Toggle checked={networkStatus.enabled} onChange={toggleNetworkMonitor} disabled={networkBusy} />
+          <Toggle label="原生网络请求监控" checked={networkStatus.enabled} onChange={toggleNetworkMonitor} disabled={networkBusy} />
           <span>{networkStatus.enabled ? '已开启' : '关闭'}</span>
         </div>
       </div>
@@ -642,7 +642,7 @@ export function AgentMonitorSection({ activeView = 'sessions' }: AgentMonitorSec
           <strong>{networkStatus.enabled ? '运行中' : '未开启'}</strong>
           <em>{networkStatus.proxyUrl || networkStatus.upstreamBaseUrl}</em>
         </div>
-        <Toggle checked={networkStatus.enabled} onChange={toggleNetworkMonitor} disabled={networkBusy} />
+        <Toggle label="Inspector 代理" checked={networkStatus.enabled} onChange={toggleNetworkMonitor} disabled={networkBusy} />
       </section>
       <section className={wrapperStatus.installed ? 'agent-monitor__quick-control agent-monitor__quick-control--on' : 'agent-monitor__quick-control'}>
         <div>

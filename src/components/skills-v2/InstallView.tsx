@@ -6,17 +6,19 @@ import remarkGfm from 'remark-gfm'
 import { open } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { AddCenterSkillInput, AddCenterSkillPreview, AddCenterSkillDecision, AdoptPreview, AgentSkillInventoryAgent, AgentSkillInventoryItem, FileTreeNode, RemoteSkillSourceEntry, RemoteSkillSourceListing, SkillPackSummary, SkillSummary } from '../../services/skillApiV2'
+import type { AddCenterSkillInput, AddCenterSkillPreview, AddCenterSkillDecision, AdoptPreview, AgentSkillInventoryAgent, AgentSkillInventoryItem, FileTreeNode, SkillPackSummary, SkillSummary } from '../../services/skillApiV2'
 import type { MarketplaceBatchProgress, MarketplaceSkill, MarketplaceSkillDetail, GitHubRepoPreview } from '../../services/skillApiV2'
 import { AdoptDialog } from './AdoptDialog'
 import { AgentIconBadge } from './AgentIconBadge'
 import { PreviewDialog } from './PreviewDialog'
+import { RemoteSourcePicker, type RemoteSourcePickerKind } from './RemoteSourcePicker'
 import { SlideOver } from './SlideOver'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { isMarketItemInstalled, marketSkillId } from './marketInstallState'
 import { skillErrorMessage, skillModeLabel, unmanagedReasonLabel } from './skillLabels'
 import { extractSkillDescription, stripSkillFrontmatter } from './frontmatter'
 import { useSelectedRuntimeEnvironment } from '../../hooks/useRuntimeEnvironment'
+import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 
 type Tab = 'market' | 'agent' | 'local' | 'git'
 type MarketBoard = 'alltime' | 'trending' | 'hot'
@@ -4019,9 +4021,11 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
           {busy ? '处理中…' : '预览导入'}
         </button>
       </div>
-      {remotePickerKind && (
+      {!isLocal && remotePickerKind && (
         <RemoteSourcePicker
+          key={selectedEnvironmentId}
           kind={remotePickerKind}
+          environmentId={selectedEnvironmentId}
           environmentName={environmentName}
           onCancel={() => setRemotePickerKind(null)}
           onSelect={(path) => {
@@ -4031,179 +4035,6 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
         />
       )}
     </div>
-  )
-}
-
-type RemoteSourcePickerKind = 'directory' | 'archive'
-
-function RemoteSourcePicker({
-  kind,
-  environmentName,
-  onSelect,
-  onCancel,
-}: {
-  kind: RemoteSourcePickerKind
-  environmentName: string
-  onSelect: (path: string) => void
-  onCancel: () => void
-}) {
-  const [listing, setListing] = useState<RemoteSkillSourceListing | null>(null)
-  const [pathInput, setPathInput] = useState('~')
-  const [selectedArchive, setSelectedArchive] = useState<RemoteSkillSourceEntry | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  const loadDirectory = useCallback(async (path: string) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const next = await skillApiV2.browseRemoteSkillSources(path)
-      setListing(next)
-      setPathInput(next.path)
-      setSelectedArchive(null)
-    } catch (loadError) {
-      setError(String(loadError))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void loadDirectory('~')
-  }, [loadDirectory])
-
-  const visibleEntries = (listing?.entries ?? []).filter((entry) => (
-    entry.entryType === 'directory' || kind === 'archive'
-  ))
-  const selectedPath = kind === 'directory' ? listing?.path : selectedArchive?.path
-  const title = kind === 'directory'
-    ? `选择 ${environmentName} 上的文件夹`
-    : `选择 ${environmentName} 上的压缩包`
-
-  return (
-    <PreviewDialog
-      title={title}
-      modalClassName="sm2__modal--remote-source"
-      onCancel={onCancel}
-      onConfirm={() => {
-        if (selectedPath) onSelect(selectedPath)
-      }}
-      actions={(
-        <>
-          <button type="button" className="sm2__btn" onClick={onCancel}>取消</button>
-          <button
-            type="button"
-            className="sm2__btn sm2__btn--primary"
-            disabled={!selectedPath || loading}
-            onClick={() => {
-              if (selectedPath) onSelect(selectedPath)
-            }}
-          >
-            {kind === 'directory' ? '选择当前文件夹' : '选择压缩包'}
-          </button>
-        </>
-      )}
-    >
-      <div className="sm2__remote-source-context">
-        <span aria-hidden="true">&gt;_</span>
-        <div>
-          <strong>{environmentName}</strong>
-          <small>
-            {kind === 'directory'
-              ? '这里只显示远程服务器上的文件夹'
-              : '这里只显示远程服务器上的文件夹和 .zip 文件'}
-          </small>
-        </div>
-      </div>
-
-      <form
-        className="sm2__remote-source-toolbar"
-        onSubmit={(event) => {
-          event.preventDefault()
-          void loadDirectory(pathInput)
-        }}
-      >
-        <button
-          type="button"
-          className="sm2__remote-source-nav"
-          aria-label="远程主目录"
-          title="远程主目录"
-          onClick={() => void loadDirectory('~')}
-        >
-          ⌂
-        </button>
-        <button
-          type="button"
-          className="sm2__remote-source-nav"
-          aria-label="上一级目录"
-          title="上一级目录"
-          disabled={!listing?.parentPath || loading}
-          onClick={() => {
-            if (listing?.parentPath) void loadDirectory(listing.parentPath)
-          }}
-        >
-          ↑
-        </button>
-        <input
-          aria-label="远程目录路径"
-          value={pathInput}
-          onChange={(event) => setPathInput(event.target.value)}
-        />
-        <button type="submit" className="sm2__remote-source-go" disabled={loading || !pathInput.trim()}>
-          前往
-        </button>
-      </form>
-
-      <div className="sm2__remote-source-list" aria-busy={loading}>
-        {loading ? (
-          <div className="sm2__remote-source-empty">
-            <span className="sm2__spinner" aria-hidden="true" />
-            正在读取远程目录…
-          </div>
-        ) : error ? (
-          <div className="sm2__remote-source-error" role="alert">{error}</div>
-        ) : visibleEntries.length === 0 ? (
-          <div className="sm2__remote-source-empty">
-            {kind === 'directory' ? '这个目录下没有子文件夹' : '这个目录下没有文件夹或 .zip 文件'}
-          </div>
-        ) : (
-          visibleEntries.map((entry) => {
-            const selected = selectedArchive?.path === entry.path
-            return (
-              <button
-                key={entry.path}
-                type="button"
-                className={`sm2__remote-source-entry${selected ? ' sm2__remote-source-entry--selected' : ''}`}
-                aria-pressed={entry.entryType === 'archive' ? selected : undefined}
-                onClick={() => {
-                  if (entry.entryType === 'directory') {
-                    void loadDirectory(entry.path)
-                  } else {
-                    setSelectedArchive(entry)
-                  }
-                }}
-                onDoubleClick={() => {
-                  if (entry.entryType === 'archive') onSelect(entry.path)
-                }}
-              >
-                <span className={`sm2__remote-source-icon sm2__remote-source-icon--${entry.entryType}`} aria-hidden="true">
-                  {entry.entryType === 'directory' ? '▸' : 'ZIP'}
-                </span>
-                <span className="sm2__remote-source-entry-copy">
-                  <strong>{entry.name}</strong>
-                  <small>
-                    {entry.entryType === 'directory'
-                      ? entry.hasSkillManifest ? 'Skill 文件夹' : '文件夹'
-                      : '压缩包'}
-                  </small>
-                </span>
-                {entry.hasSkillManifest && <em>SKILL.md</em>}
-              </button>
-            )
-          })
-        )}
-      </div>
-    </PreviewDialog>
   )
 }
 
@@ -4384,16 +4215,32 @@ interface GitDoneSummary {
   skills: string[]
 }
 
-function buildGitRef(url: string, branch: string): string {
+function buildGitRef(url: string, branch: string, isRemote: boolean): string {
   const trimmedUrl = url.trim().replace(/\/+$/, '')
   const trimmedBranch = branch.trim()
-  if (!trimmedBranch || /\/tree\//.test(trimmedUrl)) return trimmedUrl
-  return `${trimmedUrl}/tree/${trimmedBranch}`
+  if (!trimmedBranch || /\/tree\//.test(trimmedUrl)
+    || (isRemote && (/\/blob\//.test(trimmedUrl) || trimmedUrl.startsWith('https://raw.githubusercontent.com/')))) {
+    return trimmedUrl
+  }
+  return `${trimmedUrl}/tree/${isRemote ? encodeURIComponent(trimmedBranch) : trimmedBranch}`
 }
 
 function urlHasSubpath(ref: string): boolean {
   const match = ref.match(/\/tree\/[^/]+\/(.+)$/)
   return Boolean(match && match[1])
+}
+
+type GitImportRuntime = ReturnType<typeof readGitImportRuntime>
+
+function readGitImportRuntime() {
+  const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+  return { selectedEnvironmentId, selectionRevision }
+}
+
+function isGitImportRuntimeCurrent(runtime: GitImportRuntime) {
+  const current = readGitImportRuntime()
+  return runtime.selectedEnvironmentId === current.selectedEnvironmentId
+    && runtime.selectionRevision === current.selectionRevision
 }
 
 export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: InstallDoneHandler }) {
@@ -4408,12 +4255,15 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
   const [stage, setStage] = useState<GitStage>('input')
   const [repo, setRepo] = useState<GitHubRepoPreview | null>(null)
   const [activeRef, setActiveRef] = useState('')
+  const [previewRuntime, setPreviewRuntime] = useState<GitImportRuntime | null>(null)
+  const environmentId = useRuntimeEnvironmentStore((state) => state.selectedEnvironmentId)
+  const runtimeRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [conflictMode, setConflictMode] = useState<Record<string, ConflictMode>>({})
   const [renames, setRenames] = useState<Record<string, string>>({})
   const [summary, setSummary] = useState<GitDoneSummary | null>(null)
 
-  const resetToInput = () => {
+  const resetToInput = useCallback(() => {
     setStage('input')
     setRepo(null)
     setSelected(new Set())
@@ -4421,7 +4271,14 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     setRenames({})
     setSummary(null)
     setError(null)
-  }
+    setPreviewRuntime(null)
+    setBusy(false)
+  }, [])
+
+  useEffect(() => {
+    resetToInput()
+    setToken('')
+  }, [environmentId, runtimeRevision, resetToInput])
 
   const buildSelections = (skills: GitRepoSkill[], picked: Set<string>) =>
     skills
@@ -4440,9 +4297,17 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     selections: ReturnType<typeof buildSelections>,
     skills: GitRepoSkill[],
     picked: Set<string>,
+    runtime: GitImportRuntime,
+    expectedCommit?: string | null,
   ) => {
-    const result = await skillApiV2.importGitHubRepoSkills(ref, selections, token)
-    await skillApiV2.refresh()
+    if (!isGitImportRuntimeCurrent(runtime)) return
+    const result = await skillApiV2.importGitHubRepoSkills(ref, selections, token, {
+      environmentId: runtime.selectedEnvironmentId,
+      expectedCommit,
+    })
+    if (!isGitImportRuntimeCurrent(runtime)) return
+    await skillApiV2.refresh(runtime.selectedEnvironmentId)
+    if (!isGitImportRuntimeCurrent(runtime)) return
     const importedCount = result.importedSkills.length || selections.filter((s) => s.resolution !== 'skip').length
     const skippedCount = result.skippedSkills.length || selections.filter((s) => s.resolution === 'skip').length
     setSummary({
@@ -4460,21 +4325,28 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
       setError('请输入 Git 仓库 URL')
       return
     }
-    const ref = buildGitRef(url, branch)
+    const runtime = { selectedEnvironmentId: environmentId, selectionRevision: runtimeRevision }
+    if (!isGitImportRuntimeCurrent(runtime)) return
+    const ref = buildGitRef(url, branch, runtime.selectedEnvironmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID)
     setBusy(true)
     setError(null)
     try {
-      const preview = await skillApiV2.previewGitHubRepoImport(ref, token)
+      const preview = await skillApiV2.previewGitHubRepoImport(ref, token, runtime.selectedEnvironmentId)
+      if (!isGitImportRuntimeCurrent(runtime)) return
       if (preview.skills.length === 0) {
         setError('该仓库未检测到任何 Skill（需含 SKILL.md）')
         return
       }
       setActiveRef(ref)
+      setPreviewRuntime(runtime)
       setRepo(preview)
 
       const single = preview.skills[0]
+      const hasSkillPath = preview.repo.requestedPath === undefined
+        ? urlHasSubpath(ref)
+        : Boolean(preview.repo.requestedPath)
       // 具体 skill 路径 + 唯一 + 无冲突 → 直接安装，零额外点击
-      if (preview.skills.length === 1 && urlHasSubpath(ref) && !single.conflict) {
+      if (preview.skills.length === 1 && hasSkillPath && !single.conflict) {
         const picked = new Set([single.sourcePath])
         setSelected(picked)
         await importSelections(
@@ -4482,6 +4354,8 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
           [{ sourcePath: single.sourcePath, resolution: 'overwrite' as const }],
           preview.skills,
           picked,
+          runtime,
+          preview.repo.revision,
         )
         return
       }
@@ -4492,14 +4366,14 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
       setRenames({})
       setStage('select')
     } catch (e) {
-      setError(String(e))
+      if (isGitImportRuntimeCurrent(runtime)) setError(String(e))
     } finally {
-      setBusy(false)
+      if (isGitImportRuntimeCurrent(runtime)) setBusy(false)
     }
   }
 
   const installSelected = async () => {
-    if (!repo) return
+    if (!repo || !previewRuntime || !isGitImportRuntimeCurrent(previewRuntime)) return
     const selections = buildSelections(repo.skills, selected)
     const effective = selections.filter((s) => s.resolution !== 'skip')
     if (effective.length === 0) {
@@ -4509,11 +4383,11 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     setBusy(true)
     setError(null)
     try {
-      await importSelections(activeRef, selections, repo.skills, selected)
+      await importSelections(activeRef, selections, repo.skills, selected, previewRuntime, repo.repo.revision)
     } catch (e) {
-      setError(String(e))
+      if (isGitImportRuntimeCurrent(previewRuntime)) setError(String(e))
     } finally {
-      setBusy(false)
+      if (isGitImportRuntimeCurrent(previewRuntime)) setBusy(false)
     }
   }
 

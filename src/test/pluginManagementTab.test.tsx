@@ -242,6 +242,33 @@ describe('PluginManagementTab', () => {
     expect(feedback.closest('.sm2__agent-toast-stack')).toHaveClass('sm2__agent-toast-stack--local')
   })
 
+  it('waits for the rescanned config revision before changing a plugin', async () => {
+    let finishScan!: (result: PluginInventory) => void
+    const pendingScan = new Promise<PluginInventory>((resolve) => { finishScan = resolve })
+    vi.spyOn(skillApiV2, 'listPluginInventory')
+      .mockResolvedValueOnce(inventory())
+      .mockReturnValueOnce(pendingScan)
+    const toggle = vi.spyOn(skillApiV2, 'setPluginEnabled').mockResolvedValue(inventory())
+
+    render(<PluginManagementTab detail={detail} />)
+    fireEvent.click(await screen.findByRole('button', { name: '重新扫描' }))
+    const pluginSwitch = screen.getByRole('switch', { name: '启用或停用 Documents' })
+    fireEvent.click(pluginSwitch)
+
+    expect(toggle).not.toHaveBeenCalled()
+    expect(pluginSwitch).toBeDisabled()
+
+    finishScan(inventory({ revision: 'sha256:rescanned' }))
+    await waitFor(() => expect(pluginSwitch).toBeEnabled())
+    fireEvent.click(pluginSwitch)
+    expect(toggle).toHaveBeenCalledExactlyOnceWith(
+      'codex',
+      'documents@openai-primary-runtime',
+      'sha256:rescanned',
+      false,
+    )
+  })
+
   it('shows an explicit read-only state without rendering fake switches', async () => {
     vi.spyOn(skillApiV2, 'listPluginInventory').mockResolvedValue(inventory({
       capabilities: {
@@ -252,7 +279,21 @@ describe('PluginManagementTab', () => {
 
     render(<PluginManagementTab detail={{ ...detail, id: 'custom-agent' }} />)
     expect(await screen.findByText(/插件配置暂时只读/)).toBeInTheDocument()
+    expect(await screen.findAllByText('只读')).toHaveLength(2)
     expect(screen.queryAllByRole('switch')).toHaveLength(0)
-    expect(screen.getAllByText('只读')).toHaveLength(2)
+  })
+
+  it('shows unknown plugin status without listing it as disabled', async () => {
+    const installed = { ...inventory().plugins[0], enabled: null }
+    vi.spyOn(skillApiV2, 'listPluginInventory').mockResolvedValue(inventory({
+      capabilities: { editable: false, requiresNewSession: true },
+      plugins: [installed],
+    }))
+    render(<PluginManagementTab detail={detail} />)
+
+    expect(await screen.findByText('状态未知')).toBeInTheDocument()
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '已停用' }))
+    expect(screen.queryByText(installed.name)).not.toBeInTheDocument()
   })
 })

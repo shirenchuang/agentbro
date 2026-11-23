@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { open } from '@tauri-apps/plugin-dialog'
+import { homeDir } from '@tauri-apps/api/path'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
-import { agentApi, type AgentOutputEvent, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
+import { agentApi, isAgentPackageOperationBusy, type AgentPackageOutput, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useCurrentAgentPrograms, useSelectedRuntimeEnvironment } from '../../hooks/useRuntimeEnvironment'
 import {
   LOCAL_RUNTIME_ENVIRONMENT_ID,
   useRuntimeEnvironmentStore,
@@ -17,9 +19,13 @@ import { AdoptDialog } from './AdoptDialog'
 import { PreviewDialog } from './PreviewDialog'
 import { McpManagementTab } from './McpManagementTab'
 import { PluginManagementTab } from './PluginManagementTab'
+import { RemoteAgentHooksTab } from './RemoteAgentHooksTab'
+import { RemoteSourcePicker } from './RemoteSourcePicker'
 import { SkillDetailSlider, type SkillDetailFallback } from './SkillDetailSlider'
 import { distributionBlockerReason, isAdoptOptionUnavailableError, skillErrorMessage, skillModeLabel, skillSourceTypeLabel, skillStatusLabel, targetClaimLabel, unmanagedReasonLabel } from './skillLabels'
 import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries } from '../../utils/agentOrdering'
+import { isAgentProgramInstalled } from '../../utils/agentPrograms'
+import { isWindowsPlatform } from '../../utils/platform'
 
 type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks' | 'config'
 type AgentSkillViewMode = 'cards' | 'list'
@@ -36,6 +42,14 @@ type PackApplyProgress = {
   percent: number
   detail: string
 }
+type AgentRuntimeSelection = {
+  environmentId: string
+  selectionRevision: number
+}
+type AgentSkillDetailTarget = AgentRuntimeSelection & {
+  skillId: string
+  fallback: SkillDetailFallback | null
+}
 type PackApplyConflictDialogState = {
   packId: string
   packName: string
@@ -43,11 +57,19 @@ type PackApplyConflictDialogState = {
   agentName: string
   mode: 'link' | 'copy'
   preview: DistributionPreview
+  runtime: AgentRuntimeSelection
 }
 type BatchAdoptPackSelection =
   | { kind: 'none' }
   | { kind: 'existing'; packId: string }
   | { kind: 'new'; name: string }
+type AgentSkillScope = {
+  agentId: string
+  environmentId: string
+  runtimeSelectionRevision: number
+  agentSelectionRevision: number
+}
+type AgentSkillReview<T> = AgentSkillScope & { items: T[] }
 type BatchAdoptPackOption = {
   id: string
   name: string
@@ -60,29 +82,62 @@ type MoveToPackOption = BatchAdoptPackOption & {
 }
 type AdoptDialogState = {
   preview: AdoptPreview
-  runtimeEnvironmentId: string
+  scope: AgentSkillScope
+}
+type AgentActionTarget = AgentRuntimeSelection & {
+  agent: AgentDetail
+}
+type AgentUninstallTarget = AgentActionTarget & {
+  program: AgentProgramInfo
+  unmanagedItems: UnmanagedItemDto[]
 }
 
 const PAGE_SIZE = 28
 const SHARED_SKILLS_AGENT_ID = 'agents'
 const NOTICE_DISMISS_MS = 3200
 const PACK_PROGRESS_DONE_DISMISS_MS = 2400
+let latestAgentProgramRequest = 0
 
-function assertRuntimeEnvironment(expectedId: string, message: string) {
-  if (
-    useRuntimeEnvironmentStore.getState().selectedEnvironmentId !== expectedId
-    || useSkillStoreV2.getState().runtimeEnvironmentId !== expectedId
-  ) {
-    throw new Error(message)
-  }
+function isRuntimeEnvironment(expectedId: string, expectedRevision?: number) {
+  const current = useRuntimeEnvironmentStore.getState()
+  return current.selectedEnvironmentId === expectedId
+    && useSkillStoreV2.getState().runtimeEnvironmentId === expectedId
+    && (expectedRevision === undefined || current.selectionRevision === expectedRevision)
+}
+
+function isAgentRuntimeSelection(runtime: AgentRuntimeSelection) {
+  return isRuntimeEnvironment(runtime.environmentId, runtime.selectionRevision)
+}
+
+function isCurrentAgentSkillScope(scope: AgentSkillScope) {
+  const { selectedAgentId, agentSelectionRevision } = useSkillStoreV2.getState()
+  return isRuntimeEnvironment(scope.environmentId, scope.runtimeSelectionRevision)
+    && selectedAgentId === scope.agentId
+    && agentSelectionRevision === scope.agentSelectionRevision
+}
+
+function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: AgentProgramInfo) {
+  return isAgentProgramInstalled(reviewed) === isAgentProgramInstalled(current)
+    && reviewed.kind === current.kind
+    && reviewed.binaryPath === current.binaryPath
+    && reviewed.appPath === current.appPath
+    && reviewed.installedVersion === current.installedVersion
+    && reviewed.packageManager === current.packageManager
+    && reviewed.packageName === current.packageName
+    && reviewed.uninstallCommand === current.uninstallCommand
+    && reviewed.hooksInstalled === current.hooksInstalled
+    && reviewed.configDir === current.configDir
 }
 
 export function AgentManagementPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
+  const { setError, loadOverview, loadAgentDetail } = state
   const allSessions = useSessionStore((s) => s.sessionList)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
-  const runtimeEnvironmentId = useRuntimeEnvironmentStore((s) => s.selectedEnvironmentId)
+  const { selectedEnvironmentId: runtimeEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
+  const runtimeSelectionRevision = useRuntimeEnvironmentStore((runtime) => runtime.selectionRevision)
+  const runtimeSelection = { environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision }
   const sessionList = useMemo(() => (
     runtimeEnvironmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
       ? allSessions.filter((session) => !session.remoteHostId)
@@ -96,77 +151,140 @@ export function AgentManagementPage() {
   const detail = state.selectedAgentDetail?.id === SHARED_SKILLS_AGENT_ID ? null : state.selectedAgentDetail
   const [tab, setTab] = useState<DetailTab>('overview')
   const [adopt, setAdopt] = useState<AdoptDialogState | null>(null)
-  const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
-  const [detailFallback, setDetailFallback] = useState<SkillDetailFallback | null>(null)
+  const [skillDetailTarget, setSkillDetailTarget] = useState<AgentSkillDetailTarget | null>(null)
+  const currentSkillDetail = skillDetailTarget && isAgentRuntimeSelection(skillDetailTarget) ? skillDetailTarget : null
   const [busy, setBusy] = useState(false)
   const [refreshingOverview, setRefreshingOverview] = useState(false)
   const [refreshingAll, setRefreshingAll] = useState(false)
   const [scanningAgentId, setScanningAgentId] = useState<string | null>(null)
-  const [updatingAgentId, setUpdatingAgentId] = useState<string | null>(null)
-  const [installingAgentId, setInstallingAgentId] = useState<string | null>(null)
-  const [uninstallingAgentId, setUninstallingAgentId] = useState<string | null>(null)
   const [openingAgentId, setOpeningAgentId] = useState<string | null>(null)
-  const [adoptingUnmanagedId, setAdoptingUnmanagedId] = useState<string | null>(null)
-  const [programs, setPrograms] = useState<Record<string, AgentProgramInfo>>({})
-  const [programLoading, setProgramLoading] = useState(false)
-  const [agentOutput, setAgentOutput] = useState<string[]>([])
+  const [pendingAdoption, setPendingAdoption] = useState<(AgentSkillScope & { unmanagedId: string }) | null>(null)
+  const programs = useCurrentAgentPrograms()
+  const [settledProgramRuntime, setSettledProgramRuntime] = useState<AgentRuntimeSelection | null>(null)
+  const programLoading = settledProgramRuntime?.environmentId !== runtimeEnvironmentId
+    || settledProgramRuntime.selectionRevision !== runtimeSelectionRevision
+  const [packageOutput, setPackageOutput] = useState<{ scope: AgentSkillScope; lines: string[] } | null>(null)
+  const agentOutput = packageOutput && isCurrentAgentSkillScope(packageOutput.scope) ? packageOutput.lines : []
   const [notice, setNotice] = useState<string | null>(null)
   const [packApplyConflict, setPackApplyConflict] = useState<PackApplyConflictDialogState | null>(null)
   const [packApplyBusy, setPackApplyBusy] = useState(false)
-  const [customDialogOpen, setCustomDialogOpen] = useState(false)
-  const [uninstallAgentTarget, setUninstallAgentTarget] = useState<AgentDetail | null>(null)
-  const [deleteAgentTarget, setDeleteAgentTarget] = useState<AgentDetail | null>(null)
+  const [customDialogRuntime, setCustomDialogRuntime] = useState<AgentRuntimeSelection | null>(null)
+  const [uninstallTarget, setUninstallTarget] = useState<AgentUninstallTarget | null>(null)
+  const [deleteAgentTarget, setDeleteAgentTarget] = useState<AgentActionTarget | null>(null)
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null)
-  const selectedAgentIdRef = useRef<string | null>(null)
+  const programRequestRef = useRef(0)
   const packApplyResolverRef = useRef<((applied: boolean) => void) | null>(null)
-  const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || uninstallingAgentId !== null || openingAgentId !== null || deletingAgentId !== null
+  const currentPackApplyConflict = packApplyConflict && isAgentRuntimeSelection(packApplyConflict.runtime)
+    ? packApplyConflict
+    : null
+  const currentAdopt = adopt && isCurrentAgentSkillScope(adopt.scope) ? adopt : null
+  const adoptingUnmanagedId = pendingAdoption && isCurrentAgentSkillScope(pendingAdoption) ? pendingAdoption.unmanagedId : null
+  const operation = state.agentProgramOperation
+  const visibleOperation = operation?.environmentId === runtimeEnvironmentId ? operation : null
+  const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || operation !== null || openingAgentId !== null || deletingAgentId !== null || adoptingUnmanagedId !== null
+  const isCurrentRuntime = () => isAgentRuntimeSelection(runtimeSelection)
 
-  const loadPrograms = useCallback(async () => {
-    setProgramLoading(true)
+  const loadPrograms = useCallback(async (runtime: AgentRuntimeSelection) => {
+    if (!isAgentRuntimeSelection(runtime)) return
+    const request = ++latestAgentProgramRequest
+    programRequestRef.current = request
+    const isLatest = () => request === latestAgentProgramRequest
+      && request === programRequestRef.current
+      && isAgentRuntimeSelection(runtime)
+    setSettledProgramRuntime(null)
     try {
-      const next = await agentApi.refresh()
-      setPrograms(Object.fromEntries(next.map((agent) => [agent.id, agent])))
+      const next = await agentApi.refresh(runtime.environmentId)
+      if (!isAgentRuntimeSelection(runtime)) return
+      const programs = Object.fromEntries(next.map((agent) => [agent.id, agent]))
+      if (isLatest()) useSkillStoreV2.setState({ agentProgramSnapshot: { ...runtime, programs } })
+      return programs
     } catch (e) {
-      state.setError(skillErrorMessage(t, e))
+      if (isLatest()) setError(skillErrorMessage(t, e))
     } finally {
-      setProgramLoading(false)
+      if (request === programRequestRef.current && isAgentRuntimeSelection(runtime)) setSettledProgramRuntime(runtime)
     }
-  }, [state, t])
+  }, [setError, t])
 
   useEffect(() => {
-    state.loadOverview()
-    loadPrograms()
+    if (state.initialized && !state.startupScanInFlight) void state.loadOverview()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    if (state.customAgentDialogRequest <= 0) return
-    setCustomDialogOpen(true)
-    useSkillStoreV2.setState({ customAgentDialogRequest: 0 })
-  }, [state.customAgentDialogRequest])
+    const runtime = { environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision }
+    if (!isLocal) {
+      void loadPrograms(runtime)
+      return () => { programRequestRef.current = 0 }
+    }
 
-  useEffect(() => {
-    selectedAgentIdRef.current = state.selectedAgentId
-  }, [state.selectedAgentId])
-
-  useEffect(() => {
+    let closed = false
+    let listening = false
     let unlisten: (() => void) | null = null
-    let alive = true
-    agentApi.onOutput((event) => {
-      if (event.agentId !== selectedAgentIdRef.current) return
-      setAgentOutput((prev) => [...prev, formatAgentOutput(event)].slice(-10))
-    }).then((next) => {
-      if (alive) unlisten = next
-      else next()
-    }).catch(() => {
-      // Output streaming is best-effort; the awaited install/update command
-      // still reports failure through the action itself.
+    const refreshCompletedPackage = async (agentId: string) => {
+      await Promise.all([loadPrograms(runtime), loadOverview(true)])
+      if (!closed && isAgentRuntimeSelection(runtime)) await loadAgentDetail(agentId, true)
+    }
+    void agentApi.onOutput((event) => {
+      if (closed || !listening || !event.done || !isAgentRuntimeSelection(runtime)) return
+      const { agentProgramOperation, error } = useSkillStoreV2.getState()
+      if (
+        agentProgramOperation?.environmentId === runtime.environmentId
+        && agentProgramOperation.agentId === event.agentId
+        && agentProgramOperation.operation === event.operation
+      ) return
+      if (error === t('skills.agentManagement.programOperationInProgress')) setError(null)
+      void refreshCompletedPackage(event.agentId)
+    }).catch(() => null).then((stop) => {
+      if (closed) {
+        stop?.()
+        return
+      }
+      unlisten = stop
+      listening = true
+      void loadPrograms(runtime)
     })
     return () => {
-      alive = false
+      closed = true
+      unlisten?.()
+      programRequestRef.current = 0
+    }
+  }, [isLocal, loadAgentDetail, loadOverview, loadPrograms, runtimeEnvironmentId, runtimeSelectionRevision, setError, t])
+
+  useEffect(() => {
+    if (state.customAgentDialogRequest <= 0) return
+    setCustomDialogRuntime({ environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision })
+    useSkillStoreV2.setState({ customAgentDialogRequest: 0 })
+  }, [state.customAgentDialogRequest, runtimeEnvironmentId, runtimeSelectionRevision])
+
+  useEffect(() => {
+    const agentId = state.selectedAgentId
+    if (!isLocal || !agentId) return
+    const scope = { agentId, environmentId: runtimeEnvironmentId, runtimeSelectionRevision, agentSelectionRevision: state.agentSelectionRevision }
+    let unlisten: (() => void) | null = null
+    let closed = false
+    let revision = 0
+    const applyOutput = (output: AgentPackageOutput) => {
+      if (closed || output.agentId !== agentId || output.revision <= revision || !isCurrentAgentSkillScope(scope)) return
+      revision = output.revision
+      setPackageOutput({ scope, lines: output.lines.map(formatAgentOutput) })
+    }
+    const subscribe = async () => {
+      // Subscribe before reading so output emitted during window creation is recovered.
+      const stop = await agentApi.onPackageOutput(applyOutput).catch(() => null)
+      if (closed) {
+        stop?.()
+        return
+      }
+      unlisten = stop
+      const output = await agentApi.packageOutput(agentId).catch(() => null)
+      if (output) applyOutput(output)
+    }
+    void subscribe()
+    return () => {
+      closed = true
       unlisten?.()
     }
-  }, [])
+  }, [isLocal, runtimeEnvironmentId, runtimeSelectionRevision, state.agentSelectionRevision, state.selectedAgentId])
 
   useEffect(() => {
     if (agents.length === 0) {
@@ -174,16 +292,27 @@ export function AgentManagementPage() {
       return
     }
     if (state.selectedAgentId && agents.some((agent) => agent.id === state.selectedAgentId)) return
-    const first = agents.find((a) => a.installed) || agents[0]
+    if (programLoading) return
+    const first = agents.find((agent) => {
+      const program = programs[agent.id]
+      return program ? isAgentProgramInstalled(program) : agent.installed
+    }) || agents[0]
     if (first) state.selectAgent(first.id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agents, state.selectedAgentId])
+  }, [agents, programLoading, programs, state.selectedAgentId])
 
   useEffect(() => {
     setTab('overview')
-    setNotice(null)
-    setAgentOutput([])
   }, [state.selectedAgentId])
+
+  useEffect(() => {
+    setNotice(null)
+  }, [state.selectedAgentId, runtimeSelectionRevision])
+
+  useEffect(() => () => {
+    packApplyResolverRef.current?.(false)
+    packApplyResolverRef.current = null
+  }, [runtimeEnvironmentId, runtimeSelectionRevision])
 
   useEffect(() => {
     if (!notice) return
@@ -191,44 +320,48 @@ export function AgentManagementPage() {
     return () => window.clearTimeout(timer)
   }, [notice])
 
-  const openAdopt = async (agentId: string, unmanagedId: string) => {
-    const previewRuntimeEnvironmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId
-    setAdoptingUnmanagedId(unmanagedId)
-    setBusy(true)
+  const openAdopt = async (ownerAgentId: string, unmanagedId: string) => {
+    if (!detail) return
+    const scope = {
+      agentId: detail.id,
+      environmentId: runtimeEnvironmentId,
+      runtimeSelectionRevision,
+      agentSelectionRevision: state.agentSelectionRevision,
+      unmanagedId,
+    }
+    if (!isCurrentAgentSkillScope(scope)) return
+
+    setPendingAdoption(scope)
     try {
-      assertRuntimeEnvironment(
-        previewRuntimeEnvironmentId,
-        '运行环境已切换，已忽略原环境的接管预览；请在当前环境重新扫描。',
-      )
-      const p = await skillApiV2.previewAdopt(agentId, unmanagedId)
-      assertRuntimeEnvironment(
-        previewRuntimeEnvironmentId,
-        '运行环境已切换，已忽略原环境的接管预览；请在当前环境重新扫描。',
-      )
-      setAdopt({
-        preview: p,
-        runtimeEnvironmentId: previewRuntimeEnvironmentId,
-      })
-    } catch (e) {
-      state.setError(String(e))
+      const preview = await skillApiV2.previewAdopt(ownerAgentId, unmanagedId)
+      if (isCurrentAgentSkillScope(scope)) setAdopt({ preview, scope })
+    } catch (error) {
+      if (isCurrentAgentSkillScope(scope)) setError(String(error))
     } finally {
-      setAdoptingUnmanagedId(null)
-      setBusy(false)
+      setPendingAdoption((pending) => pending === scope ? null : pending)
     }
   }
 
+  const finishPackAction = async (runtime: AgentRuntimeSelection, agentId: string, message: string) => {
+    if (!isAgentRuntimeSelection(runtime)) return false
+    await state.loadAgentDetail(agentId, true)
+    if (!isAgentRuntimeSelection(runtime)) return false
+    void state.loadOverview(true)
+    state.setError(null)
+    setNotice(message)
+    return true
+  }
+
   const revoke = async (packId: string, agentId: string) => {
+    if (!isAgentRuntimeSelection(runtimeSelection)) return
     setBusy(true)
     setNotice(null)
     state.setError(null)
     try {
-      await skillApiV2.removePackFromAgent(packId, agentId)
-      await state.loadAgentDetail(agentId, true)
-      void state.loadOverview(true)
-      state.setError(null)
-      setNotice('技能包已取消应用')
+      await skillApiV2.removePackFromAgent(packId, agentId, runtimeSelection.environmentId)
+      await finishPackAction(runtimeSelection, agentId, '技能包已取消应用')
     } catch (e) {
-      state.setError(String(e))
+      if (isAgentRuntimeSelection(runtimeSelection)) state.setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -256,69 +389,78 @@ export function AgentManagementPage() {
       agentName: detail?.id === agentId ? detail.displayName : agentId,
       mode,
       preview,
+      runtime: runtimeSelection,
     }
   }
 
   const applyPack = async (packId: string, agentId: string): Promise<boolean> => {
+    if (!isAgentRuntimeSelection(runtimeSelection)) return false
     setBusy(true)
     setNotice(null)
     state.setError(null)
-    let keepBusyUntilReturn = false
     try {
       const mode = state.settings?.defaultDistributeMode || 'link'
-      const preview = await skillApiV2.executeApplyPack(packId, [agentId], mode)
+      const preview = await skillApiV2.executeApplyPack(packId, [agentId], mode, [], undefined, runtimeSelection.environmentId)
+      if (!isAgentRuntimeSelection(runtimeSelection)) return false
       if (preview.blockers.length > 0) {
-        setBusy(false)
-        keepBusyUntilReturn = true
         return openPackApplyConflict(packApplyDialogInfo(packId, agentId, preview, mode))
       }
-      await state.loadAgentDetail(agentId, true)
-      void state.loadOverview(true)
-      state.setError(null)
-      setNotice('技能包已应用')
-      return true
+      return await finishPackAction(runtimeSelection, agentId, '技能包已应用')
     } catch (e) {
-      state.setError(String(e))
+      if (isAgentRuntimeSelection(runtimeSelection)) state.setError(String(e))
       return false
     } finally {
-      if (!keepBusyUntilReturn) setBusy(false)
+      setBusy(false)
     }
   }
 
   const executePackApplyConflict = async (decisions: DistributionBlockerDecision[]) => {
-    if (!packApplyConflict) return
+    const conflict = currentPackApplyConflict
+    if (!conflict || !isAgentRuntimeSelection(conflict.runtime)) return
     setPackApplyBusy(true)
     try {
       const result = await skillApiV2.executeApplyPack(
-        packApplyConflict.packId,
-        [packApplyConflict.agentId],
-        packApplyConflict.mode,
+        conflict.packId,
+        [conflict.agentId],
+        conflict.mode,
         decisions,
+        conflict.preview,
+        conflict.runtime.environmentId,
       )
+      if (!isAgentRuntimeSelection(conflict.runtime)) return
       if (result.blockers.length > 0) {
-        setPackApplyConflict((current) => current ? { ...current, preview: result } : current)
+        setPackApplyConflict({ ...conflict, preview: result })
         return
       }
-      await state.loadAgentDetail(packApplyConflict.agentId, true)
-      void state.loadOverview(true)
-      state.setError(null)
-      setNotice('技能包已应用')
-      resolvePackApplyConflict(true)
+      if (await finishPackAction(conflict.runtime, conflict.agentId, '技能包已应用')) {
+        resolvePackApplyConflict(true)
+      }
+    } catch (e) {
+      if (isAgentRuntimeSelection(conflict.runtime)) throw e
     } finally {
       setPackApplyBusy(false)
     }
   }
 
   const scanAgent = async (agentId: string) => {
+    const { selectedEnvironmentId: environmentId, selectionRevision: runtimeSelectionRevision } =
+      useRuntimeEnvironmentStore.getState()
+    const { agentSelectionRevision } = useSkillStoreV2.getState()
+    const scope = { agentId, environmentId, runtimeSelectionRevision, agentSelectionRevision }
+    const isCurrent = () => isCurrentAgentSkillScope(scope)
+    if (!isCurrent()) return
+
     setScanningAgentId(agentId)
     setNotice(null)
     state.setError(null)
     try {
-      const result = await skillApiV2.scanAgentInventory(agentId)
-      const unmanaged = await skillApiV2.listUnmanaged()
-      useSkillStoreV2.setState({ unmanaged })
-      await state.loadAgentDetail(agentId, true)
-      await state.loadOverview(true)
+      const result = await skillApiV2.scanAgentInventory(agentId, environmentId)
+      if (!isCurrent()) return
+      const snapshot = await skillApiV2.refreshAgentSkillView(agentId, environmentId)
+      if (!isCurrent()) return
+      const applied = useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
+      if (!applied) return
+
       const readOnlyCount = result.readOnly ?? 0
       const sharedReadOnlyCount = result.sharedReadOnly ?? 0
       setNotice(t(
@@ -339,62 +481,126 @@ export function AgentManagementPage() {
         },
       ))
     } catch (e) {
-      state.setError(String(e))
+      if (isCurrent()) state.setError(skillErrorMessage(t, e))
     } finally {
       setScanningAgentId(null)
     }
   }
 
-  const updateAgent = async (agentId: string) => {
-    setUpdatingAgentId(agentId)
+  const changeAgentProgram = async (agentId: string, operation: 'install' | 'update') => {
+    if (!isCurrentRuntime()) return
+    const previous = programs[agentId]
+    const previousVersion = previous?.packageManager === 'native'
+      ? previous.installedVersion
+      : previous?.installedVersion ?? (detail?.id === agentId ? detail.version : null)
+    const active = { ...runtimeSelection, agentId, operation }
+    if (!state.beginAgentProgramOperation(active)) return
     setNotice(null)
     state.setError(null)
-    setAgentOutput([])
     try {
-      await agentApi.update(agentId)
-      await loadPrograms()
+      let commandError: string | null = null
+      try {
+        await agentApi[operation](agentId, runtimeSelection.environmentId)
+      } catch (error) {
+        if (isAgentPackageOperationBusy(error)) {
+          if (isCurrentRuntime()) state.setError(t('skills.agentManagement.programOperationInProgress'))
+          return
+        }
+        commandError = String(error)
+      }
+      if (!isCurrentRuntime()) return
+      const refreshed = await loadPrograms(runtimeSelection)
+      if (!isCurrentRuntime()) return
       await state.loadOverview(true)
+      if (!isCurrentRuntime()) return
       await state.loadAgentDetail(agentId, true)
-      setNotice('Agent 更新完成')
+      if (!isCurrentRuntime()) return
+
+      if (commandError !== null) {
+        state.setError(commandError)
+        return
+      }
+      const detected = refreshed?.[agentId]
+      const agent = detected?.displayName ?? previous?.displayName ?? agentId
+      if (!detected) {
+        state.setError(t('skills.agentManagement.programResultUnverified', { agent }))
+        return
+      }
+      if (detected.status !== 'installed' && detected.status !== 'updateAvailable') {
+        state.setError(t('skills.agentManagement.programStillUndetected', { agent }))
+        return
+      }
+      if (operation === 'update') {
+        const { installedVersion, latestVersion } = detected
+        const nativeUpdate = detected.packageManager === 'native'
+        if (!installedVersion || (!nativeUpdate && !previousVersion && installedVersion !== latestVersion)) {
+          state.setError(t('skills.agentManagement.programResultUnverified', { agent }))
+          return
+        }
+        if (nativeUpdate && (!previousVersion || installedVersion === previousVersion)) {
+          setNotice(t('skills.agentManagement.nativeUpdateChecked', { agent, version: installedVersion }))
+          return
+        }
+        if (installedVersion === previousVersion && installedVersion !== latestVersion) {
+          state.setError(t('skills.agentManagement.programVersionUnchanged', { agent, version: installedVersion }))
+          return
+        }
+      }
+      setNotice(operation === 'install' ? 'Agent 安装完成' : 'Agent 更新完成')
     } catch (e) {
-      state.setError(String(e))
+      if (isCurrentRuntime()) state.setError(String(e))
     } finally {
-      setUpdatingAgentId(null)
+      state.finishAgentProgramOperation(active)
     }
   }
 
-  const installAgent = async (agentId: string) => {
-    setInstallingAgentId(agentId)
-    setNotice(null)
-    state.setError(null)
-    setAgentOutput([])
-    try {
-      await agentApi.install(agentId)
-      await loadPrograms()
-      await state.loadOverview(true)
-      await state.loadAgentDetail(agentId, true)
-      setNotice('Agent 安装完成')
-    } catch (e) {
-      state.setError(String(e))
-    } finally {
-      setInstallingAgentId(null)
-    }
+  const requestUninstall = (agent: AgentDetail) => {
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    const program = programs[agent.id]
+    if (!program || !isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) return
+    const unmanagedItems = removableUnmanagedSkills(useSkillStoreV2.getState().unmanaged, agent.id)
+    setUninstallTarget({ agent, program, unmanagedItems, environmentId: selectedEnvironmentId, selectionRevision })
   }
 
-  const uninstallAgent = async (agent: AgentDetail) => {
-    setUninstallingAgentId(agent.id)
+  const uninstallAgent = async (target: AgentUninstallTarget) => {
+    const { agent, program, unmanagedItems, environmentId, selectionRevision } = target
+    const isCurrent = () => isAgentRuntimeSelection(target)
+    if (!isCurrent()) {
+      setUninstallTarget(null)
+      return
+    }
+
+    const snapshot = useSkillStoreV2.getState().agentProgramSnapshot
+    const currentProgram = snapshot?.environmentId === environmentId && snapshot.selectionRevision === selectionRevision
+      ? snapshot.programs[agent.id]
+      : undefined
+    if (!currentProgram || !matchesReviewedUninstallProgram(program, currentProgram)) {
+      setUninstallTarget(null)
+      state.setError(t('skills.agentManagement.uninstallReviewChanged', { agent: agent.displayName }))
+      return
+    }
+
+    const active = { environmentId, selectionRevision, agentId: agent.id, operation: 'uninstall' } as const
+    if (!state.beginAgentProgramOperation(active)) return
     setNotice(null)
     state.setError(null)
-    setAgentOutput([])
     const failures: string[] = []
     let removedSkills = 0
     try {
-      const program = programs[agent.id]
-      const programInstalled = program?.status === 'installed' || program?.status === 'updateAvailable'
-      if (programInstalled && program.uninstallCommand) {
+      const uninstallProgram = Boolean(isAgentProgramInstalled(program) && program.uninstallCommand)
+      let commandSucceeded = false
+      if (uninstallProgram) {
         try {
-          await agentApi.uninstall(agent.id)
+          await agentApi.uninstall(agent.id, environmentId)
+          commandSucceeded = true
         } catch (error) {
+          if (isAgentPackageOperationBusy(error)) {
+            if (isCurrent()) {
+              setUninstallTarget(null)
+              state.setError(t('skills.agentManagement.programOperationInProgress'))
+            }
+            return
+          }
           failures.push(`程序：${skillErrorMessage(t, error)}`)
         }
       }
@@ -402,7 +608,7 @@ export function AgentManagementPage() {
       const targetIds = agent.skills.map((skill) => skill.id)
       if (targetIds.length > 0) {
         try {
-          const result = await skillApiV2.deleteSkillTargetDistributions(targetIds)
+          const result = await skillApiV2.deleteSkillTargetDistributions(targetIds, environmentId)
           removedSkills += result.deleted
           failures.push(...result.failures.map((failure) => `Skill：${failure.error}`))
         } catch (error) {
@@ -410,83 +616,104 @@ export function AgentManagementPage() {
         }
       }
 
-      const unmanagedItems = useSkillStoreV2.getState().unmanaged
-        .filter((item) => item.agentId === agent.id && !isReadOnlyUnmanaged(item) && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
       for (const item of unmanagedItems) {
         try {
-          await skillApiV2.deleteUnmanagedAgentSkill(agent.id, item.id)
+          await skillApiV2.deleteUnmanagedAgentSkill(agent.id, item.id, environmentId)
           removedSkills += 1
         } catch (error) {
           failures.push(`${item.inferredSkillId || item.path}：${skillErrorMessage(t, error)}`)
         }
       }
 
-      if (program?.hooksInstalled) {
+      if (program.hooksInstalled) {
         try {
-          await agentApi.uninstallHook(agent.id)
+          await agentApi.uninstallHook(agent.id, environmentId)
         } catch (error) {
           failures.push(`Hook：${skillErrorMessage(t, error)}`)
         }
       }
 
-      const remainingUnmanaged = await skillApiV2.listUnmanaged()
-      useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
-      setUninstallAgentTarget(null)
-      await Promise.all([loadPrograms(), state.loadOverview(true)])
+      try {
+        const remainingUnmanaged = await skillApiV2.listUnmanaged(environmentId)
+        if (isCurrent()) useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
+      } catch (error) {
+        failures.push(skillErrorMessage(t, error))
+      }
+      if (!isCurrent()) return
+      setUninstallTarget(null)
+      const [refreshed] = await Promise.all([loadPrograms(target), state.loadOverview(true)])
+      if (!isCurrent()) return
+      const status = refreshed?.[agent.id]?.status
+      const removedProgram = status === 'notInstalled' || status === 'unavailable'
+      if (commandSucceeded && !removedProgram) {
+        failures.unshift(t(status
+          ? 'skills.agentManagement.programStillInstalled'
+          : 'skills.agentManagement.uninstallUnverified', { agent: agent.displayName }))
+      }
+      if ((!uninstallProgram || failures.length > 0) && useSkillStoreV2.getState().selectedAgentId === agent.id) {
+        await state.loadAgentDetail(agent.id, true)
+      }
+      if (!isCurrent()) return
       if (failures.length > 0) {
-        if (useSkillStoreV2.getState().selectedAgentId === agent.id) {
-          await state.loadAgentDetail(agent.id, true)
-        }
-        state.setError(`部分卸载失败：${failures.slice(0, 3).join('；')}`)
+        const errors = failures.slice(0, 3).join(' ')
+        state.setError(uninstallProgram
+          ? `部分卸载失败，${errors}`
+          : t('skills.agentManagement.cleanupPartial', { errors }))
+      } else if (!uninstallProgram) {
+        const cleanup = t('skills.agentManagement.cleanupComplete', { agent: agent.displayName })
+        setNotice(removedSkills > 0 ? `${cleanup} ${t('skills.agentManagement.cleanupSkillCount', { count: removedSkills })}` : cleanup)
       } else {
-        const programRemoved = !programInstalled || Boolean(program?.uninstallCommand)
-        if (programRemoved) {
-          const current = useSkillStoreV2.getState()
-          const nextAgents = current.agents.map((item) => item.id === agent.id
-            ? {
-                ...item,
-                enabled: false,
-                installed: false,
-                version: null,
-                managedSkillCount: 0,
-                unmanagedSkillCount: 0,
-              }
-            : item)
-          useSkillStoreV2.setState({ agents: nextAgents })
-          if (current.selectedAgentId === agent.id) {
-            const nextAgent = nextAgents.find((item) => item.installed && item.id !== SHARED_SKILLS_AGENT_ID)
-            await state.selectAgent(nextAgent?.id ?? null)
-          }
+        const current = useSkillStoreV2.getState()
+        const nextAgents = current.agents.map((item) => item.id === agent.id
+          ? {
+              ...item,
+              enabled: false,
+              installed: false,
+              version: null,
+            }
+          : item)
+        useSkillStoreV2.setState({ agents: nextAgents })
+        if (current.selectedAgentId === agent.id) {
+          const nextAgent = nextAgents.find((item) => {
+            if (item.id === SHARED_SKILLS_AGENT_ID) return false
+            const detected = refreshed?.[item.id]
+            return detected ? isAgentProgramInstalled(detected) : item.installed
+          })
+          await state.selectAgent(nextAgent?.id ?? null)
         }
         const cleanup = removedSkills > 0 ? `，已清理 ${removedSkills} 个 Skills` : ''
-        setNotice(`Agent「${agent.displayName}」已卸载${cleanup}`)
+        if (isCurrent()) setNotice(`Agent「${agent.displayName}」已卸载${cleanup}`)
       }
     } catch (e) {
-      state.setError(`卸载失败：${skillErrorMessage(t, e)}`)
+      if (isCurrent()) state.setError(skillErrorMessage(t, e))
     } finally {
-      setUninstallingAgentId(null)
+      state.finishAgentProgramOperation(active)
     }
   }
 
   const openAgentDownload = async (agentId: string) => {
+    if (!isCurrentRuntime()) return
     setOpeningAgentId(agentId)
     try {
       await agentApi.openDownload(agentId)
     } catch (e) {
-      state.setError(String(e))
+      if (isCurrentRuntime()) state.setError(String(e))
     } finally {
       setOpeningAgentId(null)
     }
   }
 
   const refreshAll = async () => {
+    if (!isCurrentRuntime()) return
     setRefreshingAll(true)
     setNotice(null)
     state.setError(null)
     try {
-      await Promise.all([state.loadOverview(true), loadPrograms()])
-      if (state.selectedAgentId && state.selectedAgentId !== SHARED_SKILLS_AGENT_ID) {
-        await state.loadAgentDetail(state.selectedAgentId, true)
+      await Promise.all([state.loadOverview(true), loadPrograms(runtimeSelection)])
+      if (!isCurrentRuntime()) return
+      const { selectedAgentId } = useSkillStoreV2.getState()
+      if (selectedAgentId && selectedAgentId !== SHARED_SKILLS_AGENT_ID) {
+        await state.loadAgentDetail(selectedAgentId, true)
       }
     } finally {
       setRefreshingAll(false)
@@ -494,57 +721,67 @@ export function AgentManagementPage() {
   }
 
   const refreshOverview = async () => {
+    if (!isCurrentRuntime()) return
     setRefreshingOverview(true)
     setNotice(null)
     state.setError(null)
     try {
-      await Promise.all([state.refresh(), loadPrograms()])
+      await Promise.all([state.refresh(), loadPrograms(runtimeSelection)])
     } finally {
       setRefreshingOverview(false)
     }
   }
 
   const openSkillDetail = (skillId: string, fallback?: SkillDetailFallback | null) => {
-    setDetailSkillId(skillId)
-    setDetailFallback(fallback || null)
+    if (isCurrentRuntime()) setSkillDetailTarget({ ...runtimeSelection, skillId, fallback: fallback ?? null })
   }
 
-  const addCustomAgent = async (config: CustomAgentConfig) => {
+  const addCustomAgent = async (config: CustomAgentConfig, runtime: AgentRuntimeSelection) => {
+    const isCurrent = () => isAgentRuntimeSelection(runtime)
+    if (!isCurrent()) return
     setBusy(true)
     setNotice(null)
     state.setError(null)
     try {
-      const added = await agentApi.addCustom(config)
-      await Promise.all([state.loadOverview(true), loadPrograms()])
+      const added = await agentApi.addCustom(config, runtime.environmentId)
+      if (!isCurrent()) return
+      await Promise.all([state.loadOverview(true), loadPrograms(runtime)])
+      if (!isCurrent()) return
       if (useSkillStoreV2.getState().agents.some((agent) => agent.id === added.id)) {
         await state.selectAgent(added.id)
       }
-      setCustomDialogOpen(false)
-      setNotice(config.category === 'claude-compatible'
+      if (!isCurrent()) return
+      setCustomDialogRuntime(null)
+      setNotice(added.hooksInstalled
         ? 'Claude Code 实例已添加，Hook 已安装'
         : '自定义 Agent 已添加')
     } catch (e) {
-      state.setError(String(e))
+      if (isCurrent()) state.setError(String(e))
     } finally {
       setBusy(false)
     }
   }
 
-  const deleteCustomAgent = async (agent: AgentDetail) => {
+  const deleteCustomAgent = async (target: AgentActionTarget) => {
+    const { agent, environmentId } = target
+    const isCurrent = () => isAgentRuntimeSelection(target)
+    if (!isCurrent()) return
     setDeletingAgentId(agent.id)
     setNotice(null)
     state.setError(null)
     try {
-      await agentApi.removeCustom(agent.id)
+      await agentApi.removeCustom(agent.id, environmentId)
+      if (!isCurrent()) return
       useSkillStoreV2.setState((current) => ({
         agents: current.agents.filter((item) => item.id !== agent.id),
       }))
       setDeleteAgentTarget(null)
-      await state.selectAgent(null)
-      await Promise.all([state.loadOverview(true), loadPrograms()])
-      setNotice(`已删除自定义 Agent「${agent.displayName}」`)
+      if (useSkillStoreV2.getState().selectedAgentId === agent.id) await state.selectAgent(null)
+      if (!isCurrent()) return
+      await Promise.all([state.loadOverview(true), loadPrograms(target)])
+      if (isCurrent()) setNotice(`已删除自定义 Agent「${agent.displayName}」`)
     } catch (e) {
-      state.setError(String(e))
+      if (isCurrent()) state.setError(String(e))
     } finally {
       setDeletingAgentId(null)
     }
@@ -552,8 +789,9 @@ export function AgentManagementPage() {
 
   const selectedProgram = detail ? programs[detail.id] ?? null : null
   const selectedProgramInstalled = selectedProgram?.status === 'installed' || selectedProgram?.status === 'updateAvailable'
+  const canUninstallProgram = Boolean(selectedProgramInstalled && selectedProgram?.uninstallCommand)
   const selectedUnmanagedItems = detail
-    ? state.unmanaged.filter((item) => item.agentId === detail.id && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
+    ? removableUnmanagedSkills(state.unmanaged, detail.id)
     : []
   const selectedHasResiduals = Boolean(detail && (
     detail.skills.length > 0
@@ -564,13 +802,15 @@ export function AgentManagementPage() {
   const canUninstallSelectedAgent = Boolean(
     selectedProgram
     && !selectedProgram.isCustom
-    && ((selectedProgramInstalled && selectedProgram?.uninstallCommand) || selectedHasResiduals),
+    && (canUninstallProgram || selectedHasResiduals),
   )
-  const uninstallProgram = uninstallAgentTarget ? programs[uninstallAgentTarget.id] ?? null : null
-  const uninstallProgramInstalled = uninstallProgram?.status === 'installed' || uninstallProgram?.status === 'updateAvailable'
-  const uninstallUnmanagedItems = uninstallAgentTarget
-    ? state.unmanaged.filter((item) => item.agentId === uninstallAgentTarget.id && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
-    : []
+  const uninstallAgentTarget = uninstallTarget && isRuntimeEnvironment(uninstallTarget.environmentId, uninstallTarget.selectionRevision)
+    ? uninstallTarget.agent
+    : null
+  const uninstallProgram = uninstallTarget?.program
+  const uninstallProgramInstalled = uninstallProgram ? isAgentProgramInstalled(uninstallProgram) : false
+  const cleanupOnly = !uninstallProgramInstalled || !uninstallProgram?.uninstallCommand
+  const uninstallUnmanagedItems = uninstallTarget?.unmanagedItems ?? []
 
   return (
     <div className="sm2 sm2--agents">
@@ -584,11 +824,11 @@ export function AgentManagementPage() {
             <ActionButton
               className="sm2__btn sm2__btn--danger"
               disabled={state.loading || actionBusy}
-              busy={uninstallingAgentId === detail.id}
-              busyLabel="卸载中"
-              onClick={() => setUninstallAgentTarget(detail)}
+              busy={visibleOperation?.operation === 'uninstall' && visibleOperation.agentId === detail.id}
+              busyLabel={canUninstallProgram ? '卸载中' : t('skills.agentManagement.cleanupBusy')}
+              onClick={() => requestUninstall(detail)}
             >
-              卸载 Agent
+              {canUninstallProgram ? '卸载 Agent' : t('skills.agentManagement.cleanupAction')}
             </ActionButton>
           )}
           <ActionButton className="sm2__btn" onClick={refreshOverview} disabled={state.loading || actionBusy} busy={refreshingOverview} busyLabel="刷新中">
@@ -610,7 +850,7 @@ export function AgentManagementPage() {
       <div className="sm2__main sm2__main--full settings-scroll">
         {!detail ? (
           <div className="sm2__empty">
-            {state.agentDetailLoading ? '加载 Agent 详情…' : '选择一个已安装 Agent 查看详情'}
+            {state.agentDetailLoading || programLoading ? '加载 Agent 详情…' : '选择一个已安装 Agent 查看详情'}
           </div>
         ) : (
           <AgentDetailView
@@ -619,8 +859,8 @@ export function AgentManagementPage() {
             onTab={setTab}
             busy={actionBusy}
             scanning={scanningAgentId === detail.id}
-            updating={updatingAgentId === detail.id}
-            installing={installingAgentId === detail.id}
+            updating={visibleOperation?.operation === 'update' && visibleOperation.agentId === detail.id}
+            installing={visibleOperation?.operation === 'install' && visibleOperation.agentId === detail.id}
             opening={openingAgentId === detail.id}
             adoptingUnmanagedId={adoptingUnmanagedId}
             program={programs[detail.id] || null}
@@ -631,112 +871,87 @@ export function AgentManagementPage() {
             onRevoke={revoke}
             onApplyPack={applyPack}
             onScan={scanAgent}
-            onUpdate={updateAgent}
-            onInstall={installAgent}
+            onUpdate={(id) => changeAgentProgram(id, 'update')}
+            onInstall={(id) => changeAgentProgram(id, 'install')}
             onOpenDownload={openAgentDownload}
             onOpenSkillDetail={openSkillDetail}
             deleting={deletingAgentId === detail.id}
-            onRequestDelete={setDeleteAgentTarget}
+            onRequestDelete={(agent) => setDeleteAgentTarget({ agent, ...runtimeSelection })}
           />
         )}
       </div>
 
       <SkillDetailSlider
-        skillId={detailSkillId}
-        open={!!detailSkillId}
-        fallbackSkill={detailFallback}
-        onClose={() => {
-          setDetailSkillId(null)
-          setDetailFallback(null)
-        }}
+        skillId={currentSkillDetail?.skillId ?? null}
+        open={currentSkillDetail !== null}
+        fallbackSkill={currentSkillDetail?.fallback}
+        onClose={() => setSkillDetailTarget(null)}
       />
 
-      {adopt && (
+      {currentAdopt && (
         <AdoptDialog
-          preview={adopt.preview}
+          preview={currentAdopt.preview}
           packs={state.packs}
           onClose={() => setAdopt(null)}
           validateContext={() => {
-            assertRuntimeEnvironment(
-              adopt.runtimeEnvironmentId,
-              '运行环境已切换，已停止原环境的接管后续操作；请在当前环境重新扫描。',
-            )
+            if (!isCurrentAgentSkillScope(currentAdopt.scope)) {
+              throw new Error('Agent 或运行环境已切换，请重新打开接管预览。')
+            }
           }}
           onDone={async () => {
-            const refreshRuntimeEnvironmentId = adopt.runtimeEnvironmentId
-            const ensureRefreshRuntime = () => {
-              assertRuntimeEnvironment(
-                refreshRuntimeEnvironmentId,
-                '运行环境已切换，已丢弃原环境的刷新结果；请在当前环境重新扫描。',
-              )
-            }
-            ensureRefreshRuntime()
-            const agentId = adopt.preview.agentId
-            const visibleDetailId = detail?.id
-            const unmanaged = await skillApiV2.listUnmanaged()
-            ensureRefreshRuntime()
-            const detailIds = new Set<string>()
-            if (agentId !== SHARED_SKILLS_AGENT_ID) {
-              detailIds.add(agentId)
-            }
-            if (visibleDetailId && visibleDetailId !== agentId) {
-              detailIds.add(visibleDetailId)
-            }
-            for (const detailId of detailIds) {
-              const refreshedDetail = await skillApiV2.getAgentDetail(detailId)
-              ensureRefreshRuntime()
-              if (useSkillStoreV2.getState().selectedAgentId === detailId) {
-                useSkillStoreV2.setState({
-                  selectedAgentDetail: refreshedDetail,
-                  agentDetailLoading: false,
-                })
-              }
-            }
-            const overview = await skillApiV2.overview()
-            ensureRefreshRuntime()
-            useSkillStoreV2.setState({
-              overview,
-              skills: overview.skills,
-              agents: overview.agents,
-              packs: overview.packs,
-              issues: overview.issues,
-              unmanaged,
-              settings: overview.settings,
-              lastOverviewLoadedAt: Date.now(),
-              initialized: true,
-              error: null,
-            })
-            setAdopt(null)
+            const { scope } = currentAdopt
+            if (!isCurrentAgentSkillScope(scope)) return
+            const { agentId, environmentId } = scope
+            const snapshot = await skillApiV2.refreshAgentSkillView(agentId, environmentId)
+            if (!isCurrentAgentSkillScope(scope)) return
+            const applied = useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
+            if (!applied) return
+
+            setError(null)
+            setAdopt((active) => active === currentAdopt ? null : active)
           }}
         />
       )}
-      {packApplyConflict && (
+      {currentPackApplyConflict && (
         <PackApplyConflictDialog
-          dialog={packApplyConflict}
+          dialog={currentPackApplyConflict}
           busy={packApplyBusy}
           onCancel={() => resolvePackApplyConflict(false)}
           onExecute={executePackApplyConflict}
         />
       )}
-      {customDialogOpen && (
+      {customDialogRuntime && isAgentRuntimeSelection(customDialogRuntime) && (
         <CustomAgentDialog
           busy={busy}
-          onClose={() => setCustomDialogOpen(false)}
-          onSubmit={addCustomAgent}
+          environmentId={customDialogRuntime.environmentId}
+          environmentName={remoteHost?.name ?? customDialogRuntime.environmentId}
+          onClose={() => setCustomDialogRuntime(null)}
+          onSubmit={(config) => addCustomAgent(config, customDialogRuntime)}
         />
       )}
-      {uninstallAgentTarget && (
+      {uninstallTarget && uninstallAgentTarget && (
         <PreviewDialog
-          title={`卸载 Agent「${uninstallAgentTarget.displayName}」`}
-          confirmLabel="确认卸载"
-          busyLabel="卸载中"
+          title={cleanupOnly
+            ? t('skills.agentManagement.cleanupTitle', { agent: uninstallAgentTarget.displayName })
+            : `卸载 Agent「${uninstallAgentTarget.displayName}」`}
+          confirmLabel={cleanupOnly ? t('skills.agentManagement.cleanupConfirm') : '确认卸载'}
+          busyLabel={cleanupOnly ? t('skills.agentManagement.cleanupBusy') : '卸载中'}
           modalClassName="sm2__modal--agent-uninstall"
           destructive
-          busy={uninstallingAgentId === uninstallAgentTarget.id}
-          onCancel={() => setUninstallAgentTarget(null)}
-          onConfirm={() => uninstallAgent(uninstallAgentTarget)}
+          busy={visibleOperation?.operation === 'uninstall' && visibleOperation.agentId === uninstallAgentTarget.id}
+          onCancel={() => setUninstallTarget(null)}
+          onConfirm={() => uninstallAgent(uninstallTarget)}
         >
-          <p className="sm2-agent-uninstall__intro">卸载会移除支持自动卸载的程序，并清理 AgentBro 检测到的本地能力残留。</p>
+          <p className="sm2-agent-uninstall__intro">
+            {t('skills.runtimeEnvironment.currentLabel', {
+              name: isLocal
+                ? t(isWindowsPlatform() ? 'skills.runtimeEnvironment.localWindowsName' : 'skills.runtimeEnvironment.localName')
+                : remoteHost?.name || uninstallTarget.environmentId,
+            })}
+          </p>
+          <p className="sm2-agent-uninstall__intro">
+            {cleanupOnly ? t('skills.agentManagement.cleanupDescription') : '卸载会移除支持自动卸载的程序，并清理该运行环境中 AgentBro 检测到的残留。'}
+          </p>
           <div className="sm2-agent-uninstall__summary" aria-label="卸载清理范围">
             {uninstallProgramInstalled && uninstallProgram?.uninstallCommand && (
               <div><strong>程序</strong><span>{uninstallProgram.kind === 'app' ? '移到废纸篓' : '执行卸载命令'}</span></div>
@@ -773,13 +988,13 @@ export function AgentManagementPage() {
           )}
         </PreviewDialog>
       )}
-      {deleteAgentTarget && (
+      {deleteAgentTarget && isAgentRuntimeSelection(deleteAgentTarget) && (
         <PreviewDialog
-          title={`删除 Agent「${deleteAgentTarget.displayName}」`}
+          title={`删除 Agent「${deleteAgentTarget.agent.displayName}」`}
           confirmLabel="确认删除"
           busyLabel="删除中"
           destructive
-          busy={deletingAgentId === deleteAgentTarget.id}
+          busy={deletingAgentId === deleteAgentTarget.agent.id}
           onCancel={() => setDeleteAgentTarget(null)}
           onConfirm={() => deleteCustomAgent(deleteAgentTarget)}
         >
@@ -792,20 +1007,26 @@ export function AgentManagementPage() {
 
 function CustomAgentDialog({
   busy,
+  environmentId,
+  environmentName,
   onClose,
   onSubmit,
 }: {
   busy: boolean
+  environmentId: string
+  environmentName: string
   onClose: () => void
   onSubmit: (config: CustomAgentConfig) => Promise<void>
 }) {
   const { t } = useTranslation()
+  const isLocal = environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
   const [displayName, setDisplayName] = useState('')
   const [configRoot, setConfigRoot] = useState('')
   const [skillsDir, setSkillsDir] = useState('')
   const [settingsFile, setSettingsFile] = useState('')
   const [mcpConfig, setMcpConfig] = useState('')
   const [pluginDir, setPluginDir] = useState('')
+  const [remotePickerOpen, setRemotePickerOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const applyRoot = (root: string) => {
@@ -818,6 +1039,10 @@ function CustomAgentDialog({
   }
 
   const chooseRoot = async () => {
+    if (!isLocal) {
+      setRemotePickerOpen(true)
+      return
+    }
     try {
       const selected = await open({ directory: true, multiple: false })
       if (typeof selected === 'string') applyRoot(selected)
@@ -856,6 +1081,21 @@ function CustomAgentDialog({
     })
   }
 
+  if (remotePickerOpen) {
+    return (
+      <RemoteSourcePicker
+        kind="directory"
+        environmentId={environmentId}
+        environmentName={environmentName}
+        onCancel={() => setRemotePickerOpen(false)}
+        onSelect={(path) => {
+          applyRoot(path)
+          setRemotePickerOpen(false)
+        }}
+      />
+    )
+  }
+
   return (
     <div className="skills-dialog-overlay sm2-custom-agent-overlay" onClick={onClose}>
       <div
@@ -868,18 +1108,22 @@ function CustomAgentDialog({
         <div className="skills-dialog__header">
           <div>
             <div className="skills-dialog__title" id="custom-agent-dialog-title">{t('settings.addEngineBranch')}</div>
-            <p className="custom-agent-dialog__subtitle">让企业封装版 Claude Code 使用自己的配置目录，同时复用 AgentBro 的 Hook、会话和 Skills 管理。</p>
+            <p className="custom-agent-dialog__subtitle">{isLocal
+              ? '让企业封装版 Claude Code 使用自己的配置目录，同时复用 AgentBro 的 Hook、会话和 Skills 管理。'
+              : `在 ${environmentName} 上添加 Claude Code 实例，管理它的配置与 Skills。`}</p>
           </div>
         </div>
         <div className="skills-dialog__body">
-          <div className="custom-agent-compatibility" role="note">
-            <AgentIconBadge iconKey="claude-code" size={28} />
-            <div>
-              <strong>沿用 Claude Code 能力</strong>
-              <span>保存后自动写入该目录的 settings.json，并监听独立的 projects 与 Skills 目录。</span>
+          {isLocal && (
+            <div className="custom-agent-compatibility" role="note">
+              <AgentIconBadge iconKey="claude-code" size={28} />
+              <div>
+                <strong>沿用 Claude Code 能力</strong>
+                <span>保存后自动写入该目录的 settings.json，并监听独立的 projects 与 Skills 目录。</span>
+              </div>
+              <em>自动安装 Hook</em>
             </div>
-            <em>自动安装 Hook</em>
-          </div>
+          )}
           <div className="install-form-row">
             <label className="install-form-label" htmlFor="custom-agent-name">显示名称</label>
             <input
@@ -974,9 +1218,9 @@ function deriveCustomAgentPaths(root: string) {
   }
 }
 
-function formatAgentOutput(event: AgentOutputEvent) {
-  const prefix = event.stream === 'stderr' ? '!' : event.stream === 'stdout' ? '>' : '*'
-  return `${prefix} ${event.line}`
+function formatAgentOutput(line: AgentPackageOutput['lines'][number]) {
+  const prefix = line.stream === 'stderr' ? '!' : line.stream === 'stdout' ? '>' : '*'
+  return `${prefix} ${line.line}`
 }
 
 interface ActionButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -1106,12 +1350,15 @@ function AgentDetailView({
   const inheritedUnmanagedSkills = detail.inheritedUnmanagedSkills ?? []
   const inheritedSkillCount = inheritedManagedSkills.length + inheritedUnmanagedSkills.length
   const inheritsSharedSkills = detail.inheritsSharedSkills ?? inheritedSkillCount > 0
-  const installed = program ? program.status === 'installed' || program.status === 'updateAvailable' : agentInstalled
+  const installed = program ? isAgentProgramInstalled(program) : agentInstalled
+  const desktopManaged = installed && program?.kind === 'cli' && program.packageManager === 'app'
   const canInstall = Boolean(program?.installCommand)
   const canOpenDownload = Boolean(program?.downloadUrl)
   const canDeleteCustom = program?.isCustom === true
-  const installedVersion = program?.installedVersion ?? detail.version
-  const latestVersion = program?.latestVersion ?? detail.latestVersion
+  const nativeProgram = program?.packageManager === 'native'
+  const installedVersion = desktopManaged || nativeProgram
+    ? program.installedVersion
+    : program?.installedVersion ?? detail.version
   const logicalSkillCount = countLogicalAgentSkills(
     detail.skills,
     unmanaged,
@@ -1119,18 +1366,24 @@ function AgentDetailView({
     inheritedUnmanagedSkills,
     readOnlySkills,
   )
-  const hasUpdate = installed && Boolean(latestVersion && latestVersion !== installedVersion)
+  const updateAvailable = program?.status === 'updateAvailable' && Boolean(program.latestVersion && program.updateCommand)
+  const nativeUpdater = installed && nativeProgram && Boolean(program.updateCommand)
   const versionLabel = installed ? installedVersion || '未知' : '未安装'
-  const updateLabel = !installed
+  const updateLabel = desktopManaged ? t('skills.agentManagement.desktopManagedUpdate') : !installed
     ? canInstall ? '可一键安装' : canOpenDownload ? '可打开安装页' : '未提供安装方式'
-    : latestVersion
-      ? hasUpdate ? `可更新到 ${latestVersion}` : '已是最新版本'
-      : programLoading ? '正在获取最新版本' : '未检测到最新版本'
+    : nativeUpdater ? null : updateAvailable
+      ? `可更新到 ${program.latestVersion}`
+      : program?.latestVersion
+        ? program.latestVersion === installedVersion ? '已是最新版本' : null
+        : programLoading ? '正在获取最新版本' : '未检测到最新版本'
+  const updateButtonLabel = nativeUpdater
+    ? t('skills.agentManagement.nativeCheckAndUpdate')
+    : updateAvailable ? '更新此 Agent' : '无需更新'
   const primaryAction = !installed
     ? canInstall
       ? { label: installing ? '正在安装' : '安装此 Agent', disabled: busy || installing, onClick: () => onInstall(detail.id), busy: installing }
       : { label: opening ? '正在打开' : '打开安装页', disabled: busy || !canOpenDownload, onClick: () => onOpenDownload(detail.id), busy: opening }
-    : { label: updating ? '正在更新' : hasUpdate ? '更新此 Agent' : '无需更新', disabled: busy || scanning || updating || !hasUpdate, onClick: () => onUpdate(detail.id), busy: updating }
+    : { label: updating ? '正在更新' : updateButtonLabel, disabled: busy || scanning || updating || (!updateAvailable && !nativeUpdater), onClick: () => onUpdate(detail.id), busy: updating }
   const tabs: Array<{ id: DetailTab; label: string }> = [
     { id: 'overview', label: '概览' },
     { id: 'skills', label: `Skills (${logicalSkillCount})` },
@@ -1148,9 +1401,11 @@ function AgentDetailView({
           <div className="sm2__agent-hero-title">{detail.displayName}</div>
           <div className="sm2__agent-version-row">
             <span className="sm2__agent-version-pill">当前版本 {versionLabel}</span>
-            <span className={`sm2__agent-update-state${hasUpdate ? ' sm2__agent-update-state--available' : ''}`}>
-              {updateLabel}
-            </span>
+            {updateLabel && (
+              <span className={`sm2__agent-update-state${updateAvailable ? ' sm2__agent-update-state--available' : ''}`}>
+                {updateLabel}
+              </span>
+            )}
           </div>
         </div>
         <div className="sm2__agent-summary-strip" aria-label="Agent 摘要">
@@ -1162,9 +1417,11 @@ function AgentDetailView({
           <Stat value={detail.mcpServers.length + detail.plugins.length} label="MCP/插件" />
         </div>
         <div className="sm2__btn-row" style={{ margin: 0 }}>
-          <ActionButton className="sm2__btn sm2__btn--primary" disabled={primaryAction.disabled} onClick={primaryAction.onClick} busy={primaryAction.busy} busyLabel={primaryAction.label}>
-            {primaryAction.label}
-          </ActionButton>
+          {!desktopManaged && (
+            <ActionButton className="sm2__btn sm2__btn--primary" disabled={primaryAction.disabled} onClick={primaryAction.onClick} busy={primaryAction.busy} busyLabel={primaryAction.label}>
+              {primaryAction.label}
+            </ActionButton>
+          )}
           <ActionButton className="sm2__btn" disabled={busy || scanning || updating || installing || !installed} onClick={() => onScan(detail.id)} busy={scanning} busyLabel="正在扫描">
             {scanning ? '正在扫描' : '重新扫描此 Agent'}
           </ActionButton>
@@ -1231,7 +1488,7 @@ function AgentDetailView({
         )}
         {tab === 'mcp' && <McpTab detail={detail} />}
         {tab === 'plugins' && <PluginManagementTab detail={detail} />}
-        {tab === 'hooks' && <HooksTab detail={detail} program={program} />}
+        {tab === 'hooks' && <HooksTab detail={detail} />}
         {tab === 'config' && <ConfigTab detail={detail} program={program} />}
       </div>
     </div>
@@ -1572,12 +1829,13 @@ function SkillsTab({
   const [deletingIds, setDeletingIds] = useState<Set<string>>(() => new Set())
   const [deletingUnmanagedIds, setDeletingUnmanagedIds] = useState<Set<string>>(() => new Set())
   const [adoptingIds, setAdoptingIds] = useState<Set<string>>(() => new Set())
-  const [batchDeleteTargets, setBatchDeleteTargets] = useState<AgentDetail['skills'] | null>(null)
-  const [batchDeleteUnmanagedTargets, setBatchDeleteUnmanagedTargets] = useState<UnmanagedItemDto[] | null>(null)
-  const [batchAdoptItems, setBatchAdoptItems] = useState<UnmanagedItemDto[] | null>(null)
-  const [quickTakeoverItems, setQuickTakeoverItems] = useState<UnmanagedItemDto[] | null>(null)
-  const [moveToPackTarget, setMoveToPackTarget] = useState<AgentDetail['skills'][number] | null>(null)
-  const [deleteUnmanagedTarget, setDeleteUnmanagedTarget] = useState<UnmanagedItemDto | null>(null)
+  const runtimeSelectionRevision = useRuntimeEnvironmentStore((runtime) => runtime.selectionRevision)
+  const [managedDeleteReview, setManagedDeleteReview] = useState<AgentSkillReview<AgentDetail['skills'][number]> | null>(null)
+  const [unmanagedBatchDeleteReview, setUnmanagedBatchDeleteReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
+  const [batchAdoptReview, setBatchAdoptReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
+  const [quickTakeoverReview, setQuickTakeoverReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
+  const [moveToPackReview, setMoveToPackReview] = useState<AgentSkillReview<AgentDetail['skills'][number]> | null>(null)
+  const [unmanagedSingleDeleteReview, setUnmanagedSingleDeleteReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
   const [deleteUnmanagedError, setDeleteUnmanagedError] = useState<string | null>(null)
   const reconciliationGenerationRef = useRef(0)
   const [confirmingPackApply, setConfirmingPackApply] = useState(false)
@@ -1664,13 +1922,18 @@ function SkillsTab({
     setUnmanagedSelectionMode(false)
     setSelectedManagedIds(new Set())
     setSelectedUnmanagedIds(new Set())
-    setBatchDeleteTargets(null)
-    setBatchDeleteUnmanagedTargets(null)
-    setQuickTakeoverItems(null)
-    setMoveToPackTarget(null)
-    setDeleteUnmanagedTarget(null)
+    setManagedDeleteReview(null)
+    setUnmanagedBatchDeleteReview(null)
+    setBatchAdoptReview(null)
+    setQuickTakeoverReview(null)
+    setMoveToPackReview(null)
+    setUnmanagedSingleDeleteReview(null)
     setDeleteUnmanagedError(null)
-  }, [detail.id, packFilter, source, status])
+  }, [detail.id, packFilter, runtimeSelectionRevision, source, state.agentSelectionRevision, state.runtimeEnvironmentId, status])
+
+  useEffect(() => {
+    setLocalNotice(null)
+  }, [detail.id, runtimeSelectionRevision, state.agentSelectionRevision])
 
   useEffect(() => {
     if (!inheritsSharedSkills && source === 'shared') {
@@ -1701,32 +1964,37 @@ function SkillsTab({
   }, [packApplyProgress])
 
   const refreshAgentSkills = async () => {
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    const isCurrent = () => isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)
+    if (!isCurrent()) return false
     const nextUnmanaged = await skillApiV2.listUnmanaged()
+    if (!isCurrent()) return false
     useSkillStoreV2.setState({ unmanaged: nextUnmanaged })
     await state.loadAgentDetail(detail.id, true)
+    if (!isCurrent()) return false
     await state.loadOverview(true)
+    return isCurrent()
   }
 
-  const reconcileDeletedAgentSkills = (agentId: string, runtimeEnvironmentId: string) => {
+  const reconcileDeletedAgentSkills = (scope: AgentSkillScope) => {
+    const { agentId, environmentId } = scope
     const generation = reconciliationGenerationRef.current + 1
     reconciliationGenerationRef.current = generation
+    const isCurrent = () => reconciliationGenerationRef.current === generation && isCurrentAgentSkillScope(scope)
     void (async () => {
       let lastError: unknown = null
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (!isCurrent()) return
         try {
           const snapshot = await skillApiV2.refreshAgentSkillView(agentId)
-          if (reconciliationGenerationRef.current !== generation) return
-          useSkillStoreV2.getState().applyAgentSkillViewSnapshot(runtimeEnvironmentId, agentId, snapshot)
+          if (!isCurrent()) return
+          useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
           return
         } catch (error) {
           lastError = error
         }
       }
-      if (
-        reconciliationGenerationRef.current === generation
-        && useSkillStoreV2.getState().runtimeEnvironmentId === runtimeEnvironmentId
-        && useSkillStoreV2.getState().selectedAgentId === agentId
-      ) {
+      if (isCurrent()) {
         state.setError(t('skills.agentManagement.deleteRefreshFailed', {
           error: skillErrorMessage(t, lastError),
         }))
@@ -1734,7 +2002,7 @@ function SkillsTab({
     })()
   }
 
-  const syncAdoptedSkillsToPack = async (selection: BatchAdoptPackSelection, skillIds: string[]) => {
+  const syncAdoptedSkillsToPack = async (selection: BatchAdoptPackSelection, skillIds: string[], environmentId: string) => {
     const uniqueSkillIds = uniqueValues(skillIds)
     if (selection.kind === 'none' || uniqueSkillIds.length === 0) return null
     if (selection.kind === 'new') {
@@ -1744,11 +2012,11 @@ function SkillsTab({
         description: '',
         tags: [],
         skillIds: uniqueSkillIds,
-      })
+      }, { environmentId })
       return { packName: saved.name, added: saved.members.length }
     }
 
-    const existing = await skillApiV2.getPackDetail(selection.packId)
+    const existing = await skillApiV2.getPackDetail(selection.packId, environmentId)
     const existingIds = existing.members.map((member) => member.skillId)
     const merged = uniqueValues([...existingIds, ...uniqueSkillIds])
     if (merged.length === existingIds.length) {
@@ -1760,33 +2028,43 @@ function SkillsTab({
       description: existing.description,
       tags: existing.tags,
       skillIds: merged,
-    })
+    }, { environmentId })
     return { packName: saved.name, added: merged.length - existingIds.length }
   }
 
-  const deleteManaged = async (targets: AgentDetail['skills']) => {
-    if (targets.length === 0) return
+  const createSkillReview = <T,>(items: T[]): AgentSkillReview<T> | null => {
+    const scope = {
+      agentId: detail.id,
+      environmentId: state.runtimeEnvironmentId,
+      runtimeSelectionRevision,
+      agentSelectionRevision: state.agentSelectionRevision,
+    }
+    return isCurrentAgentSkillScope(scope) ? { ...scope, items } : null
+  }
+
+  const deleteManaged = async (review: AgentSkillReview<AgentDetail['skills'][number]>) => {
+    const { items: targets, agentId, environmentId } = review
+    if (targets.length === 0 || !isCurrentAgentSkillScope(review)) return
     const ids = targets.map((target) => target.id)
-    const runtimeEnvironmentId = state.runtimeEnvironmentId
-    const agentId = detail.id
     setDeletingIds((current) => new Set([...current, ...ids]))
     setLocalNotice(`正在删除 ${targets.length} 个 Skill 分发...`)
     state.setError(null)
     try {
       const targetNames = new Map(targets.map((target) => [target.id, pathBasename(target.targetPath) || target.skillId]))
-      const result = await skillApiV2.deleteSkillTargetDistributions(ids)
+      const result = await skillApiV2.deleteSkillTargetDistributions(ids, environmentId)
+      if (!isCurrentAgentSkillScope(review)) return
       const failed = result.failures.map((failure) => `${targetNames.get(failure.targetId) || failure.targetId}: ${failure.error}`)
       const failedIds = new Set(result.failures.map((failure) => failure.targetId))
       const deletedIds = ids.filter((id) => !failedIds.has(id))
-      useSkillStoreV2.getState().removeAgentSkillItems(runtimeEnvironmentId, agentId, deletedIds, [])
+      useSkillStoreV2.getState().removeAgentSkillItems(environmentId, agentId, deletedIds, [])
       setSelectedManagedIds(failedIds)
       setManagedSelectionMode(failedIds.size > 0)
       setLocalNotice(`已删除 ${result.deleted} 个 Skill 分发${failed.length ? `，${failed.length} 个失败` : ''}`)
       if (failed.length === 0) state.setError(null)
       if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
-      if (deletedIds.length > 0) reconcileDeletedAgentSkills(agentId, runtimeEnvironmentId)
+      if (deletedIds.length > 0) reconcileDeletedAgentSkills(review)
     } catch (e) {
-      if (useSkillStoreV2.getState().runtimeEnvironmentId === runtimeEnvironmentId) {
+      if (isCurrentAgentSkillScope(review)) {
         state.setError(String(e))
       }
     } finally {
@@ -1798,8 +2076,10 @@ function SkillsTab({
     }
   }
 
-  const adoptUnmanaged = async (items: UnmanagedItemDto[], packSelection: BatchAdoptPackSelection = { kind: 'none' }) => {
-    if (items.length === 0) return
+  const adoptUnmanaged = async (review: AgentSkillReview<UnmanagedItemDto>, packSelection: BatchAdoptPackSelection) => {
+    const { items, agentId, environmentId } = review
+    const isCurrent = () => isCurrentAgentSkillScope(review)
+    if (items.length === 0 || !isCurrent()) return
     const ids = items.map((item) => item.id)
     setAdoptingIds(new Set(ids))
     setLocalNotice(null)
@@ -1812,11 +2092,11 @@ function SkillsTab({
       const failed: string[] = []
       const itemsById = new Map(items.map((item) => [item.id, item]))
       const result = await skillApiV2.executeAdoptBatch(items.map((item) => ({
-        agentId: adoptOwnerAgentId(detail.id, item),
+        agentId: adoptOwnerAgentId(agentId, item),
         unmanagedId: item.id,
         option: defaultAgentDetailAdoptMode(item),
         renamedId: null,
-      })))
+      })), environmentId)
       for (const itemResult of result.items) {
         const item = itemsById.get(itemResult.unmanagedId)
         const name = item?.inferredSkillId || (item ? pathBasename(item.path) : '') || itemResult.unmanagedId
@@ -1833,11 +2113,11 @@ function SkillsTab({
         failed.push(`批量刷新失败: ${skillErrorMessage(t, result.finalizationError)}`)
       }
       try {
-        packResult = await syncAdoptedSkillsToPack(packSelection, adoptedSkillIds)
+        packResult = await syncAdoptedSkillsToPack(packSelection, adoptedSkillIds, environmentId)
       } catch (e) {
         failed.push(`技能包同步失败: ${skillErrorMessage(t, e)}`)
       }
-      await refreshAgentSkills()
+      if (!isCurrent() || !(await refreshAgentSkills()) || !isCurrent()) return
       setSelectedUnmanagedIds(new Set())
       setUnmanagedSelectionMode(false)
       const packNotice = packResult
@@ -1859,14 +2139,16 @@ function SkillsTab({
       if (failed.length > 0) messages.push(failed.slice(0, 3).join('\n'))
       state.setError(messages.length > 0 ? messages.join('\n') : null)
     } catch (e) {
-      state.setError(skillErrorMessage(t, e))
+      if (isCurrent()) state.setError(skillErrorMessage(t, e))
     } finally {
       setAdoptingIds(new Set())
     }
   }
 
-  const takeoverExistingCenterSkills = async (items: UnmanagedItemDto[]) => {
-    if (items.length === 0) return
+  const takeoverExistingCenterSkills = async (review: AgentSkillReview<UnmanagedItemDto>) => {
+    const { items, agentId, environmentId } = review
+    const isCurrent = () => isCurrentAgentSkillScope(review)
+    if (items.length === 0 || !isCurrent()) return
     const ids = items.map((item) => item.id)
     const names = new Map(items.map((item) => [
       item.id,
@@ -1876,7 +2158,8 @@ function SkillsTab({
     setLocalNotice(t('skills.agentManagement.quickTakeover.running', { count: items.length }))
     state.setError(null)
     try {
-      const result = await skillApiV2.takeoverCenterSkills(detail.id, ids)
+      const result = await skillApiV2.takeoverCenterSkills(agentId, ids, environmentId)
+      if (!isCurrent()) return
       const adopted = result.items.filter((item) => item.skillId !== null).length
       const failures = result.items
         .filter((item) => item.skillId === null)
@@ -1887,8 +2170,11 @@ function SkillsTab({
         }))
       }
       try {
-        await refreshAgentSkills()
+        const snapshot = await skillApiV2.refreshAgentSkillView(agentId, environmentId)
+        if (!isCurrent()) return
+        useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
       } catch (error) {
+        if (!isCurrent()) return
         failures.push(t('skills.agentManagement.quickTakeover.refreshFailed', {
           error: skillErrorMessage(t, error),
         }))
@@ -1900,17 +2186,18 @@ function SkillsTab({
       }))
       state.setError(failures.length > 0 ? failures.slice(0, 3).join('\n') : null)
     } catch (error) {
-      state.setError(skillErrorMessage(t, error))
-      setLocalNotice(null)
+      if (isCurrent()) {
+        state.setError(skillErrorMessage(t, error))
+        setLocalNotice(null)
+      }
     } finally {
       setAdoptingIds(new Set())
     }
   }
 
-  const deleteUnmanaged = async (items: UnmanagedItemDto[]) => {
-    if (items.length === 0) return false
-    const runtimeEnvironmentId = state.runtimeEnvironmentId
-    const agentId = detail.id
+  const deleteUnmanaged = async (review: AgentSkillReview<UnmanagedItemDto>) => {
+    const { items, agentId, environmentId } = review
+    if (items.length === 0 || !isCurrentAgentSkillScope(review)) return
     const itemNames = new Map(items.map((item) => [item.id, item.inferredSkillId || pathBasename(item.path) || item.id]))
     const itemIds = new Set(items.map((item) => item.id))
     setDeletingUnmanagedIds((current) => new Set([...current, ...itemIds]))
@@ -1925,39 +2212,40 @@ function SkillsTab({
     const failedIds = new Set<string>()
     const itemsByOwner = new Map<string, UnmanagedItemDto[]>()
     items.forEach((item) => {
-      const owner = adoptOwnerAgentId(detail.id, item)
+      const owner = adoptOwnerAgentId(agentId, item)
       itemsByOwner.set(owner, [...(itemsByOwner.get(owner) || []), item])
     })
-    for (const [owner, ownerItems] of itemsByOwner) {
-      try {
-        const result = await skillApiV2.deleteUnmanagedAgentSkills(owner, ownerItems.map((item) => item.id))
-        const ownerFailedIds = new Set(result.failures.map((failure) => failure.unmanagedId))
-        ownerItems.forEach((item) => {
-          if (ownerFailedIds.has(item.id)) failedIds.add(item.id)
-          else deletedIds.add(item.id)
-        })
-        failed.push(...result.failures.map((failure) => `${itemNames.get(failure.unmanagedId) || failure.unmanagedId}: ${skillErrorMessage(t, failure.error)}`))
-      } catch (e) {
-        failed.push(`${owner}: ${skillErrorMessage(t, e)}`)
-        ownerItems.forEach((item) => failedIds.add(item.id))
+    try {
+      for (const [owner, ownerItems] of itemsByOwner) {
+        try {
+          const result = await skillApiV2.deleteUnmanagedAgentSkills(owner, ownerItems.map((item) => item.id), environmentId)
+          const ownerFailedIds = new Set(result.failures.map((failure) => failure.unmanagedId))
+          ownerItems.forEach((item) => {
+            if (ownerFailedIds.has(item.id)) failedIds.add(item.id)
+            else deletedIds.add(item.id)
+          })
+          failed.push(...result.failures.map((failure) => `${itemNames.get(failure.unmanagedId) || failure.unmanagedId}: ${skillErrorMessage(t, failure.error)}`))
+        } catch (e) {
+          failed.push(`${owner}: ${skillErrorMessage(t, e)}`)
+          ownerItems.forEach((item) => failedIds.add(item.id))
+        }
       }
+      if (!isCurrentAgentSkillScope(review)) return
+      useSkillStoreV2.getState().removeAgentSkillItems(environmentId, agentId, [], [...deletedIds])
+      setSelectedUnmanagedIds(failedIds)
+      setUnmanagedSelectionMode(failedIds.size > 0)
+      setLocalNotice(items.length === 1 && deletedIds.size === 1
+        ? t('skills.agentManagement.unmanagedDelete.deleted', { name: itemNames.get(items[0].id) })
+        : `已删除 ${deletedIds.size} 个未管理 Skill${failed.length ? `，${failed.length} 个失败` : ''}`)
+      state.setError(failed.length > 0 ? failed.slice(0, 3).join('\n') : null)
+      if (deletedIds.size > 0) reconcileDeletedAgentSkills(review)
+    } finally {
+      setDeletingUnmanagedIds((current) => {
+        const next = new Set(current)
+        itemIds.forEach((id) => next.delete(id))
+        return next
+      })
     }
-    useSkillStoreV2.getState().removeAgentSkillItems(runtimeEnvironmentId, agentId, [], [...deletedIds])
-    setSelectedUnmanagedIds(failedIds)
-    if (failed.length === 0) setUnmanagedSelectionMode(false)
-    setUnmanagedSelectionMode(failedIds.size > 0)
-    setLocalNotice(items.length === 1 && deletedIds.size === 1
-      ? t('skills.agentManagement.unmanagedDelete.deleted', { name: itemNames.get(items[0].id) })
-      : `已删除 ${deletedIds.size} 个未管理 Skill${failed.length ? `，${failed.length} 个失败` : ''}`)
-    if (failed.length === 0) state.setError(null)
-    if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
-    if (deletedIds.size > 0) reconcileDeletedAgentSkills(agentId, runtimeEnvironmentId)
-    setDeletingUnmanagedIds((current) => {
-      const next = new Set(current)
-      itemIds.forEach((id) => next.delete(id))
-      return next
-    })
-    return deletedIds.size === items.length
   }
 
   const toggleManaged = (targetId: string) => {
@@ -1970,15 +2258,13 @@ function SkillsTab({
 
   const selectedManaged = filteredManaged.filter((item) => selectedManagedIds.has(item.id))
   const selectedUnmanaged = filteredUnmanaged.filter((item) => selectedUnmanagedIds.has(item.id))
+  const batchDeleteTargets = managedDeleteReview?.items
+  const batchDeleteUnmanagedTargets = unmanagedBatchDeleteReview?.items
+  const deleteUnmanagedTarget = unmanagedSingleDeleteReview?.items[0]
+  const moveToPackTarget = moveToPackReview?.items[0]
   const deletingSharedManaged = batchDeleteTargets?.some(isSharedManagedSkill) ?? false
   const deletingSharedUnmanaged = batchDeleteUnmanagedTargets?.some(isSharedAgentsUnmanaged) ?? false
   const deletingSingleSharedUnmanaged = deleteUnmanagedTarget ? isSharedAgentsUnmanaged(deleteUnmanagedTarget) : false
-  const confirmBatchDelete = async () => {
-    if (!batchDeleteTargets || batchDeleteTargets.length === 0) return
-    const targets = batchDeleteTargets
-    setBatchDeleteTargets(null)
-    await deleteManaged(targets)
-  }
   const applyPackFromRail = async (packId: string, agentId: string) => {
     const pack = detail.availablePacks.find((item) => item.id === packId)
     if (!pack) return false
@@ -2010,7 +2296,7 @@ function SkillsTab({
     }
   }
   const finishInstallFromLibrary = async () => {
-    await refreshAgentSkills()
+    if (!(await refreshAgentSkills())) return
     setInstallDialogOpen(false)
     setSource('agent')
     setStatus('managed')
@@ -2111,7 +2397,7 @@ function SkillsTab({
                 <button className="sm2__btn" disabled={selectedManagedIds.size === 0 || actionBusy} onClick={() => setSelectedManagedIds(new Set())}>
                   {t('skills.agentManagement.actions.clear')}
                 </button>
-                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedManaged.length === 0 || actionBusy} busy={managedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setBatchDeleteTargets(selectedManaged)}>
+                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedManaged.length === 0 || actionBusy} busy={managedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setManagedDeleteReview(createSkillReview(selectedManaged))}>
                   {t('skills.agentManagement.actions.batchDelete', { count: selectedManaged.length })}
                 </ActionButton>
                 <button className="sm2__btn sm2__btn--ghost" disabled={actionBusy} onClick={() => {
@@ -2137,10 +2423,10 @@ function SkillsTab({
                 <button className="sm2__btn" disabled={selectedUnmanagedIds.size === 0 || actionBusy} onClick={() => setSelectedUnmanagedIds(new Set())}>
                   {t('skills.agentManagement.actions.clear')}
                 </button>
-                <ActionButton className="sm2__btn sm2__btn--primary" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedAdopting} busyLabel={t('skills.agentManagement.actions.adopting')} onClick={() => setBatchAdoptItems(selectedUnmanaged)}>
+                <ActionButton className="sm2__btn sm2__btn--primary" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedAdopting} busyLabel={t('skills.agentManagement.actions.adopting')} onClick={() => setBatchAdoptReview(createSkillReview(selectedUnmanaged))}>
                   {t('skills.agentManagement.actions.adoptToCenter')}
                 </ActionButton>
-                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setBatchDeleteUnmanagedTargets(selectedUnmanaged)}>
+                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setUnmanagedBatchDeleteReview(createSkillReview(selectedUnmanaged))}>
                   {t('skills.agentManagement.actions.batchDelete', { count: selectedUnmanaged.length })}
                 </ActionButton>
                 <button className="sm2__btn sm2__btn--ghost" disabled={actionBusy} onClick={() => {
@@ -2158,7 +2444,7 @@ function SkillsTab({
                     disabled={quickTakeoverCandidates.length === 0 || actionBusy}
                     busy={unmanagedAdopting}
                     busyLabel={t('skills.agentManagement.quickTakeover.busy')}
-                    onClick={() => setQuickTakeoverItems(quickTakeoverCandidates)}
+                    onClick={() => setQuickTakeoverReview(createSkillReview(quickTakeoverCandidates))}
                   >
                     {t('skills.agentManagement.quickTakeover.action', { count: quickTakeoverCandidates.length })}
                   </ActionButton>
@@ -2203,10 +2489,14 @@ function SkillsTab({
                 : undefined}
             onToggle={toggleManaged}
             onDelete={(skill) => {
-              if (source === 'shared') setBatchDeleteTargets([skill])
-              else void deleteManaged([skill])
+              const review = createSkillReview([skill])
+              if (!review) return
+              if (source === 'shared') setManagedDeleteReview(review)
+              else void deleteManaged(review)
             }}
-            onMoveToPack={capabilities.moveToPack && moveToPackOptions.length > 0 ? setMoveToPackTarget : undefined}
+            onMoveToPack={capabilities.moveToPack && moveToPackOptions.length > 0
+              ? (target) => setMoveToPackReview(createSkillReview([target]))
+              : undefined}
             onOpenSkillDetail={onOpenSkillDetail}
           />
           {shownManaged.length < filteredManaged.length && (
@@ -2250,7 +2540,7 @@ function SkillsTab({
                 onAdopt={onAdopt}
                 onDelete={(item) => {
                   setDeleteUnmanagedError(null)
-                  setDeleteUnmanagedTarget(item)
+                  setUnmanagedSingleDeleteReview(createSkillReview([item]))
                 }}
                 onOpenSkillDetail={onOpenSkillDetail}
               />
@@ -2303,7 +2593,7 @@ function SkillsTab({
         </>
       )}
 
-      {batchDeleteTargets && (
+      {managedDeleteReview && batchDeleteTargets && isCurrentAgentSkillScope(managedDeleteReview) && (
         <PreviewDialog
           title={deletingSharedManaged
             ? t('skills.agentManagement.sharedDelete.managedTitle')
@@ -2317,8 +2607,11 @@ function SkillsTab({
           destructive
           busy={managedDeleting}
           disabled={batchDeleteTargets.length === 0}
-          onCancel={() => setBatchDeleteTargets(null)}
-          onConfirm={confirmBatchDelete}
+          onCancel={() => setManagedDeleteReview(null)}
+          onConfirm={async () => {
+            setManagedDeleteReview(null)
+            await deleteManaged(managedDeleteReview)
+          }}
         >
           {deletingSharedManaged ? (
             <>
@@ -2330,44 +2623,43 @@ function SkillsTab({
           )}
         </PreviewDialog>
       )}
-      {batchAdoptItems && (
+      {batchAdoptReview && isCurrentAgentSkillScope(batchAdoptReview) && (
         <BatchAdoptPackDialog
-          items={batchAdoptItems}
+          items={batchAdoptReview.items}
           agentName={detail.displayName}
           packOptions={packOptionsForBatchAdopt(detail, state.packs)}
           busy={unmanagedAdopting}
-          onCancel={() => setBatchAdoptItems(null)}
+          onCancel={() => setBatchAdoptReview(null)}
           onConfirm={async (selection) => {
-            const items = batchAdoptItems
-            setBatchAdoptItems(null)
-            await adoptUnmanaged(items, selection)
+            setBatchAdoptReview(null)
+            await adoptUnmanaged(batchAdoptReview, selection)
           }}
         />
       )}
-      {quickTakeoverItems && (
+      {quickTakeoverReview && isCurrentAgentSkillScope(quickTakeoverReview) && (
         <PreviewDialog
-          title={t('skills.agentManagement.quickTakeover.title', { count: quickTakeoverItems.length })}
+          title={t('skills.agentManagement.quickTakeover.title', { count: quickTakeoverReview.items.length })}
           confirmLabel={t('skills.agentManagement.quickTakeover.confirm')}
           busyLabel={t('skills.agentManagement.quickTakeover.busy')}
           busy={unmanagedAdopting}
-          disabled={quickTakeoverItems.length === 0}
+          disabled={quickTakeoverReview.items.length === 0}
           modalClassName="sm2__modal--adopt"
-          onCancel={() => setQuickTakeoverItems(null)}
+          onCancel={() => setQuickTakeoverReview(null)}
           onConfirm={async () => {
-            await takeoverExistingCenterSkills(quickTakeoverItems)
-            setQuickTakeoverItems(null)
+            await takeoverExistingCenterSkills(quickTakeoverReview)
+            setQuickTakeoverReview((current) => current === quickTakeoverReview ? null : current)
           }}
         >
           <p>{t('skills.agentManagement.quickTakeover.description', {
-            count: quickTakeoverItems.length,
+            count: quickTakeoverReview.items.length,
             agent: detail.displayName,
           })}</p>
           <p>{t('skills.agentManagement.quickTakeover.preserved', {
-            count: Math.max(0, unmanaged.length - quickTakeoverItems.length),
+            count: Math.max(0, unmanaged.length - quickTakeoverReview.items.length),
           })}</p>
         </PreviewDialog>
       )}
-      {batchDeleteUnmanagedTargets && (
+      {unmanagedBatchDeleteReview && batchDeleteUnmanagedTargets && isCurrentAgentSkillScope(unmanagedBatchDeleteReview) && (
         <PreviewDialog
           title={deletingSharedUnmanaged
             ? t('skills.agentManagement.sharedDelete.unmanagedTitle')
@@ -2381,11 +2673,10 @@ function SkillsTab({
           destructive
           busy={unmanagedDeleting}
           disabled={batchDeleteUnmanagedTargets.length === 0}
-          onCancel={() => setBatchDeleteUnmanagedTargets(null)}
+          onCancel={() => setUnmanagedBatchDeleteReview(null)}
           onConfirm={async () => {
-            const items = batchDeleteUnmanagedTargets
-            setBatchDeleteUnmanagedTargets(null)
-            await deleteUnmanaged(items)
+            setUnmanagedBatchDeleteReview(null)
+            await deleteUnmanaged(unmanagedBatchDeleteReview)
           }}
         >
           {deletingSharedUnmanaged ? (
@@ -2401,14 +2692,19 @@ function SkillsTab({
           )}
         </PreviewDialog>
       )}
-      {moveToPackTarget && (
+      {moveToPackReview && moveToPackTarget && isCurrentAgentSkillScope(moveToPackReview) && (
         <MoveDirectSkillToPackDialog
           target={moveToPackTarget}
           packs={moveToPackOptions}
-          onCancel={() => setMoveToPackTarget(null)}
+          scope={moveToPackReview}
+          onCancel={() => setMoveToPackReview(null)}
           onDone={async (result) => {
-            await refreshAgentSkills()
-            setMoveToPackTarget(null)
+            if (!isCurrentAgentSkillScope(moveToPackReview)) return
+            const { agentId, environmentId } = moveToPackReview
+            const snapshot = await skillApiV2.refreshAgentSkillView(agentId, environmentId)
+            if (!isCurrentAgentSkillScope(moveToPackReview)) return
+            useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
+            setMoveToPackReview((current) => current === moveToPackReview ? null : current)
             setLocalNotice(t('skills.moveToPack.success', {
               skill: result.skillName,
               pack: result.packName,
@@ -2416,7 +2712,7 @@ function SkillsTab({
           }}
         />
       )}
-      {deleteUnmanagedTarget && (
+      {unmanagedSingleDeleteReview && deleteUnmanagedTarget && isCurrentAgentSkillScope(unmanagedSingleDeleteReview) && (
         <PreviewDialog
           title={deletingSingleSharedUnmanaged
             ? t('skills.agentManagement.sharedDelete.unmanagedTitle')
@@ -2434,13 +2730,12 @@ function SkillsTab({
           busy={deletingUnmanagedIds.has(deleteUnmanagedTarget.id)}
           onCancel={() => {
             setDeleteUnmanagedError(null)
-            setDeleteUnmanagedTarget(null)
+            setUnmanagedSingleDeleteReview(null)
           }}
           onConfirm={async () => {
-            const item = deleteUnmanagedTarget
             setDeleteUnmanagedError(null)
-            setDeleteUnmanagedTarget(null)
-            await deleteUnmanaged([item])
+            setUnmanagedSingleDeleteReview(null)
+            await deleteUnmanaged(unmanagedSingleDeleteReview)
           }}
         >
           <p>{deletingSingleSharedUnmanaged
@@ -2453,6 +2748,7 @@ function SkillsTab({
       )}
       {installDialogOpen && (
         <AgentSkillInstallDialog
+          key={detail.id}
           agent={detail}
           skills={state.skills}
           defaultMode={state.settings?.defaultDistributeMode || 'link'}
@@ -2481,6 +2777,7 @@ function BatchAdoptPackDialog({
   onConfirm: (selection: BatchAdoptPackSelection) => Promise<void> | void
 }) {
   const { t } = useTranslation()
+  const { selectedEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
   const [mode, setMode] = useState<BatchAdoptPackSelection['kind']>('none')
   const [packId, setPackId] = useState(packOptions[0]?.id ?? '')
   const [newPackName, setNewPackName] = useState('')
@@ -2533,6 +2830,11 @@ function BatchAdoptPackDialog({
       onConfirm={execute}
     >
       <div className="sm2-adopt sm2-batch-adopt-pack">
+        <p>{t('skills.runtimeEnvironment.currentLabel', {
+          name: isLocal
+            ? t(isWindowsPlatform() ? 'skills.runtimeEnvironment.localWindowsName' : 'skills.runtimeEnvironment.localName')
+            : remoteHost?.name || selectedEnvironmentId,
+        })}</p>
         <div className="sm2-adopt__summary">
           <div>
             <span>{t('skills.batchAdoptPack.agent')}</span>
@@ -2635,11 +2937,13 @@ function BatchAdoptPackDialog({
 function MoveDirectSkillToPackDialog({
   target,
   packs,
+  scope,
   onCancel,
   onDone,
 }: {
   target: AgentDetail['skills'][number]
   packs: MoveToPackOption[]
+  scope: AgentSkillScope
   onCancel: () => void
   onDone: (result: MoveDirectSkillToPackPreview) => Promise<void> | void
 }) {
@@ -2652,44 +2956,46 @@ function MoveDirectSkillToPackDialog({
     ))
     return existingPackClaim?.packId ?? packs[0]?.id ?? ''
   })
-  const [preview, setPreview] = useState<MoveDirectSkillToPackPreview | null>(null)
+  const [loadedPreview, setPreview] = useState<MoveDirectSkillToPackPreview | null>(null)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const name = pathBasename(target.targetPath) || target.skillId
+  const preview = loadedPreview?.targetId === target.id && loadedPreview.packId === packId ? loadedPreview : null
 
   useEffect(() => {
-    if (!packId) return
+    if (!packId || !isCurrentAgentSkillScope(scope)) return
     let active = true
+    const isCurrent = () => active && isCurrentAgentSkillScope(scope)
     setLoading(true)
     setPreview(null)
     setError(null)
-    skillApiV2.previewMoveDirectSkillToPack(target.id, packId)
+    skillApiV2.previewMoveDirectSkillToPack(target.id, packId, scope.environmentId)
       .then((next) => {
-        if (active) setPreview(next)
+        if (isCurrent()) setPreview(next)
       })
       .catch((nextError) => {
-        if (active) setError(skillErrorMessage(t, nextError))
+        if (isCurrent()) setError(skillErrorMessage(t, nextError))
       })
       .finally(() => {
-        if (active) setLoading(false)
+        if (isCurrent()) setLoading(false)
       })
     return () => {
       active = false
     }
-  }, [packId, t, target.id])
+  }, [packId, scope, t, target.id])
 
   const selectedPack = packs.find((pack) => pack.id === packId)
 
   const execute = async () => {
-    if (!preview) return
+    if (!preview || loading || !isCurrentAgentSkillScope(scope)) return
     setBusy(true)
     setError(null)
     try {
-      const result = await skillApiV2.moveDirectSkillToPack(target.id, packId, [])
+      const result = await skillApiV2.moveDirectSkillToPack(preview.targetId, preview.packId, [], scope.environmentId)
       await onDone(result)
     } catch (nextError) {
-      setError(skillErrorMessage(t, nextError))
+      if (isCurrentAgentSkillScope(scope)) setError(skillErrorMessage(t, nextError))
     } finally {
       setBusy(false)
     }
@@ -3012,6 +3318,12 @@ function AgentPackToggleRail({
   )
 }
 
+type AgentSkillInstallReview = {
+  preview: DistributionPreview
+  runtimeId: string
+  runtimeRevision: number
+}
+
 function AgentSkillInstallDialog({
   agent,
   skills,
@@ -3031,10 +3343,12 @@ function AgentSkillInstallDialog({
   const [source, setSource] = useState('')
   const [mode, setMode] = useState<'link' | 'copy'>(defaultMode)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
-  const [preview, setPreview] = useState<DistributionPreview | null>(null)
+  const [review, setReview] = useState<AgentSkillInstallReview | null>(null)
   const [blockerDecisions, setBlockerDecisions] = useState<Record<string, InstallBlockerDecision>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const previewRequest = useRef(0)
+  const preview = review?.preview
   const sources = useMemo(
     () => Array.from(new Set(skills.map((skill) => skill.sourceType).filter(Boolean))).sort(),
     [skills],
@@ -3073,10 +3387,6 @@ function AgentSkillInstallDialog({
   const unresolvedBlockers = preview?.blockers.filter((blocker) => !blockerDecisions[installBlockerKey(blocker)]).length ?? 0
 
   useEffect(() => {
-    setMode(defaultMode)
-  }, [defaultMode])
-
-  useEffect(() => {
     setSelectedIds((current) => {
       const known = new Set(skills.map((skill) => skill.id))
       const next = new Set(Array.from(current).filter((id) => known.has(id)))
@@ -3084,11 +3394,21 @@ function AgentSkillInstallDialog({
     })
   }, [skills])
 
+  const resetPreview = () => {
+    previewRequest.current += 1
+    setReview(null)
+    setBlockerDecisions({})
+    setBusy(false)
+    setError(null)
+  }
+
   const toggleSkill = (skillId: string) => {
+    resetPreview()
     setSelectedIds((current) => toggleSetValue(current, skillId))
   }
 
   const selectVisible = () => {
+    resetPreview()
     setSelectedIds((current) => {
       const next = new Set(current)
       for (const skill of filteredSkills) next.add(skill.id)
@@ -3096,23 +3416,39 @@ function AgentSkillInstallDialog({
     })
   }
 
+  const changeMode = (nextMode: 'link' | 'copy') => {
+    if (nextMode === mode) return
+    resetPreview()
+    setMode(nextMode)
+  }
+
   const runPreview = async () => {
-    if (selectedSkills.length === 0) return
+    if (busy || selectedSkills.length === 0) return
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    if (!isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) return
+    const requestId = ++previewRequest.current
+    const isCurrent = () => requestId === previewRequest.current && isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)
     setBusy(true)
     setError(null)
     try {
       const nextPreview = await skillApiV2.previewDistribute(selectedSkills.map((skill) => skill.id), [agent.id], mode)
-      setPreview(nextPreview)
-      setBlockerDecisions({})
+      if (isCurrent()) {
+        setReview({ preview: nextPreview, runtimeId: selectedEnvironmentId, runtimeRevision: selectionRevision })
+      }
     } catch (e) {
-      setError(String(e))
+      if (isCurrent()) setError(String(e))
     } finally {
-      setBusy(false)
+      if (requestId === previewRequest.current) setBusy(false)
     }
   }
 
   const execute = async () => {
-    if (!preview) return
+    if (!review || busy) return
+    const { preview, runtimeId, runtimeRevision } = review
+    if (!isRuntimeEnvironment(runtimeId, runtimeRevision)) {
+      resetPreview()
+      return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -3123,9 +3459,9 @@ function AgentSkillInstallDialog({
         })
         .filter((item): item is { skillId: string; agentId: string; action: InstallBlockerDecision } => Boolean(item))
       await skillApiV2.executeDistribute({ ...preview, blockerDecisions: blockerDecisionsPayload })
-      await Promise.resolve(onDone())
+      if (isRuntimeEnvironment(runtimeId, runtimeRevision)) await onDone()
     } catch (e) {
-      setError(String(e))
+      if (isRuntimeEnvironment(runtimeId, runtimeRevision)) setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -3140,14 +3476,14 @@ function AgentSkillInstallDialog({
         busy={busy}
         disabled={unresolvedBlockers > 0}
         modalClassName="sm2__modal--agent-install sm2__modal--light-surface"
-        onCancel={() => setPreview(null)}
+        onCancel={() => { if (!busy) resetPreview() }}
         onConfirm={execute}
       >
         <div className="sm2-agent-install">
           <div className="sm2-agent-install__target">
             <span>目标：</span>
             <strong>{agent.displayName}</strong>
-            <em>{selectedSkills.length} 个 Skill · {skillModeLabel(t, mode)}</em>
+            <em>{preview.skillIds.length} 个 Skill · {skillModeLabel(t, preview.requestedMode)}</em>
           </div>
           <div className="sm2-agent-install__preview-list">
             {preview.changes.map((change) => (
@@ -3156,7 +3492,7 @@ function AgentSkillInstallDialog({
                   {change.action === 'create' ? '新增' : change.action === 'reinstall' ? '重装' : change.action === 'convert' ? '转换' : change.action}
                 </span>
                 <div>
-                  <strong>{selectedSkills.find((skill) => skill.id === change.skillId)?.name ?? change.skillId}</strong>
+                  <strong>{skills.find((skill) => skill.id === change.skillId)?.name ?? change.skillId}</strong>
                   <code>{change.targetPath}</code>
                 </div>
               </div>
@@ -3168,7 +3504,7 @@ function AgentSkillInstallDialog({
                 <div key={key} className="sm2-agent-install__preview-row sm2-agent-install__preview-row--blocked">
                   <span className="sm2__tag sm2__tag--conflict">阻止</span>
                   <div>
-                    <strong>{selectedSkills.find((skill) => skill.id === blocker.skillId)?.name ?? blocker.skillId}</strong>
+                    <strong>{skills.find((skill) => skill.id === blocker.skillId)?.name ?? blocker.skillId}</strong>
                     <span>{distributionBlockerReason(t, blocker)}</span>
                     {blocker.existingPath && <code>{blocker.existingPath}</code>}
                     <div className="sm2-agent-install__decision-row">
@@ -3254,8 +3590,8 @@ function AgentSkillInstallDialog({
         <div className="sm2-agent-install__filters">
           <span>安装方式</span>
           <div className="sm2__view-toggle sm2__view-toggle--soft">
-            <button className={mode === 'link' ? 'active' : ''} onClick={() => setMode('link')}>{skillModeLabel(t, 'link')}</button>
-            <button className={mode === 'copy' ? 'active' : ''} onClick={() => setMode('copy')}>{skillModeLabel(t, 'copy')}</button>
+            <button className={mode === 'link' ? 'active' : ''} onClick={() => changeMode('link')}>{skillModeLabel(t, 'link')}</button>
+            <button className={mode === 'copy' ? 'active' : ''} onClick={() => changeMode('copy')}>{skillModeLabel(t, 'copy')}</button>
           </div>
         </div>
         <div className="sm2-agent-install__bulk">
@@ -3263,7 +3599,10 @@ function AgentSkillInstallDialog({
           <button className="sm2__btn sm2__btn--ghost" disabled={filteredSkills.length === 0} onClick={selectVisible}>
             选择当前
           </button>
-          <button className="sm2__btn sm2__btn--ghost" disabled={selectedIds.size === 0} onClick={() => setSelectedIds(new Set())}>
+          <button className="sm2__btn sm2__btn--ghost" disabled={selectedIds.size === 0} onClick={() => {
+            resetPreview()
+            setSelectedIds(new Set())
+          }}>
             清空
           </button>
         </div>
@@ -3882,6 +4221,11 @@ function isReadOnlyUnmanaged(item: UnmanagedItemDto) {
   return item.readOnly === true || item.reason === 'agent_builtin_read_only'
 }
 
+function removableUnmanagedSkills(items: UnmanagedItemDto[], agentId: string) {
+  return items.filter((item) => item.agentId === agentId
+    && (item.itemType === 'agent_skill' || item.itemType === 'skill') && !isReadOnlyUnmanaged(item))
+}
+
 function unmanagedSourceLabel(t: Parameters<typeof unmanagedReasonLabel>[0], item: UnmanagedItemDto) {
   return isSharedAgentsUnmanaged(item) ? unmanagedReasonLabel(t, 'shared_agents_directory') : ''
 }
@@ -3925,7 +4269,26 @@ function McpTab({ detail }: { detail: AgentDetail }) {
   return <McpManagementTab detail={detail} />
 }
 
-function HooksTab({ detail, program }: { detail: AgentDetail; program: AgentProgramInfo | null }) {
+function HooksTab({ detail }: { detail: AgentDetail }) {
+  const { selectedEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
+  const runtimeRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
+  const agentRevision = useSkillStoreV2((state) => state.agentSelectionRevision)
+  const key = `${selectedEnvironmentId}:${runtimeRevision}:${agentRevision}:${detail.id}`
+  if (isLocal) return <LocalHooksTab key={key} detail={detail} />
+  return (
+    <RemoteAgentHooksTab
+      key={key}
+      agentId={detail.id}
+      agentName={detail.displayName}
+      agentRevision={agentRevision}
+      environmentId={selectedEnvironmentId}
+      runtimeRevision={runtimeRevision}
+      hostName={remoteHost?.name || selectedEnvironmentId}
+    />
+  )
+}
+
+function LocalHooksTab({ detail }: { detail: AgentDetail }) {
   const agentId = detail.id
   const [hook, setHook] = useState<HookStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -3936,7 +4299,7 @@ function HooksTab({ detail, program }: { detail: AgentDetail; program: AgentProg
     setLoading(true)
     try {
       const all = await getAllHookStatus()
-      const found = all.find((h) => hookMatchesAgent(h, detail, program))
+      const found = await findAgentHookStatus(all, detail)
       setHook(found || null)
     } catch (e) {
       setError(String(e))
@@ -4081,34 +4444,30 @@ function HooksTab({ detail, program }: { detail: AgentDetail; program: AgentProg
   )
 }
 
-function hookMatchesAgent(hook: HookStatus, detail: AgentDetail, program: AgentProgramInfo | null) {
+async function findAgentHookStatus(hooks: HookStatus[], detail: AgentDetail) {
   const agentId = detail.id
-  if (hook.adapterId === agentId || hook.toolId === agentId || hook.name === agentId) return true
-  const displayName = detail.displayName.toLowerCase()
-  if (hook.isCustom && hook.displayName.toLowerCase() === displayName) return true
-  const hookValues = [
-    hook.displayName,
-    hook.name,
-    hook.toolId,
-    hook.adapterId,
-    hook.profileId,
-    hook.configPath,
-    hook.configDir,
-    hook.bridgeCommand,
-  ].map((value) => String(value || '').toLowerCase())
-  const targetValues = [
-    agentId,
-    detail.displayName,
-    detail.configPath,
-    detail.mcpConfigPath,
-    detail.pluginDir,
-    detail.skillsDir,
-    program?.configDir,
-    program?.skillsDir,
-  ].map((value) => String(value || '').toLowerCase()).filter(Boolean)
-  return hookValues.some((hookValue) =>
-    targetValues.some((target) => hookValue === target || hookValue.includes(target)),
-  )
+  const exact = hooks.find((hook) => hook.toolId === agentId)
+    ?? hooks.find((hook) => hook.customId === agentId
+      || hook.toolId === `engine:${agentId}` || hook.toolId === `custom:${agentId}`)
+    ?? hooks.find((hook) => !hook.toolId && !hook.isCustom && !hook.customId
+      && (hook.adapterId === agentId || hook.name === agentId))
+  if (exact || !detail.configPath) return exact
+
+  const windows = isWindowsPlatform()
+  const normalize = (path: string) => windows ? path.replace(/\\/g, '/').toLowerCase() : path
+  const customHooks = hooks.flatMap((hook) => hook.isCustom && hook.toolId && hook.configPath
+    ? [{ hook, path: normalize(hook.configPath) }]
+    : [])
+  if (customHooks.length === 0) return undefined
+
+  const path = normalize(detail.configPath)
+  const home = path.startsWith('~/') || customHooks.some((entry) => entry.path.startsWith('~/'))
+    ? normalize(await homeDir().catch(() => '')).replace(/\/+$/, '')
+    : ''
+  const expandHome = (value: string) => home && value.startsWith('~/') ? `${home}/${value.slice(2)}` : value
+  const target = expandHome(path)
+  const matches = customHooks.filter((entry) => expandHome(entry.path) === target)
+  return matches.length === 1 ? matches[0].hook : undefined
 }
 
 function groupHookEvents(events: HookEventStatus[]) {
@@ -4178,12 +4537,19 @@ type ConfigResource = {
 
 function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentProgramInfo | null }) {
   const { t } = useTranslation()
-  const currentVersion = program?.installedVersion ?? detail.version
-  const latestVersion = program?.latestVersion ?? detail.latestVersion
+  const runtimeSelectionRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
+  const environmentId = useSkillStoreV2((state) => state.runtimeEnvironmentId)
+  const agentSelectionRevision = useSkillStoreV2((state) => state.agentSelectionRevision)
+  const scope = { agentId: detail.id, environmentId, runtimeSelectionRevision, agentSelectionRevision }
+  const desktopManaged = program?.kind === 'cli' && program.packageManager === 'app'
+  const resolvedVersions = desktopManaged || program?.packageManager === 'native'
+  const currentVersion = resolvedVersions ? program.installedVersion : program?.installedVersion ?? detail.version
+  const latestVersion = resolvedVersions ? program.latestVersion : program?.latestVersion ?? detail.latestVersion
   const executablePath = program?.appPath ?? program?.binaryPath ?? null
   const executableIsApp = Boolean(program?.appPath)
   const skillsDir = detail.skillsDir ?? program?.skillsDir ?? null
-  const [editorTarget, setEditorTarget] = useState<ConfigResource | null>(null)
+  const [editorTarget, setEditorTarget] = useState<{ resource: ConfigResource; scope: AgentSkillScope } | null>(null)
+  const activeEditor = editorTarget && isCurrentAgentSkillScope(editorTarget.scope) ? editorTarget : null
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const resources = useMemo(() => {
@@ -4251,13 +4617,14 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
   ])
 
   const runResourceAction = async (action: () => Promise<void>, notice: string) => {
+    if (!isCurrentAgentSkillScope(scope)) return
     setActionError(null)
     setActionNotice(null)
     try {
       await action()
-      setActionNotice(notice)
+      if (isCurrentAgentSkillScope(scope)) setActionNotice(notice)
     } catch (error) {
-      setActionError(skillErrorMessage(t, error))
+      if (isCurrentAgentSkillScope(scope)) setActionError(skillErrorMessage(t, error))
     }
   }
 
@@ -4317,8 +4684,9 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
                     type="button"
                     className="sm2__btn sm2__btn--primary sm2__config-resource-primary"
                     onClick={() => {
+                      if (!isCurrentAgentSkillScope(scope)) return
                       setActionError(null)
-                      setEditorTarget(resource)
+                      setEditorTarget({ resource, scope })
                     }}
                   >
                     {t('skills.agentManagement.pathSettings.actions.edit')}
@@ -4348,10 +4716,10 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
           </div>
         )}
       </section>
-      {editorTarget && (
+      {activeEditor && (
         <ConfigFileEditorDialog
-          agentId={detail.id}
-          resource={editorTarget}
+          scope={activeEditor.scope}
+          resource={activeEditor.resource}
           onClose={() => setEditorTarget(null)}
           onSaved={() => {
             setActionError(null)
@@ -4364,12 +4732,12 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
 }
 
 function ConfigFileEditorDialog({
-  agentId,
+  scope,
   resource,
   onClose,
   onSaved,
 }: {
-  agentId: string
+  scope: AgentSkillScope
   resource: ConfigResource
   onClose: () => void
   onSaved: () => void
@@ -4397,22 +4765,25 @@ function ConfigFileEditorDialog({
   }, [draft, isJson])
 
   const loadDocument = useCallback(async () => {
+    if (!isCurrentAgentSkillScope(scope)) return
     setLoading(true)
     setError(null)
     setSaved(false)
     try {
-      const next = await skillApiV2.readAgentConfigFile(agentId, resource.value)
+      const next = await skillApiV2.readAgentConfigFile(scope.agentId, resource.value, scope.environmentId)
+      if (!isCurrentAgentSkillScope(scope)) return
       const prepared = prepareConfigEditorContent(next.content, resource.value)
       setConfigDocument(next)
       setDraft(prepared)
       setBaseline(prepared)
     } catch (nextError) {
+      if (!isCurrentAgentSkillScope(scope)) return
       setConfigDocument(null)
       setError(skillErrorMessage(t, nextError))
     } finally {
-      setLoading(false)
+      if (isCurrentAgentSkillScope(scope)) setLoading(false)
     }
-  }, [agentId, resource.value, t])
+  }, [scope, resource.value, t])
 
   useEffect(() => {
     void loadDocument()
@@ -4425,27 +4796,30 @@ function ConfigFileEditorDialog({
   }
 
   const save = async () => {
-    if (!configDocument || !dirty || saving || !jsonValid) return
+    if (!configDocument || !dirty || saving || !jsonValid || !isCurrentAgentSkillScope(scope)) return
+    const submitted = draft
     setSaving(true)
     setError(null)
     setSaved(false)
     try {
       const next = await skillApiV2.writeAgentConfigFile(
-        agentId,
+        scope.agentId,
         configDocument.path,
-        draft,
+        submitted,
         configDocument.revision,
+        scope.environmentId,
       )
+      if (!isCurrentAgentSkillScope(scope)) return
       const prepared = prepareConfigEditorContent(next.content, resource.value)
       setConfigDocument(next)
-      setDraft(prepared)
+      setDraft((current) => current === submitted ? prepared : current)
       setBaseline(prepared)
       setSaved(true)
       onSaved()
     } catch (nextError) {
-      setError(skillErrorMessage(t, nextError))
+      if (isCurrentAgentSkillScope(scope)) setError(skillErrorMessage(t, nextError))
     } finally {
-      setSaving(false)
+      if (isCurrentAgentSkillScope(scope)) setSaving(false)
     }
   }
 
@@ -4469,7 +4843,7 @@ function ConfigFileEditorDialog({
       actions={(
         <>
           <div className="sm2__config-editor-action-status" aria-live="polite">
-            {saved && t('skills.agentManagement.pathSettings.editor.saved')}
+            {saved && !dirty && t('skills.agentManagement.pathSettings.editor.saved')}
           </div>
           <button type="button" className="sm2__btn" disabled={saving} onClick={requestClose}>
             {t('skills.agentManagement.pathSettings.editor.close')}

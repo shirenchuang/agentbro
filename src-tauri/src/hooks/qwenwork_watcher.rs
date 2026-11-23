@@ -1,4 +1,4 @@
-use super::session_store::{SessionPhase, SessionStore};
+use super::session_store::{SessionPhase, SessionState, SessionStore};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -47,9 +47,9 @@ fn read_recent_turns(root: &Path, now: i64) -> HashMap<PathBuf, Option<Vec<Turn>
         .into_iter()
         .map(|path| {
             let turns = if path.ends_with(FLASH_DATABASE) {
-                read_flash_database(&path, now - STALE_MS)
+                read_flash_database(&path, now)
             } else {
-                read_database(&path, now - STALE_MS)
+                read_database(&path, now)
             };
             (path, turns.ok())
         })
@@ -79,12 +79,13 @@ fn database_paths(root: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn read_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
+fn read_database(path: &Path, now: i64) -> rusqlite::Result<Vec<Turn>> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     connection.busy_timeout(Duration::from_millis(100))?;
     let mut query = connection.prepare(
         "SELECT session_id, status, updated_at FROM (
             SELECT session_id, status, updated_at,
+                   status IN ('queued', 'in_progress', 'waiting_interaction', 'cancelling') AS active,
                    ROW_NUMBER() OVER (
                        PARTITION BY session_id
                        ORDER BY CASE status
@@ -94,19 +95,24 @@ fn read_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
                            ELSE 1
                        END, ordinal DESC
                    ) AS rank
-            FROM desk_turns WHERE updated_at >= ?1
-        ) WHERE rank = 1 ORDER BY updated_at DESC LIMIT 64",
+            FROM desk_turns
+            WHERE updated_at >= ?1
+              AND typeof(session_id) = 'text' AND typeof(status) = 'text'
+              AND typeof(updated_at) = 'integer' AND typeof(ordinal) = 'integer'
+        ) WHERE rank = 1
+            AND (active OR (status IN ('completed', 'incomplete', 'failed', 'cancelled') AND updated_at >= ?2))
+        ORDER BY active DESC, updated_at DESC LIMIT 64",
     )?;
-    let rows = query.query_map([since], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-        ))
-    })?;
+    let mut rows = query.query([now - STALE_MS, now - DONE_MS])?;
     let mut turns = Vec::new();
-    for row in rows {
-        let (session_id, status, updated) = row?;
+    while let Some(row) = rows.next()? {
+        let (Ok(session_id), Ok(status), Ok(updated)) = (
+            row.get::<_, String>(0),
+            row.get::<_, String>(1),
+            row.get::<_, i64>(2),
+        ) else {
+            continue;
+        };
         let (phase, description) = match status.as_str() {
             "queued" => (SessionPhase::Ready, "任务已排队"),
             "in_progress" => (SessionPhase::Processing, "任务进行中"),
@@ -131,45 +137,75 @@ fn read_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
     Ok(turns)
 }
 
-fn read_flash_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
+fn read_flash_database(path: &Path, now: i64) -> rusqlite::Result<Vec<Turn>> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     connection.busy_timeout(Duration::from_millis(100))?;
+    // CASE guards extraction even if SQLite reorders WHERE predicates. Flag 10 accepts
+    // JSON5 text and fully validated JSONB, the formats handled by the bundled extractor.
     let mut query = connection.prepare(
-        "SELECT s.id, substr(s.title, 1, 120), s.time_updated,
-                COALESCE(answer.time_updated, prompt.time_created),
-                json_extract(answer.data, '$.time.completed'),
-                json_extract(answer.data, '$.finish'), json_extract(answer.data, '$.error.name')
-         FROM session s
-         JOIN message prompt ON prompt.id = (
-             SELECT m.id FROM message m
-             WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'user'
-             ORDER BY m.time_created DESC, m.id DESC LIMIT 1
-         )
-         LEFT JOIN message answer ON answer.id = (
-             SELECT m.id FROM message m
-             WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'assistant'
-                 AND json_extract(m.data, '$.parentID') = prompt.id
-             ORDER BY m.time_created DESC, m.id DESC LIMIT 1
-         )
-         WHERE s.time_updated >= ?1 AND s.time_archived IS NULL AND s.parent_id IS NULL
-         ORDER BY s.time_updated DESC LIMIT 64",
+        "WITH latest_turns AS (
+            SELECT s.id, substr(s.title, 1, 120) AS title, s.time_updated AS session_updated,
+                   COALESCE(prompt.time_updated, prompt.time_created) AS prompt_updated,
+                   COALESCE(answer.time_updated, prompt.time_updated, prompt.time_created) AS message_updated,
+                   json_extract(answer.data, '$.time.completed') AS completed_at,
+                   json_extract(answer.data, '$.finish') AS finish_reason,
+                   json_extract(answer.data, '$.error.name') AS error_name
+            FROM session s
+            JOIN message prompt ON prompt.id = (
+                SELECT m.id FROM message m
+                WHERE m.session_id = s.id
+                  AND CASE WHEN json_valid(m.data, 10) THEN json_extract(m.data, '$.role') = 'user' END
+                ORDER BY m.time_created DESC, m.id DESC LIMIT 1
+            )
+            LEFT JOIN message answer ON answer.id = (
+                SELECT m.id FROM message m
+                WHERE m.session_id = s.id
+                  AND CASE WHEN json_valid(m.data, 10) THEN
+                      json_extract(m.data, '$.role') = 'assistant'
+                      AND json_extract(m.data, '$.parentID') = prompt.id
+                  END
+                ORDER BY m.time_created DESC, m.id DESC LIMIT 1
+            )
+            WHERE typeof(s.time_updated) = 'integer' AND s.time_archived IS NULL AND s.parent_id IS NULL
+        ), classified AS (
+            SELECT *, MAX(session_updated, prompt_updated, message_updated) AS activity_at,
+            CASE
+                WHEN error_name IS NOT NULL THEN message_updated
+                WHEN finish_reason NOT IN ('tool-calls', 'unknown') THEN completed_at
+            END AS terminal_at
+            FROM latest_turns
+        )
+        SELECT id, title, activity_at, message_updated, completed_at, finish_reason, error_name
+        FROM classified
+        WHERE activity_at >= ?1 AND (terminal_at IS NULL OR terminal_at >= ?2)
+        ORDER BY terminal_at IS NOT NULL, COALESCE(terminal_at, activity_at) DESC LIMIT 64",
     )?;
-    let mut rows = query.query([since])?;
+    let mut rows = query.query([now - STALE_MS, now - DONE_MS])?;
     let mut turns = Vec::new();
     while let Some(row) = rows.next()? {
-        let session_id = row.get::<_, String>(0)?;
+        let (Ok(session_id), Ok(activity_at), Ok(message_updated)) = (
+            row.get::<_, String>(0),
+            row.get::<_, i64>(2),
+            row.get::<_, i64>(3),
+        ) else {
+            continue;
+        };
         if session_id.is_empty() || session_id.len() > 256 {
             continue;
         }
         let title = row
-            .get::<_, Option<String>>(1)?
+            .get::<_, Option<String>>(1)
+            .ok()
+            .flatten()
             .map(|text| text.trim().to_string())
             .filter(|text| !text.is_empty());
-        let session_updated: i64 = row.get(2)?;
-        let message_updated: i64 = row.get(3)?;
-        let completed: Option<i64> = row.get(4)?;
-        let finish: Option<String> = row.get(5)?;
-        let error: Option<String> = row.get(6)?;
+        let (Ok(completed), Ok(finish), Ok(error)) = (
+            row.get::<_, Option<i64>>(4),
+            row.get::<_, Option<String>>(5),
+            row.get::<_, Option<String>>(6),
+        ) else {
+            continue;
+        };
         let (phase, description, updated) = match (completed, finish.as_deref(), error.as_deref()) {
             (_, _, Some("MessageAbortedError")) => {
                 (SessionPhase::Interrupted, "任务已取消", message_updated)
@@ -178,11 +214,7 @@ fn read_flash_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
             (Some(at), Some(reason), None) if !matches!(reason, "tool-calls" | "unknown") => {
                 (SessionPhase::Done, "任务已完成", at)
             }
-            _ => (
-                SessionPhase::Processing,
-                "任务进行中",
-                session_updated.max(message_updated),
-            ),
+            _ => (SessionPhase::Processing, "任务进行中", activity_at),
         };
         turns.push(Turn {
             session_id: format!("{AGENT}:flash:{session_id}"),
@@ -222,6 +254,7 @@ fn reconcile(
         }
     }
     let mut next = HashSet::new();
+    let mut updates = Vec::new();
     for (id, turn) in latest {
         if matches!(
             turn.phase,
@@ -239,19 +272,21 @@ fn reconcile(
         }) {
             continue;
         }
-        if existing.is_none() {
-            store.get_or_create_session(id, AGENT, NAME, "", NAME);
-        }
-        store.update_session(id, |session| {
-            session.term_bundle_id = Some("cn.qwenwork.desktop.mac".to_string());
-            session.session_title = turn.title.clone();
-            session.phase = turn.phase.clone();
-            session.description = Some(turn.description.to_string());
-        });
+        let mut observed = SessionState::new(
+            id.to_string(),
+            AGENT.to_string(),
+            NAME.to_string(),
+            String::new(),
+            NAME.to_string(),
+        );
+        observed.term_bundle_id =
+            cfg!(target_os = "macos").then(|| "cn.qwenwork.desktop.mac".to_string());
+        observed.session_title = turn.title.clone();
+        observed.phase = turn.phase.clone();
+        observed.description = Some(turn.description.to_string());
+        updates.push(observed);
     }
-    for id in visible.difference(&next) {
-        store.remove_session(id);
-    }
+    store.apply_observed_sessions(updates, visible.difference(&next).map(String::as_str));
     *visible = next;
 }
 
@@ -263,6 +298,76 @@ mod tests {
         session_id TEXT NOT NULL, status TEXT NOT NULL,
         ordinal INTEGER NOT NULL, updated_at INTEGER NOT NULL
     );";
+    const FLASH_SCHEMA: &str = "CREATE TABLE session (
+        id TEXT PRIMARY KEY, title TEXT, time_updated INTEGER,
+        time_archived INTEGER, parent_id TEXT
+    );
+    CREATE TABLE message (
+        id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+        time_updated INTEGER, data TEXT
+    );";
+
+    #[test]
+    fn flash_uses_prompt_and_reply_activity_when_session_metadata_is_stale() {
+        let directory =
+            std::env::temp_dir().join(format!("agentbro-qwenwork-{}", uuid::Uuid::new_v4()));
+        let flash_root = directory.join(".harness/flash-cli/qwenwork");
+        std::fs::create_dir_all(&flash_root).unwrap();
+        let database = Connection::open(flash_root.join(FLASH_DATABASE)).unwrap();
+        database.execute_batch(FLASH_SCHEMA).unwrap();
+        let now = STALE_MS + 10_000;
+        database
+            .execute_batch(&format!(
+                r#"INSERT INTO session VALUES
+                    ('new-prompt', 'Resumed conversation', 1000, NULL, NULL),
+                    ('live-reply', 'Long-running reply', 1000, NULL, NULL),
+                    ('archived', 'Archived conversation', 1000, 2000, NULL),
+                    ('child', 'Child conversation', 1000, NULL, 'new-prompt');
+                   INSERT INTO message VALUES
+                    ('np-user', 'new-prompt', {now}, {now}, '{{"role":"user"}}'),
+                    ('lr-user', 'live-reply', 1000, 1000, '{{"role":"user"}}'),
+                    ('lr-assistant', 'live-reply', 1001, {now},
+                     '{{"role":"assistant","parentID":"lr-user","finish":"tool-calls"}}'),
+                    ('archived-user', 'archived', {now}, {now}, '{{"role":"user"}}'),
+                    ('child-user', 'child', {now}, {now}, '{{"role":"user"}}');"#,
+            ))
+            .unwrap();
+        let store = SessionStore::new();
+        let mut visible = HashSet::new();
+        let mut cached = HashMap::new();
+        let mut observe = |at| {
+            let observed = read_recent_turns(&directory, at);
+            reconcile(&store, &mut visible, &mut cached, observed, at);
+        };
+
+        observe(now);
+        let phase = |id: &str| {
+            store
+                .get_session(&format!("qwenwork-cn:flash:{id}"))
+                .map(|session| session.phase)
+        };
+        assert_eq!(phase("new-prompt"), Some(SessionPhase::Processing));
+        assert_eq!(phase("live-reply"), Some(SessionPhase::Processing));
+        assert_eq!(phase("archived"), None);
+        assert_eq!(phase("child"), None);
+
+        database
+            .execute(
+                "UPDATE message SET data = json_object(
+                    'role','assistant','parentID','lr-user',
+                    'time',json_object('completed',?1),'finish','stop'
+                ) WHERE id = 'lr-assistant'",
+                [now],
+            )
+            .unwrap();
+        observe(now);
+        assert_eq!(phase("live-reply"), Some(SessionPhase::Done));
+        observe(now + DONE_MS + 1);
+        assert_eq!(phase("live-reply"), None);
+        assert_eq!(phase("new-prompt"), Some(SessionPhase::Processing));
+        drop(database);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn flash_tasks_follow_the_latest_user_message_through_tool_steps() {
@@ -271,17 +376,10 @@ mod tests {
         let flash_root = directory.join(".harness/flash-cli/qwenwork");
         std::fs::create_dir_all(&flash_root).unwrap();
         let database = Connection::open(flash_root.join(FLASH_DATABASE)).unwrap();
+        database.execute_batch(FLASH_SCHEMA).unwrap();
         database
             .execute_batch(
-                r#"CREATE TABLE session (
-                     id TEXT PRIMARY KEY, title TEXT, time_updated INTEGER,
-                     time_archived INTEGER, parent_id TEXT
-                   );
-                   CREATE TABLE message (
-                     id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
-                     time_updated INTEGER, data TEXT
-                   );
-                   INSERT INTO session VALUES ('s', '实际任务标题', 3000, NULL, NULL);
+                r#"INSERT INTO session VALUES ('s', '实际任务标题', 3000, NULL, NULL);
                    INSERT INTO message VALUES
                      ('u1', 's', 1000, 3000, '{"role":"user"}'),
                      ('a1', 's', 1001, 2000,
@@ -304,20 +402,93 @@ mod tests {
             .execute_batch(
                 r#"INSERT INTO message VALUES
                    ('a2', 's', 3001, 4000,
-                    '{"role":"assistant","parentID":"u2","time":{"completed":4000},"finish":"tool-calls"}');"#,
+                    '{"role":"assistant","parentID":"u2","time":{"completed":4000},"finish":"tool-calls"}'),
+                   ('partial', 's', 3999, 4000, '{"role":"assistant"');"#,
             )
             .unwrap();
         assert_eq!(observe(4000).unwrap().phase, SessionPhase::Processing);
         database
             .execute_batch(
-                r#"INSERT INTO message VALUES
+                r#"INSERT INTO session VALUES ('bad', '无效时间', X'FF', NULL, NULL);
+                   INSERT INTO message VALUES
+                   ('bad-prompt', 'bad', 5000, 5000, '{"role":"user"}'),
                    ('a3', 's', 4001, 5000,
-                    '{"role":"assistant","parentID":"u2","time":{"completed":5000},"finish":"stop"}');"#,
+                    '{role:"assistant",parentID:"u2",time:{completed:5000},finish:"stop"}');"#,
             )
             .unwrap();
         assert_eq!(observe(5000).unwrap().phase, SessionPhase::Done);
         assert!(observe(5000 + DONE_MS + 1).is_none());
+        assert!(store.get_session("qwenwork-cn:flash:bad").is_none());
         drop(database);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn keeps_waiting_and_running_tasks_visible_amid_completed_history() {
+        let directory =
+            std::env::temp_dir().join(format!("agentbro-qwenwork-{}", uuid::Uuid::new_v4()));
+        let flash_root = directory.join(".harness/flash-cli/qwenwork");
+        std::fs::create_dir_all(&flash_root).unwrap();
+        let desk_path = directory.join(DATABASE);
+        let flash_path = flash_root.join(FLASH_DATABASE);
+        let desk = Connection::open(&desk_path).unwrap();
+        let flash = Connection::open(&flash_path).unwrap();
+        desk.execute_batch(SCHEMA).unwrap();
+        flash.execute_batch(FLASH_SCHEMA).unwrap();
+        desk.execute_batch(
+            "INSERT INTO desk_turns VALUES ('live-desk', 'waiting_interaction', 1, 1000);
+             WITH RECURSIVE items(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM items WHERE n < 70)
+             INSERT INTO desk_turns SELECT 'done-' || n, 'completed', 1, 115000 FROM items;",
+        )
+        .unwrap();
+        flash
+            .execute_batch(
+                r#"WITH RECURSIVE items(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM items WHERE n < 70)
+                   INSERT INTO session SELECT 'done-' || n, 'Done task', 115000, NULL, NULL FROM items;
+                   INSERT INTO message
+                     SELECT 'prompt-' || id, id, 114999, 114999, '{"role":"user"}' FROM session;
+                   INSERT INTO message
+                     SELECT 'answer-' || id, id, 115000, 115000,
+                            json_object('role','assistant','parentID','prompt-' || id,
+                                        'time',json_object('completed',115000),'finish','stop')
+                     FROM session;
+                   INSERT INTO session VALUES ('live-flash', 'Running task', 1000, NULL, NULL);
+                   INSERT INTO message VALUES ('live-prompt', 'live-flash', 1000, 1000, '{"role":"user"}');"#,
+            )
+            .unwrap();
+        let store = SessionStore::new();
+        store.get_or_create_session("other-agent", "codex", "project", "", "terminal");
+        let initial_updates = store.update_request_count();
+        let mut visible = HashSet::new();
+        let mut cached = HashMap::new();
+        for (now, expected_rows, update_count) in [
+            (120000, 64, 1),
+            (120000, 64, 1),
+            (115000 + DONE_MS + 1, 1, 2),
+        ] {
+            let observed = read_recent_turns(&directory, now);
+            for path in [&desk_path, &flash_path] {
+                assert_eq!(observed[path].as_ref().unwrap().len(), expected_rows);
+            }
+            reconcile(&store, &mut visible, &mut cached, observed, now);
+            assert_eq!(store.update_request_count() - initial_updates, update_count);
+            assert_eq!(
+                store
+                    .get_session("qwenwork-cn:live-desk")
+                    .map(|session| session.phase),
+                Some(SessionPhase::WaitingInput)
+            );
+            assert_eq!(
+                store
+                    .get_session("qwenwork-cn:flash:live-flash")
+                    .map(|session| session.phase),
+                Some(SessionPhase::Processing)
+            );
+        }
+        assert_eq!(visible.len(), 2);
+        assert!(store.get_session("other-agent").is_some());
+        drop(desk);
+        drop(flash);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -333,6 +504,8 @@ mod tests {
                 "INSERT INTO desk_turns VALUES
                ('a', 'in_progress', 1, 1000),
                ('a', 'queued', 2, 1000),
+               ('a', 'in_progress', 3, 'invalid'),
+               (X'FF', 'in_progress', 1, 2000),
                ('b', 'completed', 1, 1000);",
             )
             .unwrap();
@@ -364,6 +537,10 @@ mod tests {
         observe(2000);
         let waiting = store.get_session(id).unwrap();
         assert_eq!(waiting.phase, SessionPhase::WaitingInput);
+        assert_eq!(
+            waiting.term_bundle_id.as_deref(),
+            cfg!(target_os = "macos").then_some("cn.qwenwork.desktop.mac")
+        );
         assert!(waiting.pending_permission.is_none());
         assert!(waiting.pending_question.is_none());
 

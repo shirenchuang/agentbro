@@ -37,11 +37,16 @@ impl DeepSeekHarnessAdapter {
     }
 
     fn command() -> Option<PathBuf> {
-        if !cfg!(target_os = "macos") {
+        if !cfg!(any(target_os = "macos", target_os = "windows")) {
             return None;
         }
         let app = super::programs::installed_app_path_for_agent(ID)?;
-        let command = Path::new(&app).join("Contents/Resources/runtime/cli/bin/dsh");
+        let app = Path::new(&app);
+        let command = if cfg!(target_os = "windows") {
+            app.parent()?.join("resources/runtime/cli/bin/dsh.cmd")
+        } else {
+            app.join("Contents/Resources/runtime/cli/bin/dsh")
+        };
         command.is_file().then_some(command)
     }
 
@@ -95,6 +100,7 @@ impl AgentAdapter for DeepSeekHarnessAdapter {
                 "version": "1.0.0",
                 "type": "module",
                 "exports": "./index.js",
+                "agentbroHookPort": crate::hook_endpoint::current().tcp_port,
                 "dsh": { "bundle": { "patch": "./bundle.yml" } }
             }))?,
         )?;

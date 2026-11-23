@@ -7,6 +7,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_question_mark)]
 
+use crate::skills::installer::{self, TempInstallDir};
 use crate::skills::v2::agent_meta;
 use crate::skills::v2::db::{self, Db};
 use crate::skills::v2::fsutil::{self, inspect_path, PathKind};
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const SHARED_SKILLS_AGENT_ID: &str = "agents";
 const DEFAULT_SKILL_PACK_ID: &str = "default";
@@ -27,6 +28,13 @@ const DEFAULT_SKILL_PACK_DESCRIPTION: &str =
 pub struct Service {
     pub db: Arc<Db>,
     pub home: PathBuf,
+    center_import_lock: Mutex<()>,
+}
+
+struct PreparedCenterSkillImport {
+    preview: AddCenterSkillPreview,
+    source_ref: Option<String>,
+    _temp_root: Option<TempInstallDir>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -84,7 +92,11 @@ pub struct DeleteUnmanagedAgentSkillsResult {
 impl Service {
     pub fn new(sqlite_path: &Path, home: PathBuf) -> Result<Self, String> {
         let db = Arc::new(Db::open(sqlite_path)?);
-        let service = Service { db, home };
+        let service = Service {
+            db,
+            home,
+            center_import_lock: Mutex::new(()),
+        };
         service.recover_interrupted_pack_syncs()?;
         Ok(service)
     }
@@ -353,22 +365,31 @@ impl Service {
             if !path.is_dir() {
                 continue;
             }
-            let skill_id = fsutil::infer_skill_id(&path);
+            let inferred_id = fsutil::infer_skill_id(&path);
+            let path_string = path.display().to_string();
             let fm = fsutil::read_frontmatter(&path);
             let hash = fsutil::hash_dir(&path);
             let name = fm
                 .name()
                 .map(String::from)
-                .unwrap_or_else(|| skill_id.clone());
+                .unwrap_or_else(|| inferred_id.clone());
             let desc = fm.description().to_string();
-            self.db.transaction(|tx| {
+            let skill_id = self.db.transaction(|tx| {
+                // Git updates can change the manifest name without changing the installed directory.
+                let skill_id = tx.query_row(
+                    "SELECT s.id FROM skills s JOIN skill_sources source ON source.skill_id = s.id
+                     WHERE s.center_path = ?1 AND source.source_type IN ('github', 'git', 'skillssh')
+                     ORDER BY s.id LIMIT 1",
+                    params![path_string],
+                    |row| row.get::<_, String>(0),
+                ).optional().map_err(|error| error.to_string())?.unwrap_or(inferred_id);
                 upsert_skill_full(
                     tx,
                     &skill_id,
                     &name,
                     &desc,
                     "skill",
-                    &path.display().to_string(),
+                    &path_string,
                     &hash,
                     &serde_json::to_value(&fm.map).map_err(|e| e.to_string())?,
                     now,
@@ -395,9 +416,9 @@ impl Service {
                         "scan",
                     )?;
                 }
-                Ok(())
+                Ok(skill_id)
             })?;
-            found.push(skill_id.clone());
+            found.push(skill_id);
         }
         Ok(())
     }
@@ -1636,23 +1657,34 @@ impl Service {
     }
 
     fn project_summary_for_row(&self, row: &ProjectRow) -> Result<ProjectSummary, String> {
-        let root = PathBuf::from(&row.root_path);
-        let agents = self.scan_project_agents(&root)?;
-        let instructions = project_instruction_files(&root);
-        let mut issue_count = 0;
+        let root = Path::new(&row.root_path);
+        let agents = self.scan_project_agents(root)?;
+        let instructions = project_instruction_files(root);
+        Ok(Self::project_summary_from_inventory(
+            row,
+            &agents,
+            instructions.len(),
+            root.is_dir(),
+        ))
+    }
+
+    fn project_summary_from_inventory(
+        row: &ProjectRow,
+        agents: &[ProjectAgentDetail],
+        instruction_count: usize,
+        root_is_dir: bool,
+    ) -> ProjectSummary {
+        let mut issue_count = usize::from(!root_is_dir);
         let mut skill_count = 0;
         let mut mcp_count = 0;
         let mut plugin_count = 0;
-        for agent in &agents {
+        for agent in agents {
             issue_count += agent.health.len();
             skill_count += agent.skills.len();
             mcp_count += agent.mcp_servers.len();
             plugin_count += agent.plugins.len();
         }
-        if !root.is_dir() {
-            issue_count += 1;
-        }
-        Ok(ProjectSummary {
+        ProjectSummary {
             id: row.id.clone(),
             name: row.name.clone(),
             root_path: row.root_path.clone(),
@@ -1663,24 +1695,26 @@ impl Service {
             skill_count,
             mcp_count,
             plugin_count,
-            instruction_count: instructions.len(),
+            instruction_count,
             issue_count,
-        })
+        }
     }
 
     fn project_detail_for_row(&self, row: &ProjectRow) -> Result<ProjectDetail, String> {
-        let root = PathBuf::from(&row.root_path);
-        let agents = self.scan_project_agents(&root)?;
-        let instructions = project_instruction_files(&root);
+        let root = Path::new(&row.root_path);
+        let agents = self.scan_project_agents(root)?;
+        let instructions = project_instruction_files(root);
+        let skill_lock = super::project_lock::preview(root);
+        let root_is_dir = root.is_dir();
         let mut health = Vec::new();
-        if !root.is_dir() {
+        if !root_is_dir {
             health.push(ProjectHealthIssue {
                 agent_id: None,
                 kind: "project_missing".to_string(),
                 message: format!("Project path does not exist: {}", root.display()),
                 severity: "error".to_string(),
             });
-        } else if agents.is_empty() && instructions.is_empty() {
+        } else if agents.is_empty() && instructions.is_empty() && skill_lock.is_none() {
             health.push(ProjectHealthIssue {
                 agent_id: None,
                 kind: "project_no_agent_config".to_string(),
@@ -1688,13 +1722,38 @@ impl Service {
                 severity: "info".to_string(),
             });
         }
-        let summary = self.project_summary_for_row(row)?;
+        let summary =
+            Self::project_summary_from_inventory(row, &agents, instructions.len(), root_is_dir);
         Ok(ProjectDetail {
             summary,
             agents,
             instructions,
             health,
+            skill_lock,
         })
+    }
+
+    pub fn restore_project_skill_lock(
+        &self,
+        project_id: &str,
+        revision: &str,
+        skill_names: Vec<String>,
+    ) -> Result<Vec<ProjectSkillRestoreResult>, String> {
+        let row = self
+            .project_row(project_id)?
+            .ok_or_else(|| format!("Project not found: {project_id}"))?;
+        super::project_lock::restore(Path::new(&row.root_path), revision, skill_names)
+    }
+
+    pub fn verify_project_skill_lock(
+        &self,
+        project_id: &str,
+        revision: &str,
+    ) -> Result<BTreeMap<String, ProjectLockedSkillStatus>, String> {
+        let row = self
+            .project_row(project_id)?
+            .ok_or_else(|| format!("Project not found: {project_id}"))?;
+        super::project_lock::verify_installed(Path::new(&row.root_path), revision)
     }
 
     fn scan_project_agents(&self, root: &Path) -> Result<Vec<ProjectAgentDetail>, String> {
@@ -1924,25 +1983,157 @@ impl Service {
 
     // ── Add to center library ─────────────────────────────────────
 
+    pub fn check_skill_source_update(
+        &self,
+        skill_id: &str,
+        github_token: Option<&str>,
+    ) -> Result<SkillSourceUpdateCheck, String> {
+        let (path, source) = self.git_skill_update_source(skill_id)?;
+        let source_uri = source
+            .source_uri
+            .ok_or("The Skill has no saved Git source.")?;
+        let checkout = installer::checkout_git_skill(&source_uri, github_token)?;
+        let current = SkillSourceFiles::read(&path)?;
+        let latest = SkillSourceFiles::read(&checkout.skill_dir)?;
+        let update_available = match &source.source_ref {
+            Some(installed) => checkout.has_changed_since(installed, github_token)?,
+            None => current != latest,
+        };
+        let file_changes = if update_available {
+            current.changes(&latest)
+        } else {
+            Vec::new()
+        };
+        Ok(SkillSourceUpdateCheck {
+            source_uri,
+            installed_ref: source.source_ref,
+            latest_ref: checkout.commit,
+            current_hash: current.hash(),
+            update_available,
+            file_changes,
+        })
+    }
+
+    pub fn apply_skill_source_update(
+        &self,
+        skill_id: &str,
+        expected: SkillSourceUpdateCheck,
+        github_token: Option<&str>,
+    ) -> Result<SkillDetail, String> {
+        let (_, source) = self.git_skill_update_source(skill_id)?;
+        if source.source_uri.as_deref() != Some(&expected.source_uri)
+            || source.source_ref != expected.installed_ref
+            || !expected.update_available
+        {
+            return Err("Check for a Skill update again before applying it.".to_string());
+        }
+        let checkout = installer::checkout_git_skill(&expected.source_uri, github_token)?;
+        self.install_checked_git_skill(skill_id, &expected, &checkout.skill_dir, &checkout.commit)
+    }
+
+    fn git_skill_update_source(
+        &self,
+        skill_id: &str,
+    ) -> Result<(PathBuf, SkillSourceDetail), String> {
+        let row = self
+            .skill_row(skill_id)?
+            .ok_or("The Skill no longer exists.")?;
+        let path = PathBuf::from(row.center_path);
+        let source = self
+            .source_for_skill(skill_id)?
+            .filter(|source| {
+                matches!(source.source_type.as_str(), "github" | "git" | "skillssh")
+                    && source
+                        .source_uri
+                        .as_deref()
+                        .is_some_and(is_git_skill_source_path)
+            })
+            .ok_or("This Skill does not have a supported Git source.")?;
+        let center = self.center_path()?;
+        if path.parent() != Some(center.as_path())
+            || path != center.join(skill_id)
+            || !path.is_dir()
+            || path.is_symlink()
+        {
+            return Err("The Skill's files in the center library are unavailable.".to_string());
+        }
+        Ok((path, source))
+    }
+
+    pub(super) fn install_checked_git_skill(
+        &self,
+        skill_id: &str,
+        expected: &SkillSourceUpdateCheck,
+        source_dir: &Path,
+        latest_ref: &str,
+    ) -> Result<SkillDetail, String> {
+        let _import_guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|_| "Could not lock the Skill library for import.".to_string())?;
+        let (path, source) = self.git_skill_update_source(skill_id)?;
+        if latest_ref != expected.latest_ref
+            || source.source_uri.as_deref() != Some(&expected.source_uri)
+            || source.source_ref != expected.installed_ref
+            || SkillSourceFiles::read(&path)?.hash() != expected.current_hash
+        {
+            return Err(
+                "The Skill or its source changed since the last check. Check for updates again."
+                    .to_string(),
+            );
+        }
+        let input = AddCenterSkillInput {
+            source_path: source_dir.display().to_string(),
+            source_type: source.source_type,
+            source_uri: source.source_uri,
+            imported_from_agent: source.imported_from_agent,
+            imported_from_path: source.imported_from_path,
+            multi: Some(false),
+            import_mode: Some("copy".to_string()),
+        };
+        self.write_skill_to_center(
+            source_dir,
+            &self.center_path()?,
+            skill_id,
+            &input,
+            Some(latest_ref),
+        )?;
+        self.scan_center_into_db()?;
+        self.refresh_snapshot_best_effort();
+        self.get_skill_detail(skill_id)
+    }
+
     pub fn preview_add_center_skill(
         &self,
         input: AddCenterSkillInput,
     ) -> Result<AddCenterSkillPreview, String> {
+        self.prepare_center_skill_import(&input, None)
+            .map(|prepared| prepared.preview)
+    }
+
+    fn prepare_center_skill_import(
+        &self,
+        input: &AddCenterSkillInput,
+        checkout_commit: Option<&str>,
+    ) -> Result<PreparedCenterSkillImport, String> {
         let center = self.center_path()?;
         let expanded_src = fsutil::expand_tilde(&input.source_path);
-        let (src, _temp_root) = if is_remote_skill_source(&input) {
-            crate::skills::installer::resolve_external_skill_source(&input.source_path)?
+        let (src, mut temp_root) = if is_remote_skill_source(input) {
+            installer::resolve_external_skill_source(&input.source_path)?
         } else {
             (expanded_src, None)
         };
+        let source_ref = checkout_commit.map(str::to_string).or_else(|| {
+            if is_git_skill_source_path(&input.source_path) {
+                installer::read_checkout_commit(&temp_root.as_ref()?.path().join("repo"))
+            } else {
+                None
+            }
+        });
         let mut candidates = Vec::new();
         let mut blockers = Vec::new();
         let mut unchanged_count = 0;
 
-        // If the source is an archive, extract it to a temp dir first so the
-        // rest of the flow can treat it as a folder. The temp dir persists
-        // through execute_add_center_skill (which reads cand.source_dir); it
-        // lives in /tmp and is cleaned by the OS.
         let src = if src.is_file()
             && matches!(
                 src.extension()
@@ -1951,13 +2142,17 @@ impl Service {
                     .as_deref(),
                 Some("zip")
             ) {
-            cleanup_old_temp_imports();
-            let dest = std::env::temp_dir().join(format!("agentbro-skill-import-{}", uuid_short()));
+            let extracted = TempInstallDir::create_in(&std::env::temp_dir())?;
+            let dest = extracted.path().to_path_buf();
             extract_zip(&src, &dest)?;
+            temp_root = Some(extracted);
             dest
         } else {
             src
         };
+        if temp_root.is_some() && input.import_mode.as_deref() == Some("link") {
+            return Err("Link import is only available when importing a local folder.".to_string());
+        }
 
         // Determine if source is a single skill or a folder of skills.
         let dirs: Vec<PathBuf> = if input.multi.unwrap_or(false) && src.is_dir() {
@@ -2001,7 +2196,7 @@ impl Service {
                     let src_row = self.source_for_skill(&proposed)?;
                     let same_source = match &src_row {
                         Some(s) => sources_match_for_candidate(
-                            &input,
+                            input,
                             &dir,
                             &s.source_type,
                             s.source_uri.as_deref(),
@@ -2013,7 +2208,7 @@ impl Service {
                     };
                     if same_source {
                         let mode_matches =
-                            center_import_mode_matches(&input, &row.center_path, &dir);
+                            center_import_mode_matches(input, &row.center_path, &dir);
                         if mode_matches {
                             let content_matches = if input.import_mode.as_deref() == Some("link") {
                                 true
@@ -2026,7 +2221,11 @@ impl Service {
                                     source_hash,
                                 )
                             };
-                            if content_matches {
+                            let revision_matches = source_ref.as_deref().is_none_or(|commit| {
+                                src_row.as_ref().and_then(|s| s.source_ref.as_deref())
+                                    == Some(commit)
+                            });
+                            if content_matches && revision_matches {
                                 unchanged_count += 1;
                                 continue;
                             }
@@ -2062,12 +2261,15 @@ impl Service {
                 candidates.push(cand);
             }
         }
-        let _ = &center;
-        Ok(AddCenterSkillPreview {
-            candidates,
-            blockers,
-            unchanged_count,
-            center_path: center.display().to_string(),
+        Ok(PreparedCenterSkillImport {
+            preview: AddCenterSkillPreview {
+                candidates,
+                blockers,
+                unchanged_count,
+                center_path: center.display().to_string(),
+            },
+            source_ref,
+            _temp_root: temp_root,
         })
     }
 
@@ -2076,7 +2278,22 @@ impl Service {
         input: AddCenterSkillInput,
         decisions: Vec<AddCenterSkillDecision>,
     ) -> Result<AddCenterSkillResult, String> {
-        let preview = self.preview_add_center_skill(input.clone())?;
+        self.execute_add_center_skill_with_commit(input, decisions, None)
+    }
+
+    pub(crate) fn execute_add_center_skill_with_commit(
+        &self,
+        input: AddCenterSkillInput,
+        decisions: Vec<AddCenterSkillDecision>,
+        checkout_commit: Option<&str>,
+    ) -> Result<AddCenterSkillResult, String> {
+        let _import_guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|_| "Could not lock the Skill library for import.".to_string())?;
+        let prepared = self.prepare_center_skill_import(&input, checkout_commit)?;
+        let preview = &prepared.preview;
+        let source_ref = prepared.source_ref.as_deref();
         let center = self.center_path()?;
         std::fs::create_dir_all(&center).map_err(|e| format!("center mkdir: {}", e))?;
         let mut created = Vec::new();
@@ -2098,7 +2315,13 @@ impl Service {
                 }
                 Some("update") => {
                     // treat as overwrite
-                    self.write_skill_to_center(b, &center, input.clone())?;
+                    self.write_skill_to_center(
+                        Path::new(&b.source_dir),
+                        &center,
+                        &b.skill_id,
+                        &input,
+                        source_ref,
+                    )?;
                     updated.push(b.skill_id.clone());
                 }
                 Some("create") => {
@@ -2107,7 +2330,13 @@ impl Service {
                         .get(&b.skill_id)
                         .and_then(|d| d.proposed_skill_id.clone())
                         .unwrap_or_else(|| format!("{}-import", b.skill_id));
-                    self.write_skill_to_center_renamed(b, &center, &new_id, input.clone())?;
+                    self.write_skill_to_center(
+                        Path::new(&b.source_dir),
+                        &center,
+                        &new_id,
+                        &input,
+                        source_ref,
+                    )?;
                     created.push(new_id);
                 }
                 _ => {
@@ -2126,7 +2355,13 @@ impl Service {
                 continue;
             }
             if c.action == "update" {
-                self.write_skill_to_center(c, &center, input.clone())?;
+                self.write_skill_to_center(
+                    Path::new(&c.source_dir),
+                    &center,
+                    &c.skill_id,
+                    &input,
+                    source_ref,
+                )?;
                 updated.push(c.skill_id.clone());
             } else {
                 // create — allow rename override
@@ -2136,12 +2371,24 @@ impl Service {
                     .filter(|s| !s.is_empty())
                 {
                     if new_id != c.skill_id {
-                        self.write_skill_to_center_renamed(c, &center, &new_id, input.clone())?;
+                        self.write_skill_to_center(
+                            Path::new(&c.source_dir),
+                            &center,
+                            &new_id,
+                            &input,
+                            source_ref,
+                        )?;
                         created.push(new_id);
                         continue;
                     }
                 }
-                self.write_skill_to_center(c, &center, input.clone())?;
+                self.write_skill_to_center(
+                    Path::new(&c.source_dir),
+                    &center,
+                    &c.skill_id,
+                    &input,
+                    source_ref,
+                )?;
                 created.push(c.skill_id.clone());
             }
         }
@@ -2156,36 +2403,25 @@ impl Service {
 
     fn write_skill_to_center(
         &self,
-        cand: &AddCenterSkillCandidate,
+        src: &Path,
         center: &Path,
-        input: AddCenterSkillInput,
+        skill_id: &str,
+        input: &AddCenterSkillInput,
+        source_ref: Option<&str>,
     ) -> Result<(), String> {
-        let dest = center.join(&cand.skill_id);
-        let src = Path::new(&cand.source_dir);
-        // overwrite if exists
-        if dest.exists() || dest.is_symlink() {
-            fsutil::remove_path(&dest)?;
+        let dest = center.join(skill_id);
+        if input.import_mode.as_deref() == Some("link") && fsutil::is_path_within(&dest, src) {
+            return Err(format!(
+                "Cannot link '{}' to a source inside the Skill directory being replaced.",
+                dest.display()
+            ));
         }
-        self.write_center_directory(src, &dest, &input)?;
-        self.record_source_after_write(&cand.skill_id, &dest, src, input)?;
-        Ok(())
-    }
 
-    fn write_skill_to_center_renamed(
-        &self,
-        cand: &AddCenterSkillCandidate,
-        center: &Path,
-        new_id: &str,
-        input: AddCenterSkillInput,
-    ) -> Result<(), String> {
-        let dest = center.join(new_id);
-        let src = Path::new(&cand.source_dir);
-        if dest.exists() || dest.is_symlink() {
-            fsutil::remove_path(&dest)?;
-        }
-        self.write_center_directory(src, &dest, &input)?;
-        self.record_source_after_write(new_id, &dest, src, input)?;
-        Ok(())
+        fsutil::replace_skill_directory(
+            &dest,
+            |pending| self.write_center_directory(src, pending, input),
+            || self.record_source_after_write(skill_id, &dest, src, input, source_ref),
+        )
     }
 
     fn write_center_directory(
@@ -2222,12 +2458,13 @@ impl Service {
         skill_id: &str,
         dest: &Path,
         source_dir: &Path,
-        input: AddCenterSkillInput,
+        input: &AddCenterSkillInput,
+        source_ref: Option<&str>,
     ) -> Result<(), String> {
         let fm = fsutil::read_frontmatter(dest);
         let hash = fsutil::hash_dir(dest);
         let now = db::now_iso();
-        let source_uri = source_uri_for_candidate(&input, source_dir);
+        let source_uri = source_uri_for_candidate(input, source_dir);
         self.db.transaction(|tx| {
             upsert_skill_full(
                 tx,
@@ -2245,7 +2482,7 @@ impl Service {
                 skill_id,
                 &input.source_type,
                 source_uri.as_deref(),
-                None,
+                source_ref,
                 input.imported_from_agent.as_deref(),
                 input.imported_from_path.as_deref(),
                 "agentbro",
@@ -2572,6 +2809,7 @@ impl Service {
                             existing_path: None,
                             existing_path_kind: None,
                             resolved_existing_path: None,
+                            target_fingerprint: None,
                         });
                     }
                     continue;
@@ -2588,6 +2826,7 @@ impl Service {
                             existing_path: None,
                             existing_path_kind: None,
                             resolved_existing_path: None,
+                            target_fingerprint: None,
                         });
                         continue;
                     }
@@ -2598,56 +2837,43 @@ impl Service {
                     Some((target_id, _, _)) => {
                         let actual = self.resolve_actual_mode(&requested_mode, agent)?;
                         let current_mode = self.target_actual_mode_for_id(&target_id)?;
-                        if current_mode == "copy" && actual == "copy" {
+                        let target_fingerprint =
+                            Some(distribution_target_fingerprint(&target_path)?);
+                        if current_mode == "copy" {
                             let sync = self.preview_sync_copy_target(&target_id)?;
                             if matches!(sync.state.as_str(), "copy_modified" | "copy_diverged") {
                                 let (existing_path_kind, resolved_existing_path) =
                                     existing_path_info(&target_path);
+                                let operation = if actual == "link" {
+                                    "converting"
+                                } else {
+                                    "redistributing"
+                                };
                                 blockers.push(ConflictBlocker {
                                     skill_id: skill_id.clone(),
                                     agent_id: agent.clone(),
                                     reason: format!(
-                                        "Managed copy '{}' has local changes. Choose whether the center library or the agent copy should win before redistributing.",
-                                        skill_id
+                                        "Managed copy '{skill_id}' has local changes. Choose whether the center library or the agent copy should win before {operation}."
                                     ),
                                     existing_path: Some(target_path.display().to_string()),
                                     existing_path_kind,
                                     resolved_existing_path,
+                                    target_fingerprint,
                                 });
                                 continue;
                             }
                         }
                         if current_mode != actual {
-                            if current_mode == "copy" && actual == "link" {
-                                let sync = self.preview_sync_copy_target(&target_id)?;
-                                if matches!(sync.state.as_str(), "copy_modified" | "copy_diverged")
-                                {
-                                    let (existing_path_kind, resolved_existing_path) =
-                                        existing_path_info(&target_path);
-                                    blockers.push(ConflictBlocker {
-                                        skill_id: skill_id.clone(),
-                                        agent_id: agent.clone(),
-                                        reason: format!(
-                                            "Managed copy '{}' has local changes. Choose whether the center library or the agent copy should win before converting.",
-                                            skill_id
-                                        ),
-                                        existing_path: Some(target_path.display().to_string()),
-                                        existing_path_kind,
-                                        resolved_existing_path,
-                                    });
-                                    continue;
-                                }
-                            }
                             changes.push(DistributionChange {
                                 skill_id: skill_id.clone(),
                                 agent_id: agent.clone(),
                                 action: "convert".to_string(),
-                                actual_mode: Some(actual),
                                 reason: Some(format!(
-                                    "Already managed as {} — will convert to {}.",
-                                    current_mode, requested_mode
+                                    "Already managed as {current_mode} — will convert to {actual}."
                                 )),
+                                actual_mode: Some(actual),
                                 target_path: target_path.display().to_string(),
+                                target_fingerprint,
                             });
                             continue;
                         }
@@ -2661,6 +2887,7 @@ impl Service {
                                     .to_string(),
                             ),
                             target_path: target_path.display().to_string(),
+                            target_fingerprint,
                         });
                     }
                     None => match inspect_path(&target_path) {
@@ -2673,6 +2900,7 @@ impl Service {
                                 actual_mode: Some(actual),
                                 reason: None,
                                 target_path: target_path.display().to_string(),
+                                target_fingerprint: None,
                             });
                         }
                         _ => {
@@ -2688,6 +2916,7 @@ impl Service {
                                     existing_path: Some(target_path.display().to_string()),
                                     existing_path_kind,
                                     resolved_existing_path,
+                                    target_fingerprint: Some(distribution_target_fingerprint(&target_path)?),
                                 });
                         }
                     },
@@ -2783,6 +3012,7 @@ impl Service {
                             actual_mode: None,
                             reason: Some("Skipped by user decision.".to_string()),
                             target_path: blocker.existing_path.clone().unwrap_or_default(),
+                            target_fingerprint: blocker.target_fingerprint.clone(),
                         });
                     }
                     "overwrite" | "agent_over_center" => {
@@ -2800,6 +3030,10 @@ impl Service {
                             &blocker.skill_id,
                             &blocker.agent_id,
                             path,
+                        )?;
+                        ensure_reviewed_distribution_target(
+                            path,
+                            blocker.target_fingerprint.as_deref(),
                         )?;
                         let actual =
                             self.resolve_actual_mode(&preview.requested_mode, &blocker.agent_id)?;
@@ -2855,6 +3089,7 @@ impl Service {
                                 "Used the center library as source by user decision.".to_string()
                             }),
                             target_path: existing_path.clone(),
+                            target_fingerprint: blocker.target_fingerprint.clone(),
                         });
                     }
                     other => {
@@ -2897,8 +3132,14 @@ impl Service {
                         .actual_mode
                         .clone()
                         .unwrap_or_else(|| preview.requested_mode.clone());
+                    let target = Path::new(&change.target_path);
+                    self.ensure_distribution_target_path(
+                        &change.skill_id,
+                        &change.agent_id,
+                        target,
+                    )?;
                     let (target_id, existing_skill_id, _) = self
-                        .find_target_by_path(&change.agent_id, Path::new(&change.target_path))?
+                        .find_target_by_path(&change.agent_id, target)?
                         .ok_or_else(|| format!("Target not found: {}", change.target_path))?;
                     if existing_skill_id != change.skill_id {
                         return Err(format!(
@@ -2906,6 +3147,10 @@ impl Service {
                             change.target_path, existing_skill_id, change.skill_id
                         ));
                     }
+                    ensure_reviewed_distribution_target(
+                        target,
+                        change.target_fingerprint.as_deref(),
+                    )?;
                     self.convert_target(
                         &target_id,
                         &change.skill_id,
@@ -2941,72 +3186,100 @@ impl Service {
         let center = Path::new(&row.center_path);
         let target = Path::new(target_path);
         self.ensure_distribution_target_path(skill_id, agent_id, target)?;
+        match target.symlink_metadata() {
+            Ok(_) => {
+                return Err(format!(
+                    "Skill target '{}' already exists. Preview distribution again.",
+                    target.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Inspect Skill target '{}': {error}",
+                    target.display()
+                ))
+            }
+        }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
         }
         let actual = match actual_mode {
+            "link" if fsutil::try_symlink(center, target)? => "link",
+            "link" if self.effective_link_fail_policy()? == "copy" => "copy",
             "link" => {
-                let linked = fsutil::try_symlink(center, target)?;
-                if linked {
-                    "link".to_string()
-                } else {
-                    let policy = self.effective_link_fail_policy()?;
-                    if policy == "copy" {
-                        fsutil::copy_dir_recursive(center, target)?;
-                        "copy".to_string()
-                    } else {
-                        return Err(format!(
-                            "Could not create symlink at {}. Set link-fail policy to copy, or choose copy.",
-                            target.display()
-                        ));
-                    }
-                }
+                return Err(format!(
+                    "Could not create symlink at {}. Preview distribution again or choose copy.",
+                    target.display()
+                ))
             }
-            "copy" => {
-                fsutil::copy_dir_recursive(center, target)?;
-                "copy".to_string()
-            }
+            "copy" => "copy",
             other => return Err(format!("Unknown mode: {other}")),
         };
-        let source_hash = fsutil::hash_dir(center);
-        let now = db::now_iso();
-        let target_id = format!("tgt-{}", uuid_short());
-        let current_hash = if actual == "copy" {
-            Some(fsutil::hash_dir(target))
-        } else {
-            None
-        };
-        self.db.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO skill_targets(id, skill_id, agent_id, target_path, install_mode, actual_mode, source_hash, current_hash, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'ok', ?9, ?9)",
-                params![target_id, skill_id, agent_id, target_path, requested_mode, actual, source_hash, current_hash, now],
-            )
-            .map_err(|e| e.to_string())?;
-            let claim_type = match &origin {
-                ClaimOrigin::Direct => "direct",
-                ClaimOrigin::Pack(_) => "pack",
+        if actual == "copy" {
+            std::fs::create_dir(target).map_err(|error| {
+                format!(
+                    "Create Skill target '{}': {error}. Preview distribution again.",
+                    target.display()
+                )
+            })?;
+        }
+        let install = (|| {
+            let current_hash = if actual == "copy" {
+                fsutil::copy_dir_recursive(center, target)?;
+                Some(fsutil::hash_dir(target))
+            } else {
+                None
             };
-            let pack_id = match &origin {
-                ClaimOrigin::Pack(id) => Some(id.clone()),
-                _ => None,
+            let source_hash = fsutil::hash_dir(center);
+            let now = db::now_iso();
+            let target_id = format!("tgt-{}", uuid_short());
+            let (claim_type, pack_id) = match origin {
+                ClaimOrigin::Direct => ("direct", None),
+                ClaimOrigin::Pack(id) => ("pack", Some(id)),
             };
-            tx.execute(
-                "INSERT OR IGNORE INTO skill_target_claims(id, target_id, claim_type, pack_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    format!("clm-{}", uuid_short()),
-                    target_id,
-                    claim_type,
-                    pack_id,
-                    now
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        })?;
-        Ok(())
+            self.db.transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO skill_targets(id, skill_id, agent_id, target_path, install_mode,
+                     actual_mode, source_hash, current_hash, status, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'ok', ?9, ?9)",
+                    params![
+                        target_id,
+                        skill_id,
+                        agent_id,
+                        target_path,
+                        requested_mode,
+                        actual,
+                        source_hash,
+                        current_hash,
+                        now
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO skill_target_claims
+                     (id, target_id, claim_type, pack_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        format!("clm-{}", uuid_short()),
+                        target_id,
+                        claim_type,
+                        pack_id,
+                        now
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })
+        })();
+        if let Err(error) = &install {
+            if let Err(cleanup_error) = fsutil::remove_path(target) {
+                return Err(format!(
+                    "{error}. Could not remove incomplete Skill target: {cleanup_error}"
+                ));
+            }
+        }
+        install
     }
 
     fn convert_target(
@@ -3976,11 +4249,10 @@ impl Service {
 
         let center_files = collect_relative_files(center_path)?;
         let copy_files = collect_relative_files(copy_path)?;
-        let all_files: BTreeSet<String> = center_files.union(&copy_files).cloned().collect();
         let mut files = Vec::new();
-        for rel in all_files {
-            let center_bytes = read_relative_file(center_path, &rel)?;
-            let copy_bytes = read_relative_file(copy_path, &rel)?;
+        for rel in center_files.union(&copy_files) {
+            let center_bytes = read_relative_file(center_path, rel)?;
+            let copy_bytes = read_relative_file(copy_path, rel)?;
             if center_bytes == copy_bytes {
                 continue;
             }
@@ -3992,7 +4264,7 @@ impl Service {
             }
             .to_string();
             files.push(CopyTargetDiffFile {
-                path: rel,
+                path: display_skill_relative_path(rel),
                 change_type,
                 center_content: center_bytes
                     .as_deref()
@@ -4020,64 +4292,92 @@ impl Service {
         target_id: &str,
         action: &str,
     ) -> Result<CopySyncPreview, String> {
+        let _sync_guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|_| "Could not lock the Skill library for synchronization.".to_string())?;
         let preview = self.preview_sync_copy_target(target_id)?;
         match action {
-            "center_over_agent" => {
-                let center = self.skill_row(&preview.skill_id)?;
-                let center_path_str = center
-                    .as_ref()
-                    .map(|c| c.center_path.clone())
-                    .unwrap_or_default();
-                let center_path = Path::new(&center_path_str);
+            "center_over_agent" | "agent_over_center" => {
+                let center = self
+                    .skill_row(&preview.skill_id)?
+                    .ok_or("Skill not found")?;
+                let center_path = Path::new(&center.center_path);
                 let target = Path::new(&preview.target_path);
-                fsutil::remove_path(target)?;
-                fsutil::copy_dir_recursive(center_path, target)?;
-                let now = db::now_iso();
-                let new_source = fsutil::hash_dir(center_path);
-                self.db.transaction(|tx| {
-                    tx.execute(
-                        "UPDATE skills SET current_hash = ?1, updated_at = ?2 WHERE id = ?3",
-                        params![new_source, now, preview.skill_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    tx.execute(
-                        "UPDATE skill_targets SET source_hash = ?1, current_hash = ?2, status = 'ok', updated_at = ?3 WHERE id = ?4",
-                        params![new_source, fsutil::hash_dir(target), now, target_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    Ok(())
-                })?;
-            }
-            "agent_over_center" => {
-                let center = self.skill_row(&preview.skill_id)?;
-                let center_path_str = center
-                    .as_ref()
-                    .map(|c| c.center_path.clone())
-                    .unwrap_or_default();
-                let center_path = Path::new(&center_path_str);
-                let target = Path::new(&preview.target_path);
-                fsutil::remove_path(center_path)?;
-                fsutil::copy_dir_recursive(target, center_path)?;
-                let now = db::now_iso();
-                let new_hash = fsutil::hash_dir(center_path);
-                self.db.transaction(|tx| {
-                    tx.execute(
-                        "UPDATE skills SET current_hash = ?1, updated_at = ?2 WHERE id = ?3",
-                        params![new_hash, now, preview.skill_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    tx.execute(
-                        "UPDATE skill_targets SET source_hash = ?1, current_hash = ?2, status = 'ok', updated_at = ?3 WHERE id = ?4",
-                        params![new_hash, new_hash, now, target_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    tx.execute(
-                        "UPDATE skill_sources SET source_type = 'agent_override', updated_at = ?1 WHERE skill_id = ?2",
-                        params![now, preview.skill_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    Ok(())
-                })?;
+                let replace_center = action == "agent_over_center";
+                let (source, destination) = if replace_center {
+                    (target, center_path)
+                } else {
+                    (center_path, target)
+                };
+                if !fsutil::is_skill_dir(source) {
+                    return Err(format!(
+                        "Source Skill '{}' is unavailable.",
+                        source.display()
+                    ));
+                }
+                if !destination.is_symlink() && fsutil::is_path_within(destination, source) {
+                    return Err(format!(
+                        "Source Skill '{}' overlaps its destination.",
+                        source.display()
+                    ));
+                }
+                let source_hash = fsutil::hash_dir_contents(source);
+                let destination_fingerprint = distribution_target_fingerprint(destination)?;
+                fsutil::replace_skill_directory(
+                    destination,
+                    |pending| {
+                        fsutil::copy_dir_recursive(source, pending)?;
+                        if fsutil::hash_dir_contents(pending) != source_hash
+                            || fsutil::hash_dir_contents(source) != source_hash
+                        {
+                            return Err(format!(
+                                "Source Skill '{}' changed during synchronization.",
+                                source.display()
+                            ));
+                        }
+                        if distribution_target_fingerprint(destination)? != destination_fingerprint
+                        {
+                            return Err(format!(
+                                "Destination Skill '{}' changed during synchronization.",
+                                destination.display()
+                            ));
+                        }
+                        Ok(())
+                    },
+                    || {
+                        let now = db::now_iso();
+                        let new_source = fsutil::hash_dir(center_path);
+                        let new_copy = fsutil::hash_dir(target);
+                        self.db.transaction(|tx| {
+                            let skills = tx.execute(
+                                "UPDATE skills SET current_hash = ?1, updated_at = ?2 WHERE id = ?3",
+                                params![new_source, now, preview.skill_id],
+                            )
+                            .map_err(|e| e.to_string())?;
+                            let targets = tx.execute(
+                                "UPDATE skill_targets SET source_hash = ?1, current_hash = ?2,
+                                 status = 'ok', updated_at = ?3 WHERE id = ?4",
+                                params![new_source, new_copy, now, target_id],
+                            )
+                            .map_err(|e| e.to_string())?;
+                            if skills != 1 || targets != 1 {
+                                return Err(
+                                    "Skill or target became unavailable during synchronization.".into(),
+                                );
+                            }
+                            if replace_center {
+                                tx.execute(
+                                    "UPDATE skill_sources SET source_type = 'agent_override',
+                                     updated_at = ?1 WHERE skill_id = ?2",
+                                    params![now, preview.skill_id],
+                                )
+                                .map_err(|e| e.to_string())?;
+                            }
+                            Ok(())
+                        })
+                    },
+                )?;
             }
             "keep_diverged" | "none" => {
                 // mark status as copy_diverged, no file writes
@@ -4836,6 +5136,195 @@ impl Service {
         Ok(preview)
     }
 
+    pub fn skill_pack_fingerprints(
+        &self,
+        skill_ids: &[String],
+        include_sources: bool,
+    ) -> Result<Vec<SkillPackFingerprint>, String> {
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let current = self.read_skill_pack_fingerprints(skill_ids, include_sources)?;
+        if current.iter().any(|member| member.missing) {
+            self.scan_center_into_db()?;
+            return self.read_skill_pack_fingerprints(skill_ids, include_sources);
+        }
+        Ok(current)
+    }
+
+    fn read_skill_pack_fingerprints(
+        &self,
+        skill_ids: &[String],
+        include_sources: bool,
+    ) -> Result<Vec<SkillPackFingerprint>, String> {
+        skill_ids
+            .iter()
+            .map(|id| {
+                let Some(row) = self.skill_row(id)? else {
+                    return Ok(SkillPackFingerprint {
+                        skill_id: id.clone(),
+                        missing: true,
+                        fingerprint: None,
+                        source: None,
+                    });
+                };
+                let path = Path::new(&row.center_path);
+                let fingerprint = path.canonicalize().ok().and_then(|directory| {
+                    super::project_lock::fingerprint_canonical_skill_directory(&directory, false)
+                        .ok()
+                });
+                let missing = fingerprint.is_none()
+                    && path
+                        .join("SKILL.md")
+                        .symlink_metadata()
+                        .is_err_and(|error| {
+                            matches!(
+                                error.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                            )
+                        });
+                let source = if include_sources
+                    && fingerprint.is_some()
+                    && super::project_lock::valid_skill_name(id)
+                {
+                    self.source_for_skill(id)?.and_then(|source| {
+                        SkillPackGitHubSource::from_recorded_uri(
+                            source.source_uri.as_deref()?,
+                            source.source_ref.as_deref()?,
+                        )
+                    })
+                } else {
+                    None
+                };
+                Ok(SkillPackFingerprint {
+                    skill_id: id.clone(),
+                    missing,
+                    fingerprint,
+                    source,
+                })
+            })
+            .collect()
+    }
+
+    pub fn import_reviewed_skill_pack(
+        &self,
+        manifest: SkillPackManifest,
+        reviewed: &[SkillPackFingerprint],
+        accept_local_copies: bool,
+    ) -> Result<SkillPackDetail, String> {
+        super::pack_manifest::validate(&manifest)?;
+        if manifest.version < 2 {
+            return Err("A content review requires Skill Pack version 2 or later.".to_string());
+        }
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let current = self.read_skill_pack_fingerprints(&manifest.skill_ids, false)?;
+        super::pack_manifest::validate_review(&manifest, reviewed, &current, accept_local_copies)?;
+        self.upsert_skill_pack_deferred(UpsertPackInput {
+            id: String::new(),
+            name: manifest.name,
+            description: manifest.description,
+            tags: manifest.tags,
+            skill_ids: manifest.skill_ids,
+        })
+    }
+
+    pub fn restore_pack_skill(
+        &self,
+        manifest: &SkillPackManifest,
+        skill_id: &str,
+    ) -> Result<(), String> {
+        self.restore_pack_skill_with(manifest, skill_id, installer::checkout_skill_lock_ref)
+    }
+
+    pub(super) fn restore_pack_skill_with(
+        &self,
+        manifest: &SkillPackManifest,
+        skill_id: &str,
+        fetch: impl FnOnce(&str, &str) -> Result<(PathBuf, TempInstallDir), String>,
+    ) -> Result<(), String> {
+        use super::project_lock::{
+            checked_source_skill, fingerprint_canonical_skill_directory, stage_skill_copy,
+        };
+        use crate::data_dir::rename_path_if_absent;
+
+        super::pack_manifest::validate(manifest)?;
+        let source = manifest
+            .skill_sources
+            .get(skill_id)
+            .ok_or("The Skill has no pinned GitHub source.")?;
+        let expected = &manifest.skill_fingerprints[skill_id];
+        let skill_ids = [skill_id.to_string()];
+        let missing = |members: &[SkillPackFingerprint]| members.iter().all(|item| item.missing);
+        if !missing(&self.skill_pack_fingerprints(&skill_ids, false)?) {
+            return Err("The Skill already exists in the selected library.".to_string());
+        }
+
+        let (checkout, _checkout_directory) = fetch(&source.git_url(), &source.commit)?;
+        if !installer::read_checkout_commit(&checkout)
+            .is_some_and(|actual| actual.eq_ignore_ascii_case(&source.commit))
+        {
+            return Err("Git did not return the recorded Skill commit.".to_string());
+        }
+        let repository = checkout.canonicalize().map_err(|error| error.to_string())?;
+        let directory = checked_source_skill(&repository, &repository.join(source.directory()?))?;
+
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        self.scan_center_into_db()?;
+        if !missing(&self.read_skill_pack_fingerprints(&skill_ids, false)?) {
+            return Err("The Skill already exists in the selected library.".to_string());
+        }
+        let center = self.center_path()?;
+        std::fs::create_dir_all(&center).map_err(|error| error.to_string())?;
+        let staging = TempInstallDir::create_hidden_in(&center)?;
+        let staged = staging.path().join("skill");
+        fsutil::copy_dir_recursive(&directory, &staged)?;
+        let fingerprint = || {
+            let canonical = staged.canonicalize().map_err(|error| error.to_string())?;
+            fingerprint_canonical_skill_directory(&canonical, false)
+        };
+        if fingerprint()? != *expected {
+            // SSH imports can retain files that the local library omits.
+            fsutil::remove_path(&staged)?;
+            stage_skill_copy(&directory, &staged, false)?;
+            if fingerprint()? != *expected {
+                return Err("Skill content does not match the recorded fingerprint.".to_string());
+            }
+        }
+        let destination = center.join(skill_id);
+        let input = AddCenterSkillInput {
+            source_path: directory.display().to_string(),
+            source_type: "github".to_string(),
+            source_uri: Some(source.source_uri()?),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: Some(false),
+            import_mode: Some("copy".to_string()),
+        };
+        rename_path_if_absent(&staged, &destination)
+            .map_err(|error| format!("Could not restore the missing Skill: {error}"))?;
+        if let Err(error) = self.record_source_after_write(
+            skill_id,
+            &destination,
+            &directory,
+            &input,
+            Some(&source.commit),
+        ) {
+            rename_path_if_absent(&destination, &staged).map_err(|rollback| {
+                format!("{error}. Could not roll back the new Skill: {rollback}")
+            })?;
+            return Err(error);
+        }
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
     pub fn upsert_skill_pack(&self, pack: UpsertPackInput) -> Result<SkillPackDetail, String> {
         self.upsert_skill_pack_with_sync(pack, true)
     }
@@ -5185,19 +5674,50 @@ impl Service {
         blocker_decisions: Vec<DistributionBlockerDecision>,
     ) -> Result<DistributionPreview, String> {
         let detail = self.get_skill_pack_detail(pack_id)?;
-        let skill_ids: Vec<String> = detail.members.iter().map(|m| m.skill_id.clone()).collect();
+        let skill_ids = detail
+            .members
+            .into_iter()
+            .map(|member| member.skill_id)
+            .collect();
         let mut preview =
             self.preview_distribute_skill(skill_ids, target_agents, requested_mode)?;
         preview.blocker_decisions = blocker_decisions;
+        self.execute_skill_pack_preview(pack_id, detail.revision, preview)
+    }
+
+    pub fn apply_reviewed_skill_pack(
+        &self,
+        pack_id: &str,
+        mut preview: DistributionPreview,
+        blocker_decisions: Vec<DistributionBlockerDecision>,
+    ) -> Result<DistributionPreview, String> {
+        let detail = self.get_skill_pack_detail(pack_id)?;
+        let skill_ids: Vec<_> = detail
+            .members
+            .into_iter()
+            .map(|member| member.skill_id)
+            .collect();
+        if skill_ids != preview.skill_ids {
+            return Err("Skill Pack membership changed. Preview the application again.".into());
+        }
+        preview.blocker_decisions = blocker_decisions;
+        self.execute_skill_pack_preview(pack_id, detail.revision, preview)
+    }
+
+    fn execute_skill_pack_preview(
+        &self,
+        pack_id: &str,
+        revision: i64,
+        preview: DistributionPreview,
+    ) -> Result<DistributionPreview, String> {
         if !preview.blockers.is_empty() && preview.blocker_decisions.is_empty() {
             return Ok(preview);
         }
         let result =
             self.execute_distribute_skill(preview, ClaimOrigin::Pack(pack_id.to_string()))?;
         if pack_id != DEFAULT_SKILL_PACK_ID && result.blockers.is_empty() {
-            let revision = self.pack_revision(pack_id)?;
             self.mark_pack_agents_synced(pack_id, &result.target_agents, revision)?;
-            self.update_pack_rollup_status(pack_id, revision)?;
+            self.update_pack_rollup_status(pack_id, self.pack_revision(pack_id)?)?;
         }
         Ok(result)
     }
@@ -6063,7 +6583,7 @@ fn filesystem_target_mode(path: &Path) -> Option<String> {
     }
 }
 
-fn collect_relative_files(root: &Path) -> Result<BTreeSet<String>, String> {
+fn collect_relative_files(root: &Path) -> Result<BTreeSet<PathBuf>, String> {
     let mut out = BTreeSet::new();
     collect_relative_files_inner(root, root, &mut out)?;
     Ok(out)
@@ -6072,19 +6592,20 @@ fn collect_relative_files(root: &Path) -> Result<BTreeSet<String>, String> {
 fn collect_relative_files_inner(
     root: &Path,
     dir: &Path,
-    out: &mut BTreeSet<String>,
+    out: &mut BTreeSet<PathBuf>,
 ) -> Result<(), String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("read dir {}: {}", dir.display(), e))?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if fsutil::is_ignored_entry(&name) {
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read dir {}: {error}", dir.display()))?;
+        let name = entry.file_name();
+        if fsutil::is_ignored_entry(&name.to_string_lossy()) {
             continue;
         }
         let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("inspect {}: {error}", path.display()))?;
         if file_type.is_dir() {
             if path.is_symlink() {
                 continue;
@@ -6092,14 +6613,89 @@ fn collect_relative_files_inner(
             collect_relative_files_inner(root, &path, out)?;
         } else if file_type.is_file() {
             if let Ok(rel) = path.strip_prefix(root) {
-                out.insert(rel.to_string_lossy().replace('\\', "/"));
+                out.insert(rel.to_path_buf());
             }
         }
     }
     Ok(())
 }
 
-fn read_relative_file(root: &Path, rel: &str) -> Result<Option<Vec<u8>>, String> {
+fn display_skill_relative_path(relative: &Path) -> String {
+    relative
+        .iter()
+        .map(|component| component.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+#[derive(PartialEq, Eq)]
+pub(super) struct SkillSourceFiles(BTreeMap<PathBuf, (String, u32)>);
+
+impl SkillSourceFiles {
+    pub(super) fn read(root: &Path) -> Result<Self, String> {
+        let mut files = BTreeMap::new();
+        for relative in collect_relative_files(root)? {
+            let path = root.join(&relative);
+            let contents = distribution_target_fingerprint(&path)?;
+            #[cfg(unix)]
+            let executable = {
+                use std::os::unix::fs::PermissionsExt;
+                path.symlink_metadata()
+                    .map_err(|error| format!("inspect {}: {error}", path.display()))?
+                    .permissions()
+                    .mode()
+                    & 0o111
+            };
+            #[cfg(not(unix))]
+            let executable = 0;
+            files.insert(relative, (contents, executable));
+        }
+        Ok(Self(files))
+    }
+
+    pub(super) fn hash(&self) -> String {
+        let mut hash = Sha256::new();
+        for (path, (contents, executable)) in &self.0 {
+            hash.update(path.as_os_str().as_encoded_bytes());
+            hash.update(b"\0");
+            hash.update(contents.as_bytes());
+            hash.update(b"\0");
+            hash.update(executable.to_le_bytes());
+        }
+        fsutil::hex_encode(&hash.finalize())
+    }
+
+    pub(super) fn changes(&self, latest: &Self) -> Vec<SkillSourceFileChange> {
+        use SkillSourceFileChangeKind::{Added, Modified, Removed};
+
+        let mut changes = Vec::new();
+        for (path, installed) in &self.0 {
+            let kind = match latest.0.get(path) {
+                Some(new) if new == installed => continue,
+                Some(_) => Modified,
+                None => Removed,
+            };
+            changes.push(SkillSourceFileChange {
+                path: display_skill_relative_path(path),
+                kind,
+            });
+        }
+        changes.extend(
+            latest
+                .0
+                .keys()
+                .filter(|path| !self.0.contains_key(*path))
+                .map(|path| SkillSourceFileChange {
+                    path: display_skill_relative_path(path),
+                    kind: Added,
+                }),
+        );
+        changes.sort_by(|left, right| left.path.cmp(&right.path));
+        changes
+    }
+}
+
+fn read_relative_file(root: &Path, rel: &Path) -> Result<Option<Vec<u8>>, String> {
     let path = root.join(rel);
     if !path.is_file() {
         return Ok(None);
@@ -6159,6 +6755,44 @@ fn migrate_center_skills_best_effort(source: &Path, target: &Path) {
             );
         }
     }
+}
+
+fn distribution_target_fingerprint(path: &Path) -> Result<String, String> {
+    let inspect_error = |error| format!("Inspect Skill target '{}': {error}", path.display());
+    let file_type = match path.symlink_metadata() {
+        Ok(metadata) => metadata.file_type(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok("missing".into()),
+        Err(error) => return Err(inspect_error(error)),
+    };
+    if file_type.is_symlink() {
+        let target = std::fs::read_link(path).map_err(inspect_error)?;
+        Ok(format!(
+            "link:{:x}",
+            Sha256::digest(target.as_os_str().as_encoded_bytes())
+        ))
+    } else if file_type.is_dir() {
+        Ok(format!("directory:{}", fsutil::hash_dir_contents(path)))
+    } else if file_type.is_file() {
+        let mut file = std::fs::File::open(path).map_err(inspect_error)?;
+        let mut digest = Sha256::new();
+        std::io::copy(&mut file, &mut digest).map_err(inspect_error)?;
+        Ok(format!("file:{:x}", digest.finalize()))
+    } else {
+        Err(format!(
+            "Unsupported Skill target type at '{}'.",
+            path.display()
+        ))
+    }
+}
+
+fn ensure_reviewed_distribution_target(path: &Path, expected: Option<&str>) -> Result<(), String> {
+    if expected == Some(distribution_target_fingerprint(path)?.as_str()) {
+        return Ok(());
+    }
+    Err(format!(
+        "Skill target '{}' changed. Preview distribution again.",
+        path.display()
+    ))
 }
 
 fn existing_path_info(path: &Path) -> (Option<String>, Option<String>) {
@@ -6548,9 +7182,16 @@ fn canonical_or_original(path: &Path) -> PathBuf {
 
 fn is_remote_skill_source(input: &AddCenterSkillInput) -> bool {
     matches!(input.source_type.as_str(), "github" | "git" | "skillssh")
-        || input.source_path.starts_with("github:")
-        || input.source_path.starts_with("https://github.com/")
-        || input.source_path.starts_with("http://github.com/")
+        || is_git_skill_source_path(&input.source_path)
+        || input.source_path.starts_with("https://")
+        || input.source_path.starts_with("http://")
+}
+
+fn is_git_skill_source_path(path: &str) -> bool {
+    path.starts_with("github:")
+        || path.starts_with("skillssh:")
+        || path.starts_with("https://github.com/")
+        || path.starts_with("http://github.com/")
 }
 
 fn is_local_folder_import(input: &AddCenterSkillInput) -> bool {
@@ -6705,46 +7346,17 @@ fn is_shared_agents_skill_path(home: &Path, path: &Path) -> bool {
 
 // ── ZIP extraction for local archive import ──────────────────────
 
-fn cleanup_old_temp_imports() {
-    if let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) {
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("agentbro-skill-import-") {
-                let _ = std::fs::remove_dir_all(e.path());
-            }
-        }
-    }
-}
-
 fn extract_zip(archive: &Path, dest: &Path) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("open zip: {}", e))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("read zip: {}", e))?;
-    std::fs::create_dir_all(dest).map_err(|e| format!("mkdir: {}", e))?;
-    // Canonicalize dest so the zip-slip guard is consistent even when temp_dir()
-    // is behind a symlink (macOS /var → /private/var).
-    let dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("zip entry {}: {}", i, e))?;
-        let entry_name = entry.name().to_string();
-        // guard against path traversal (zip-slip): every component must stay under dest
-        let outpath = dest.join(&entry_name);
-        let mut cur = outpath.clone();
-        let mut ok = false;
-        for _ in 0..32 {
-            match cur.parent() {
-                Some(p) if p == dest => {
-                    ok = true;
-                    break;
-                }
-                Some(p) => cur = p.to_path_buf(),
-                None => break,
-            }
-        }
-        if !ok {
-            continue;
-        }
+        let relative = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("ZIP entry {i} has an invalid extraction path"))?;
+        let outpath = dest.join(relative);
         if entry.is_dir() {
             std::fs::create_dir_all(&outpath).map_err(|e| format!("mkdir entry: {}", e))?;
         } else {

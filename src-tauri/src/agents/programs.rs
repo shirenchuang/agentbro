@@ -1,13 +1,26 @@
 use crate::agents::{executable, AdapterStatus, AgentAdapter};
 use crate::commands::AppState;
+use crate::platform::process::background_tokio_command;
 use crate::skills::{agent_paths, registry};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, VecDeque};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter, State};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
+use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::{timeout, Duration};
+
+#[cfg(target_os = "windows")]
+mod windows_app_paths;
+
+static AGENT_PACKAGE_OPERATION: Mutex<()> = Mutex::const_new(());
+static AGENT_PACKAGE_OUTPUT: std::sync::Mutex<BTreeMap<String, AgentPackageOutput>> =
+    std::sync::Mutex::new(BTreeMap::new());
+const PACKAGE_OUTPUT_LINES: usize = 10;
+const PACKAGE_OUTPUT_LINE_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +73,41 @@ pub struct AgentOutputEvent {
     pub success: Option<bool>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPackageOutput {
+    agent_id: String,
+    revision: u64,
+    lines: VecDeque<AgentPackageOutputLine>,
+}
+
+#[derive(Clone, Serialize)]
+struct AgentPackageOutputLine {
+    stream: String,
+    line: String,
+}
+
+impl AgentPackageOutput {
+    fn record(&mut self, event: Option<&AgentOutputEvent>) {
+        self.revision += 1;
+        if let Some(event) = event {
+            if self.lines.len() == PACKAGE_OUTPUT_LINES {
+                self.lines.pop_front();
+            }
+            let mut end = event.line.len().min(PACKAGE_OUTPUT_LINE_BYTES);
+            while !event.line.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.lines.push_back(AgentPackageOutputLine {
+                stream: event.stream.clone(),
+                line: event.line[..end].to_string(),
+            });
+        } else {
+            self.lines.clear();
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ProgramMetadata {
     kind: AgentProgramKind,
@@ -90,6 +138,7 @@ enum RuntimePlatform {
 }
 
 const APP_TRASH_UNINSTALL_COMMAND: &str = "Move application to Trash";
+const CLAUDE_NATIVE_UPDATE_COMMAND: &str = "claude update";
 
 impl RuntimePlatform {
     fn current() -> Self {
@@ -111,6 +160,11 @@ pub async fn agent_list(state: State<'_, AppState>) -> Result<Vec<AgentProgramIn
 #[tauri::command]
 pub async fn agent_refresh(state: State<'_, AppState>) -> Result<Vec<AgentProgramInfo>, String> {
     Ok(build_agent_list(&state.adapters, true).await)
+}
+
+#[tauri::command]
+pub fn agent_package_output(agent_id: String) -> Option<AgentPackageOutput> {
+    AGENT_PACKAGE_OUTPUT.lock().ok()?.get(&agent_id).cloned()
 }
 
 #[tauri::command]
@@ -155,14 +209,18 @@ pub async fn agent_open_download(
 #[tauri::command]
 pub async fn agent_open_app(state: State<'_, AppState>, agent_id: String) -> Result<(), String> {
     let _ = state;
-    let meta = metadata_for(&agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
-    if let Some(path) = installed_app_path(&agent_id, &meta) {
+    open_agent_app(&agent_id)
+}
+
+pub(crate) fn open_agent_app(agent_id: &str) -> Result<(), String> {
+    let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
+    if let Some(path) = installed_app_path(agent_id, &meta) {
         return open_target(&path);
     }
-    if let Some(binary) = find_agent_binary(&agent_id, &meta) {
+    if let Some(binary) = find_agent_binary(agent_id, &meta) {
         return launch_binary(&binary);
     }
-    let paths = app_path_candidates(&agent_id, &meta).join(", ");
+    let paths = app_path_candidates(agent_id, &meta).join(", ");
     if paths.is_empty() {
         Err(format!("No app path or launcher binary for {agent_id}"))
     } else {
@@ -399,12 +457,25 @@ async fn build_agent_list(
 
 async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> AgentProgramInfo {
     let id = seed.id;
-    let meta = metadata_for(&id).unwrap_or_else(default_metadata);
+    let mut meta = metadata_for(&id).unwrap_or_else(default_metadata);
     let binary_path = match &meta.kind {
-        AgentProgramKind::Cli => which_agent_binary(&id, &meta),
-        AgentProgramKind::App if id == "antigravity" => which_agent_binary(&id, &meta),
+        AgentProgramKind::Cli => find_agent_binary(&id, &meta),
+        AgentProgramKind::App if id == "antigravity" => find_agent_binary(&id, &meta),
         AgentProgramKind::App => None,
     };
+    let desktop_codex = desktop_codex_launcher(&id, binary_path.as_deref());
+    let native_claude = native_claude_launcher(&id, binary_path.as_deref());
+    if desktop_codex.is_some() || native_claude.is_some() {
+        meta.package_manager = Some(if desktop_codex.is_some() {
+            "app"
+        } else {
+            "native"
+        });
+        meta.package_name = None;
+        meta.install_command = None;
+        meta.update_command = native_claude.map(|_| CLAUDE_NATIVE_UPDATE_COMMAND);
+        meta.uninstall_command = None;
+    }
     let app_path = match &meta.kind {
         AgentProgramKind::Cli => None,
         AgentProgramKind::App => installed_app_path(&id, &meta),
@@ -414,14 +485,18 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     } else {
         app_path
             .clone()
-            .or_else(|| default_app_path_for_display(&id, &meta))
+            .or_else(|| default_app_path_for_display(&id, &meta, RuntimePlatform::current()))
     };
     let installed =
         program_is_installed_for_agent(&id, &meta, binary_path.is_some(), app_path.is_some());
     let paths = agent_paths::paths_for_agent(&id);
     let skill_path = paths.skill_dirs.first().map(PathBuf::as_path);
     let skills_dir = skill_path.map(|path| path.display().to_string());
-    let (installed_version, latest_version) = if installed {
+    let (installed_version, latest_version) = if let Some(launcher) = desktop_codex {
+        (desktop_codex_version(launcher).await, None)
+    } else if let Some(launcher) = native_claude {
+        (native_claude_version(launcher).await, None)
+    } else if installed {
         version_info_for(&meta, app_path.as_deref(), include_latest).await
     } else {
         (None, None)
@@ -454,7 +529,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         package_name: meta.package_name.map(ToString::to_string),
         installed_version,
         latest_version,
-        binary_path,
+        binary_path: binary_path.map(|path| path.display().to_string()),
         config_dir,
         app_path: display_app_path,
         download_url: meta.download_url.map(ToString::to_string),
@@ -465,6 +540,36 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         skills_dir,
         is_custom: false,
     }
+}
+
+async fn desktop_codex_version(launcher: &Path) -> Option<String> {
+    selected_cli_version(launcher, |line| line.strip_prefix("codex-cli ")).await
+}
+
+async fn native_claude_version(launcher: &Path) -> Option<String> {
+    selected_cli_version(launcher, |line| {
+        Some(line.strip_suffix(" (Claude Code)").unwrap_or(line))
+    })
+    .await
+}
+
+async fn selected_cli_version(
+    launcher: &Path,
+    version_from_line: fn(&str) -> Option<&str>,
+) -> Option<String> {
+    let path = executable::augmented_path_env();
+    let mut command = package_command(launcher, path.as_deref());
+    let output = package_probe_output(command.arg("--version"), Duration::from_secs(5)).await?;
+    if !output.status.success() {
+        return None;
+    }
+    std::str::from_utf8(&output.stdout)
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            let version = version_from_line(line.trim())?.trim();
+            parse_semver(version).map(|_| version.to_string())
+        })
 }
 
 async fn version_info_for(
@@ -486,14 +591,17 @@ async fn version_info_for(
         Some(package) => package,
         None => return (None, None),
     };
+    let npm = executable::command_path("npm");
+    let path = executable::augmented_path_env();
+    let installed = npm_installed_version(package_command(&npm, path.as_deref()), package);
     if !include_latest {
-        return (npm_installed_version(package).await, None);
+        return (installed.await, None);
     }
-    let (installed, latest) =
-        tokio::join!(npm_installed_version(package), npm_latest_version(package),);
-    (installed, latest)
+    let latest = npm_latest_version(package_command(&npm, path.as_deref()), package);
+    tokio::join!(installed, latest)
 }
 
+#[cfg(target_os = "macos")]
 async fn app_installed_version(app_path: &str) -> Option<String> {
     let info_plist = Path::new(app_path).join("Contents").join("Info.plist");
     for key in ["CFBundleShortVersionString", "CFBundleVersion"] {
@@ -521,16 +629,95 @@ async fn app_installed_version(app_path: &str) -> Option<String> {
     None
 }
 
-async fn npm_installed_version(package: &str) -> Option<String> {
-    let output = timeout(
-        Duration::from_secs(4),
-        Command::new(command_name("npm"))
-            .args(["list", "-g", package, "--depth=0", "--json"])
-            .output(),
+#[cfg(target_os = "windows")]
+async fn app_installed_version(app_path: &str) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let path: Vec<u16> = Path::new(app_path)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    tokio::task::spawn_blocking(move || read_windows_app_version(&path))
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_app_version(path: &[u16]) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, VS_FIXEDFILEINFO,
+    };
+
+    let mut ignored_handle = 0;
+    let length = unsafe { GetFileVersionInfoSizeW(path.as_ptr(), &mut ignored_handle) };
+    if length == 0 {
+        return None;
+    }
+    let mut version = vec![0_u8; length as usize];
+    if unsafe { GetFileVersionInfoW(path.as_ptr(), 0, length, version.as_mut_ptr().cast()) } == 0 {
+        return None;
+    }
+
+    let root = [u16::from(b'\\'), 0];
+    let mut fixed = std::ptr::null_mut();
+    let mut size = 0;
+    if unsafe {
+        VerQueryValueW(
+            version.as_ptr().cast(),
+            root.as_ptr(),
+            &mut fixed,
+            &mut size,
+        )
+    } == 0
+        || fixed.is_null()
+        || (size as usize) < std::mem::size_of::<VS_FIXEDFILEINFO>()
+    {
+        return None;
+    }
+    let fixed = unsafe { fixed.cast::<VS_FIXEDFILEINFO>().read_unaligned() };
+    if fixed.dwSignature != 0xfeef04bd {
+        return None;
+    }
+    format_windows_app_version(
+        (fixed.dwProductVersionMS, fixed.dwProductVersionLS),
+        (fixed.dwFileVersionMS, fixed.dwFileVersionLS),
     )
-    .await
-    .ok()?
-    .ok()?;
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn format_windows_app_version(product: (u32, u32), file: (u32, u32)) -> Option<String> {
+    let (high, low) = if product == (0, 0) { file } else { product };
+    (high != 0 || low != 0).then(|| {
+        format!(
+            "{}.{}.{}.{}",
+            high >> 16,
+            high & 0xffff,
+            low >> 16,
+            low & 0xffff
+        )
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+async fn app_installed_version(_app_path: &str) -> Option<String> {
+    None
+}
+
+async fn npm_installed_version(mut npm: Command, package: &str) -> Option<String> {
+    let output = package_probe_output(
+        npm.args([
+            "list",
+            "-g",
+            package,
+            "--depth=0",
+            "--json",
+            "--no-update-notifier",
+        ]),
+        Duration::from_secs(4),
+    )
+    .await?;
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     json.get("dependencies")?
@@ -540,16 +727,20 @@ async fn npm_installed_version(package: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-async fn npm_latest_version(package: &str) -> Option<String> {
-    let output = timeout(
+async fn npm_latest_version(mut npm: Command, package: &str) -> Option<String> {
+    let output = package_probe_output(
+        npm.args([
+            "view",
+            package,
+            "version",
+            "--silent",
+            "--no-update-notifier",
+            "--fetch-retries=0",
+            "--fetch-timeout=4000",
+        ]),
         Duration::from_secs(5),
-        Command::new(command_name("npm"))
-            .args(["view", package, "version", "--silent"])
-            .output(),
     )
-    .await
-    .ok()?
-    .ok()?;
+    .await?;
 
     if !output.status.success() {
         return None;
@@ -561,53 +752,29 @@ async fn npm_latest_version(package: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+async fn package_probe_output(
+    command: &mut Command,
+    deadline: Duration,
+) -> Option<std::process::Output> {
+    timeout(deadline, command.kill_on_drop(true).output())
+        .await
+        .ok()?
+        .ok()
+}
+
 fn versions_indicate_update(installed: Option<&str>, latest: Option<&str>) -> bool {
     match (
-        installed.map(normalize_version),
-        latest.map(normalize_version),
+        installed.and_then(parse_semver),
+        latest.and_then(parse_semver),
     ) {
-        (Some(installed), Some(latest)) => version_is_newer(&latest, &installed),
+        (Some(installed), Some(latest)) => latest.cmp_precedence(&installed).is_gt(),
         _ => false,
     }
 }
 
-fn normalize_version(version: &str) -> String {
-    version
-        .trim()
-        .trim_start_matches('v')
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string()
-}
-
-fn version_is_newer(latest: &str, installed: &str) -> bool {
-    let latest_parts = numeric_version_parts(latest);
-    let installed_parts = numeric_version_parts(installed);
-    if latest_parts.is_empty() || installed_parts.is_empty() {
-        return latest != installed;
-    }
-
-    let max_len = latest_parts.len().max(installed_parts.len());
-    for index in 0..max_len {
-        let latest_part = *latest_parts.get(index).unwrap_or(&0);
-        let installed_part = *installed_parts.get(index).unwrap_or(&0);
-        if latest_part > installed_part {
-            return true;
-        }
-        if latest_part < installed_part {
-            return false;
-        }
-    }
-    false
-}
-
-fn numeric_version_parts(version: &str) -> Vec<u64> {
-    version
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|part| !part.is_empty())
-        .filter_map(|part| part.parse::<u64>().ok())
-        .collect()
+fn parse_semver(version: &str) -> Option<semver::Version> {
+    let version = version.trim();
+    semver::Version::parse(version.strip_prefix('v').unwrap_or(version)).ok()
 }
 
 fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo {
@@ -650,6 +817,12 @@ fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo 
     }
 }
 
+fn claim_agent_package_operation() -> Result<MutexGuard<'static, ()>, String> {
+    AGENT_PACKAGE_OPERATION
+        .try_lock()
+        .map_err(|_| "agent_package_operation_in_progress".to_string())
+}
+
 async fn run_agent_command(
     app: AppHandle,
     _adapters: &[std::sync::Arc<dyn AgentAdapter>],
@@ -657,11 +830,22 @@ async fn run_agent_command(
     operation: &str,
 ) -> Result<(), String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
+    let _package_operation = claim_agent_package_operation()?;
+    let installed_binary =
+        if matches!(agent_id, "codex" | "claude-code") || operation == "uninstall" {
+            find_agent_binary(agent_id, &meta)
+        } else {
+            None
+        };
+    if desktop_codex_launcher(agent_id, installed_binary.as_deref()).is_some() {
+        return Err("The selected Codex installation is managed by its desktop client".to_string());
+    }
+    publish_package_output(&app, agent_id, None);
     if operation == "uninstall"
         && !program_is_installed_for_agent(
             agent_id,
             &meta,
-            find_agent_binary(agent_id, &meta).is_some(),
+            installed_binary.is_some(),
             installed_app_path(agent_id, &meta).is_some(),
         )
     {
@@ -682,30 +866,38 @@ async fn run_agent_command(
     {
         return trash_agent_app(app, agent_id, &meta).await;
     }
-    let command = if agent_id == "aider" && operation == "uninstall" {
-        aider_uninstall_command().await?
-    } else {
-        match operation {
-            "install" => meta.install_command,
-            "update" => meta.update_command,
-            "uninstall" => meta.uninstall_command,
-            _ => None,
-        }
-        .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
-        .to_string()
-    };
+    let (command_line, mut command) =
+        if let Some(launcher) = native_claude_launcher(agent_id, installed_binary.as_deref()) {
+            (
+                CLAUDE_NATIVE_UPDATE_COMMAND.to_string(),
+                native_claude_package_command(launcher, operation)?,
+            )
+        } else if agent_id == "aider" && operation == "uninstall" {
+            aider_uninstall_command(RuntimePlatform::current(), executable::find_binary).await?
+        } else {
+            let command_line = match operation {
+                "install" => meta.install_command,
+                "update" => meta.update_command,
+                "uninstall" => meta.uninstall_command,
+                _ => None,
+            }
+            .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
+            .to_string();
+            let command = package_operation_command(&command_line);
+            (command_line, command)
+        };
 
     emit_output(
         &app,
         agent_id,
         operation,
         "info",
-        &format!("$ {command}"),
+        &format!("$ {command_line}"),
         false,
         None,
     );
 
-    let mut child = command_shell(&command)
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -718,24 +910,20 @@ async fn run_agent_command(
     let out_id = agent_id.to_string();
     let out_op = operation.to_string();
     let stdout_task = tokio::spawn(async move {
-        if let Some(stdout) = stdout {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                emit_output(&out_app, &out_id, &out_op, "stdout", &line, false, None);
-            }
-        }
+        forward_package_output(stdout, |line| {
+            emit_output(&out_app, &out_id, &out_op, "stdout", line, false, None);
+        })
+        .await
     });
 
     let err_app = app.clone();
     let err_id = agent_id.to_string();
     let err_op = operation.to_string();
     let stderr_task = tokio::spawn(async move {
-        if let Some(stderr) = stderr {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                emit_output(&err_app, &err_id, &err_op, "stderr", &line, false, None);
-            }
-        }
+        forward_package_output(stderr, |line| {
+            emit_output(&err_app, &err_id, &err_op, "stderr", line, false, None);
+        })
+        .await
     });
 
     let status = child.wait().await.map_err(|e| e.to_string())?;
@@ -764,41 +952,94 @@ async fn run_agent_command(
     }
 }
 
-async fn aider_uninstall_command() -> Result<String, String> {
-    if command_output_contains("uv", &["tool", "list"], "aider-chat").await {
-        return Ok("uv tool uninstall aider-chat".to_string());
+async fn forward_package_output(
+    pipe: Option<impl AsyncRead + Unpin>,
+    mut emit: impl FnMut(&str),
+) -> std::io::Result<()> {
+    let Some(pipe) = pipe else {
+        return Ok(());
+    };
+    let mut reader = BufReader::new(pipe);
+    let mut line = Vec::new();
+    while reader.read_until(b'\n', &mut line).await? != 0 {
+        if line.last() == Some(&b'\n') {
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+        }
+        emit(&String::from_utf8_lossy(&line));
+        line.clear();
     }
-    if command_output_contains("pipx", &["list", "--short"], "aider-chat").await {
-        return Ok("pipx uninstall aider-chat".to_string());
+    Ok(())
+}
+
+fn native_claude_package_command(launcher: &Path, operation: &str) -> Result<Command, String> {
+    if operation != "update" {
+        return Err(format!(
+            "{operation} is not supported for the native Claude Code installation"
+        ));
     }
-    if command_succeeds("python3", &["-m", "pip", "show", "aider-chat"]).await {
-        return Ok("python3 -m pip uninstall -y aider-chat".to_string());
+    let path = executable::augmented_path_env();
+    let mut command = package_command(launcher, path.as_deref());
+    command.arg("update").stdin(Stdio::null());
+    Ok(command)
+}
+
+async fn aider_uninstall_command(
+    platform: RuntimePlatform,
+    find_binary: impl Fn(&str) -> Option<PathBuf>,
+) -> Result<(String, Command), String> {
+    let path = executable::augmented_path_env();
+    let python_launchers: &[&str] = if platform == RuntimePlatform::Windows {
+        &["python", "py", "python3"]
+    } else {
+        &["python3"]
+    };
+    let tool_managers = [
+        (
+            "uv",
+            &["tool", "list"][..],
+            &["tool", "uninstall", "aider-chat"][..],
+        ),
+        (
+            "pipx",
+            &["list", "--short"][..],
+            &["uninstall", "aider-chat"][..],
+        ),
+    ];
+    let pip_managers = python_launchers.iter().map(|&launcher| {
+        (
+            launcher,
+            &["-m", "pip", "show", "aider-chat"][..],
+            &["-m", "pip", "uninstall", "-y", "aider-chat"][..],
+        )
+    });
+    for (binary, probe_args, uninstall_args) in tool_managers.into_iter().chain(pip_managers) {
+        let Some(launcher) = find_binary(binary) else {
+            continue;
+        };
+        let is_pip = python_launchers.contains(&binary);
+        let command_for_launcher = || {
+            let mut command = package_command(&launcher, path.as_deref());
+            if is_pip && platform == RuntimePlatform::Windows {
+                command.env("PYTHON_MANAGER_AUTOMATIC_INSTALL", "false");
+            }
+            command
+        };
+        let mut probe = command_for_launcher();
+        let output = package_probe_output(probe.args(probe_args), Duration::from_secs(5)).await;
+        let package_found = output.is_some_and(|output| {
+            output.status.success()
+                && (is_pip || String::from_utf8_lossy(&output.stdout).contains("aider-chat"))
+        });
+        if package_found {
+            let mut command = command_for_launcher();
+            command.args(uninstall_args);
+            return Ok((format!("{binary} {}", uninstall_args.join(" ")), command));
+        }
     }
     Err("Aider is present, but its package manager could not be determined".to_string())
-}
-
-async fn command_output_contains(binary: &str, args: &[&str], needle: &str) -> bool {
-    let Some(path) = executable::find_binary(binary) else {
-        return false;
-    };
-    Command::new(path)
-        .args(args)
-        .output()
-        .await
-        .ok()
-        .filter(|output| output.status.success())
-        .is_some_and(|output| String::from_utf8_lossy(&output.stdout).contains(needle))
-}
-
-async fn command_succeeds(binary: &str, args: &[&str]) -> bool {
-    let Some(path) = executable::find_binary(binary) else {
-        return false;
-    };
-    Command::new(path)
-        .args(args)
-        .output()
-        .await
-        .is_ok_and(|output| output.status.success())
 }
 
 async fn trash_agent_app(
@@ -877,39 +1118,58 @@ fn emit_output(
     done: bool,
     success: Option<bool>,
 ) {
-    let _ = app.emit(
-        "agent-output",
-        AgentOutputEvent {
-            agent_id: agent_id.to_string(),
-            operation: operation.to_string(),
-            stream: stream.to_string(),
-            line: line.to_string(),
-            done,
-            success,
-        },
-    );
+    let event = AgentOutputEvent {
+        agent_id: agent_id.to_string(),
+        operation: operation.to_string(),
+        stream: stream.to_string(),
+        line: line.to_string(),
+        done,
+        success,
+    };
+    publish_package_output(app, agent_id, Some(&event));
+    let _ = app.emit("agent-output", event);
 }
 
-fn command_shell(command: &str) -> Command {
-    #[cfg(target_os = "windows")]
-    {
-        let mut shell = Command::new(command_name("cmd"));
-        shell.args(["/C", command]);
-        if let Some(path) = executable::augmented_path_env() {
-            shell.env("PATH", path);
-        }
-        shell
+fn publish_package_output(app: &AppHandle, agent_id: &str, event: Option<&AgentOutputEvent>) {
+    let snapshot = AGENT_PACKAGE_OUTPUT.lock().ok().map(|mut history| {
+        let output = history
+            .entry(agent_id.to_string())
+            .or_insert_with(|| AgentPackageOutput {
+                agent_id: agent_id.to_string(),
+                revision: 0,
+                lines: VecDeque::new(),
+            });
+        output.record(event);
+        output.clone()
+    });
+    if let Some(snapshot) = snapshot {
+        let _ = app.emit("agent-package-output", snapshot);
+    }
+}
+
+fn package_command(program: impl AsRef<OsStr>, path: Option<&OsStr>) -> Command {
+    let mut command = background_tokio_command(program);
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    command
+}
+
+fn package_operation_command(command: &str) -> Command {
+    let path = executable::augmented_path_env();
+    if let Some(arguments) = command.strip_prefix("npm ") {
+        let mut process = package_command(executable::command_path("npm"), path.as_deref());
+        process.args(arguments.split_ascii_whitespace());
+        return process;
     }
 
+    #[cfg(target_os = "windows")]
+    let (program, flag) = (executable::command_path("cmd"), "/C");
     #[cfg(not(target_os = "windows"))]
-    {
-        let mut shell = Command::new("sh");
-        shell.args(["-lc", command]);
-        if let Some(path) = executable::augmented_path_env() {
-            shell.env("PATH", path);
-        }
-        shell
-    }
+    let (program, flag) = ("sh", "-lc");
+    let mut shell = package_command(program, path.as_deref());
+    shell.args([flag, command]);
+    shell
 }
 
 fn open_target(target: &str) -> Result<(), String> {
@@ -998,18 +1258,46 @@ fn launch_binary(path: &Path) -> Result<(), String> {
     }
 }
 
-fn which(binary: &str) -> Option<String> {
-    executable::find_binary(binary).map(|path| path.display().to_string())
-}
-
 fn find_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<PathBuf> {
     binary_candidates_for_agent(agent_id, meta)
         .into_iter()
         .find_map(executable::find_binary)
 }
 
-fn which_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
-    find_agent_binary(agent_id, meta).map(|path| path.display().to_string())
+fn desktop_codex_launcher<'a>(agent_id: &str, binary: Option<&'a Path>) -> Option<&'a Path> {
+    binary.filter(|path| agent_id == "codex" && executable::is_desktop_bundled_codex_cli(path))
+}
+
+fn native_claude_launcher<'a>(agent_id: &str, binary: Option<&'a Path>) -> Option<&'a Path> {
+    if agent_id != "claude-code" {
+        return None;
+    }
+    let launcher = binary?;
+    let home = dirs::home_dir()?;
+    is_native_claude_launcher(launcher, &home, RuntimePlatform::current()).then_some(launcher)
+}
+
+fn is_native_claude_launcher(binary: &Path, home: &Path, platform: RuntimePlatform) -> bool {
+    let local = home.join(".local");
+    if platform == RuntimePlatform::Windows {
+        let launcher = local.join("bin").join("claude.exe");
+        let same_path = binary.components().count() == launcher.components().count()
+            && binary
+                .components()
+                .zip(launcher.components())
+                .all(|(left, right)| left.as_os_str().eq_ignore_ascii_case(right.as_os_str()));
+        return same_path
+            || binary
+                .canonicalize()
+                .ok()
+                .zip(launcher.canonicalize().ok())
+                .is_some_and(|(binary, launcher)| binary == launcher);
+    }
+    let versions = local.join("share/claude/versions");
+    let versions = versions.canonicalize().unwrap_or(versions);
+    binary
+        .canonicalize()
+        .is_ok_and(|path| path.starts_with(versions))
 }
 
 fn binary_candidates_for_agent(agent_id: &str, meta: &ProgramMetadata) -> Vec<&'static str> {
@@ -1033,10 +1321,6 @@ fn binary_candidates_for_agent(agent_id: &str, meta: &ProgramMetadata) -> Vec<&'
         .into_iter()
         .filter(|binary| seen.insert(binary.to_ascii_lowercase()))
         .collect()
-}
-
-fn command_name(binary: &str) -> String {
-    which(binary).unwrap_or_else(|| binary.to_string())
 }
 
 fn expand_home(path: &str) -> String {
@@ -1093,13 +1377,17 @@ fn app_path_candidates_for_platform(
     paths
 }
 
-fn default_app_path_for_display(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
-    match RuntimePlatform::current() {
-        RuntimePlatform::Linux => None,
-        platform => app_path_candidates_for_platform(agent_id, meta, platform)
-            .into_iter()
-            .next(),
+fn default_app_path_for_display(
+    agent_id: &str,
+    meta: &ProgramMetadata,
+    platform: RuntimePlatform,
+) -> Option<String> {
+    if meta.kind != AgentProgramKind::App || platform == RuntimePlatform::Linux {
+        return None;
     }
+    app_path_candidates_for_platform(agent_id, meta, platform)
+        .into_iter()
+        .next()
 }
 
 pub(crate) fn installed_app_path_for_agent(agent_id: &str) -> Option<String> {
@@ -1107,9 +1395,20 @@ pub(crate) fn installed_app_path_for_agent(agent_id: &str) -> Option<String> {
 }
 
 fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
-    app_path_candidates(agent_id, meta)
+    let existing = app_path_candidates(agent_id, meta)
         .into_iter()
-        .find(|path| Path::new(path).exists())
+        .find(|path| {
+            if cfg!(target_os = "windows") {
+                Path::new(path).is_file()
+            } else {
+                Path::new(path).exists()
+            }
+        });
+    #[cfg(target_os = "windows")]
+    let existing = existing.or_else(|| {
+        windows_app_paths::find_registered(&windows_registration_names(agent_id, meta))
+    });
+    existing
 }
 
 pub(crate) fn detected_status_for_agent_program(agent_id: &str) -> AdapterStatus {
@@ -1277,6 +1576,7 @@ fn windows_executable_names(agent_id: &str, meta: &ProgramMetadata) -> Vec<Strin
             names.extend(["CodyBuddyCN.exe", "CodeBuddy CN.exe", "CodeBuddy.exe"])
         }
         "qwen" => names.extend(["Qwen Code.exe", "Qwen.exe"]),
+        "qwenwork-cn" => names.push("Launcher.exe"),
         _ => {}
     }
     names.push(display_name_for_agent(agent_id));
@@ -1295,6 +1595,25 @@ fn windows_executable_names(agent_id: &str, meta: &ProgramMetadata) -> Vec<Strin
             })
             .collect(),
     )
+}
+
+#[cfg(target_os = "windows")]
+fn windows_registration_names(agent_id: &str, meta: &ProgramMetadata) -> Vec<String> {
+    if meta.kind != AgentProgramKind::App || agent_id == "cline" {
+        return Vec::new();
+    }
+    windows_executable_names(agent_id, meta)
+        .into_iter()
+        .filter(|name| !name.eq_ignore_ascii_case("Launcher.exe"))
+        .filter(|name| match agent_id {
+            "codebuddycn" | "codybuddycn" => !name.eq_ignore_ascii_case("CodeBuddy.exe"),
+            "easyclaw-v2" => !name.eq_ignore_ascii_case("EasyClaw.exe"),
+            "antigravity" => !name.eq_ignore_ascii_case("agy.exe"),
+            "kiro" => !name.eq_ignore_ascii_case("kiro-cli.exe"),
+            "qwen" => !name.eq_ignore_ascii_case("qwen-coder.exe"),
+            _ => true,
+        })
+        .collect()
 }
 
 fn dedupe_owned(values: Vec<String>) -> Vec<String> {
@@ -1346,6 +1665,7 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "codebuddy" => "CodeBuddy",
         "codebuddycn" | "codybuddycn" => "CodyBuddyCN",
         "workbuddy" => "WorkBuddy",
+        "workbuddy-ai" => "WorkBuddy AI",
         "zcode" => "ZCode",
         "kiro" => "Kiro",
         "pi" => "Pi",
@@ -1501,7 +1821,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "dsh",
             "/Applications/DeepSeek Harness.app",
             "~/.dsh",
-            "https://github.com/deepseek-ai/deepseek-harness/releases",
+            "https://www.deepseek.com/harness/",
         ),
         "kimi" => cli(
             "kimi",
@@ -1541,6 +1861,12 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "workbuddy",
             "/Applications/WorkBuddy.app",
             "~/.workbuddy",
+            "https://workbuddy.cn",
+        ),
+        "workbuddy-ai" => app(
+            "WorkBuddyAI",
+            "/Applications/WorkBuddy AI.app",
+            "~/.workbuddy-ai",
             "https://workbuddy.ai",
         ),
         "zcode" => app(
@@ -1723,7 +2049,8 @@ fn app(
         package_name: None,
         install_command: None,
         update_command: None,
-        uninstall_command: Some(APP_TRASH_UNINSTALL_COMMAND),
+        uninstall_command: (RuntimePlatform::current() == RuntimePlatform::Macos)
+            .then_some(APP_TRASH_UNINSTALL_COMMAND),
         app_path: Some(app_path),
         config_dir: Some(config_dir),
         download_url: Some(url),
@@ -1743,6 +2070,253 @@ fn app_no_uninstall(
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn package_output_continues_after_non_utf8_bytes() {
+        let mut bytes = "开始\r\n\r\nlegacy ".as_bytes().to_vec();
+        bytes.extend_from_slice(b"\xff line\r\nfinished\nfinal line");
+        let mut received = Vec::new();
+
+        super::forward_package_output(Some(bytes.as_slice()), |line| {
+            received.push(line.to_string());
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            received,
+            ["开始", "", "legacy � line", "finished", "final line"]
+        );
+    }
+
+    #[test]
+    fn package_output_keeps_recent_lines_and_resets_without_reusing_revisions() {
+        let mut output = super::AgentPackageOutput {
+            agent_id: "claude-code".into(),
+            revision: 0,
+            lines: Default::default(),
+        };
+        let mut event = super::AgentOutputEvent {
+            agent_id: "claude-code".into(),
+            operation: "update".into(),
+            stream: "stdout".into(),
+            line: String::new(),
+            done: false,
+            success: None,
+        };
+        for index in 0..=super::PACKAGE_OUTPUT_LINES {
+            event.line = index.to_string();
+            output.record(Some(&event));
+        }
+        assert_eq!(output.lines.len(), super::PACKAGE_OUTPUT_LINES);
+        assert_eq!(output.lines[0].line, "1");
+        assert_eq!(output.lines[0].stream, "stdout");
+
+        event.line = format!("{}界", "a".repeat(super::PACKAGE_OUTPUT_LINE_BYTES - 1));
+        event.stream = "stderr".into();
+        output.record(Some(&event));
+        let last = output.lines.back().unwrap();
+        assert_eq!(last.stream, "stderr");
+        assert_eq!(last.line.len(), super::PACKAGE_OUTPUT_LINE_BYTES - 1);
+
+        let revision = output.revision;
+        output.record(None);
+        assert!(output.lines.is_empty());
+        assert_eq!(output.revision, revision + 1);
+    }
+
+    #[test]
+    fn agent_package_operation_rejects_overlap_until_the_guard_is_released() {
+        let running = super::claim_agent_package_operation().unwrap();
+        assert_eq!(
+            super::claim_agent_package_operation().unwrap_err(),
+            "agent_package_operation_in_progress"
+        );
+        drop(running);
+        assert!(super::claim_agent_package_operation().is_ok());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn desktop_codex_version_runs_the_selected_launcher() {
+        let temporary =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        #[cfg(windows)]
+        let (launcher, script) = (
+            temporary.path().join("bundled codex.cmd"),
+            "@echo off\r\nif not \"%~1\"==\"--version\" exit /b 1\r\necho codex-cli 0.169.1\r\n",
+        );
+        #[cfg(unix)]
+        let (launcher, script) = (
+            temporary.path().join("bundled codex"),
+            "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 1\necho 'codex-cli 0.169.1'\n",
+        );
+        std::fs::write(&launcher, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert_eq!(
+            super::desktop_codex_version(&launcher).await.as_deref(),
+            Some("0.169.1")
+        );
+    }
+
+    #[test]
+    fn native_claude_windows_launcher_is_distinct_from_npm_shims() {
+        let home = Path::new("test-user");
+        assert!(super::is_native_claude_launcher(
+            &home.join(".local/bin/CLAUDE.EXE"),
+            home,
+            RuntimePlatform::Windows,
+        ));
+        assert!(!super::is_native_claude_launcher(
+            &home.join("AppData/Roaming/npm/claude.cmd"),
+            home,
+            RuntimePlatform::Windows,
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_claude_unix_launcher_resolves_to_the_native_version_store() {
+        let temporary =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let home = temporary.path();
+        let local_bin = home.join(".local/bin");
+        let version_directory = home.join(".local/share/claude/versions");
+        let launcher = local_bin.join("claude");
+        let installed_version = version_directory.join("2.1.89");
+        let npm = home.join("npm-global/claude");
+        for directory in [&local_bin, &version_directory, npm.parent().unwrap()] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(&installed_version, "").unwrap();
+        std::fs::write(&npm, "").unwrap();
+        std::os::unix::fs::symlink(&installed_version, &launcher).unwrap();
+
+        assert!(super::is_native_claude_launcher(
+            &launcher,
+            home,
+            RuntimePlatform::Macos
+        ));
+        assert!(!super::is_native_claude_launcher(
+            &npm,
+            home,
+            RuntimePlatform::Macos
+        ));
+        std::fs::remove_file(&launcher).unwrap();
+        std::os::unix::fs::symlink(&npm, &launcher).unwrap();
+        assert!(!super::is_native_claude_launcher(
+            &launcher,
+            home,
+            RuntimePlatform::Macos
+        ));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn native_claude_version_and_update_use_the_selected_launcher() {
+        let temporary =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        #[cfg(windows)]
+        let (launcher, script) = (
+            temporary.path().join("native launcher.cmd"),
+            concat!(
+                "@echo off\r\n",
+                "if \"%~1\"==\"--version\" (\r\n",
+                "    echo 2.1.89 ^(Claude Code^)\r\n",
+                "    exit /b 0\r\n",
+                ")\r\n",
+                "if not \"%~1\"==\"update\" exit /b 1\r\n",
+                "echo native updater ran\r\n",
+            ),
+        );
+        #[cfg(unix)]
+        let (launcher, script) = (
+            temporary.path().join("native launcher"),
+            "#!/bin/sh\ncase \"$1\" in\n--version) echo '2.1.89 (Claude Code)' ;;\nupdate) echo 'native updater ran' ;;\n*) exit 1 ;;\nesac\n",
+        );
+        std::fs::write(&launcher, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert_eq!(
+            super::native_claude_version(&launcher).await.as_deref(),
+            Some("2.1.89")
+        );
+        assert!(super::native_claude_package_command(&launcher, "install").is_err());
+        assert!(super::native_claude_package_command(&launcher, "uninstall").is_err());
+        let output = super::native_claude_package_command(&launcher, "update")
+            .unwrap()
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "native updater ran"
+        );
+    }
+
+    #[test]
+    fn desktop_fallback_paths_do_not_replace_windows_cli_launchers() {
+        use super::{default_app_path_for_display, metadata_for, RuntimePlatform};
+
+        let cli = metadata_for("claude-code").unwrap();
+        assert!(
+            default_app_path_for_display("claude-code", &cli, RuntimePlatform::Windows).is_none()
+        );
+
+        let desktop = metadata_for("cursor").unwrap();
+        assert!(
+            default_app_path_for_display("cursor", &desktop, RuntimePlatform::Windows).is_some()
+        );
+    }
+
+    #[test]
+    fn npm_updates_require_a_higher_semver_precedence() {
+        for (installed, latest, expected) in [
+            (Some("1.2.3-rc.9"), Some("1.2.3"), true),
+            (Some("1.2.3"), Some("1.2.3-rc.9"), false),
+            (Some("1.2.3-beta.9"), Some("1.2.3-beta.10"), true),
+            (Some("2.0.0-beta.1"), Some("1.9.9"), false),
+            (Some("1.2.3+build.1"), Some("1.2.3+build.2"), false),
+            (Some("v1.2.3"), Some("1.2.4"), true),
+            (Some("1.2.3"), Some("1.2.3"), false),
+            (Some("unknown"), Some("1.2.3"), false),
+            (Some("1.2.3"), Some("latest"), false),
+            (None, Some("1.2.3"), false),
+        ] {
+            assert_eq!(
+                super::versions_indicate_update(installed, latest),
+                expected,
+                "{installed:?} vs. {latest:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn windows_app_version_prefers_product_and_falls_back_to_file() {
+        let product = (3 << 16 | 2, 8 << 16 | 4);
+        let file = (1 << 16, 2 << 16 | 3);
+
+        assert_eq!(
+            super::format_windows_app_version(product, file).as_deref(),
+            Some("3.2.8.4")
+        );
+        assert_eq!(
+            super::format_windows_app_version((0, 0), file).as_deref(),
+            Some("1.0.2.3")
+        );
+        assert!(super::format_windows_app_version((0, 0), (0, 0)).is_none());
+    }
+
     use super::*;
     use crate::skills::v2::agent_meta;
 
@@ -1752,6 +2326,7 @@ mod tests {
             ("qwenwork-cn", "/Applications/QwenWorkCN.app"),
             ("deepseek-harness", "/Applications/DeepSeek Harness.app"),
             ("workbuddy", "/Applications/WorkBuddy.app"),
+            ("workbuddy-ai", "/Applications/WorkBuddy AI.app"),
         ] {
             let meta = metadata_for(id).unwrap();
             let candidates = app_path_candidates_for_platform(id, &meta, RuntimePlatform::Macos);
@@ -1853,9 +2428,12 @@ mod tests {
     }
 
     #[test]
-    fn standalone_apps_can_move_to_trash_without_exposing_host_apps() {
+    fn desktop_trash_uninstall_is_available_only_on_macos() {
         let kiro = metadata_for("kiro").expect("kiro metadata");
-        assert_eq!(kiro.uninstall_command, Some(APP_TRASH_UNINSTALL_COMMAND));
+        assert_eq!(
+            kiro.uninstall_command,
+            cfg!(target_os = "macos").then_some(APP_TRASH_UNINSTALL_COMMAND)
+        );
 
         let cline = metadata_for("cline").expect("cline metadata");
         assert_eq!(cline.uninstall_command, None);
@@ -1930,6 +2508,193 @@ mod tests {
         ));
     }
 
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn windows_aider_uninstall_reuses_the_detected_python_launcher() {
+        let directory =
+            std::env::temp_dir().join(format!("agentbro aider {}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        #[cfg(windows)]
+        let (launcher, script) = (
+            directory.join("python launcher.cmd"),
+            concat!(
+                "@echo off\r\n",
+                "if not \"%PYTHON_MANAGER_AUTOMATIC_INSTALL%\"==\"false\" exit /b 1\r\n",
+                "if \"%*\"==\"-m pip show aider-chat\" exit /b 0\r\n",
+                "if not \"%*\"==\"-m pip uninstall -y aider-chat\" exit /b 1\r\n",
+                "echo removed aider-chat\r\n",
+            ),
+        );
+        #[cfg(unix)]
+        let (launcher, script) = (
+            directory.join("python launcher"),
+            r#"#!/bin/sh
+[ "$PYTHON_MANAGER_AUTOMATIC_INSTALL" = false ] || exit 1
+case "$*" in
+    "-m pip show aider-chat") exit 0 ;;
+    "-m pip uninstall -y aider-chat") echo "removed aider-chat" ;;
+    *) exit 1 ;;
+esac
+"#,
+        );
+        std::fs::write(&launcher, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        for binary in ["python", "py", "python3"] {
+            let (line, mut command) =
+                super::aider_uninstall_command(RuntimePlatform::Windows, |name| {
+                    (name == binary).then(|| launcher.clone())
+                })
+                .await
+                .unwrap();
+            assert_eq!(line, format!("{binary} -m pip uninstall -y aider-chat"));
+            assert_eq!(command.as_std().get_program(), launcher.as_os_str());
+            let result = command.output().await.unwrap();
+            assert!(result.status.success());
+            assert_eq!(
+                String::from_utf8_lossy(&result.stdout).trim(),
+                "removed aider-chat"
+            );
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn npm_operations_and_versions_use_the_detected_toolchain() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const CHILD_PROBE: &str = "AGENTBRO_TEST_NPM_CHILD_PROBE";
+        if std::env::var_os(CHILD_PROBE).is_some() {
+            let meta = metadata_for("claude-code").unwrap();
+            assert_eq!(
+                version_info_for(&meta, None, true).await,
+                (Some("2.0.0".to_string()), Some("3.0.0".to_string()))
+            );
+            for command in [
+                meta.install_command.unwrap(),
+                meta.update_command.unwrap(),
+                meta.uninstall_command.unwrap(),
+            ] {
+                let output = super::package_operation_command(command)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(output.status.success(), "{command}");
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                    format!("selected {command}")
+                );
+            }
+            return;
+        }
+
+        let home = std::env::temp_dir().join(format!("agentbro-npm-{}", uuid::Uuid::new_v4()));
+        let launcher = home.join("agent launchers");
+        let login_launcher = home.join("login tools");
+        let toolchain = home.join(".nvm/versions/node/v22.0.0/bin");
+        std::fs::create_dir_all(&launcher).unwrap();
+        std::fs::create_dir_all(&login_launcher).unwrap();
+        std::fs::create_dir_all(&toolchain).unwrap();
+        std::fs::write(
+            home.join(".profile"),
+            r#"export PATH="$HOME/login tools:$PATH""#,
+        )
+        .unwrap();
+        for (path, contents) in [
+            (
+                launcher.join("npm"),
+                "#!/usr/bin/env agentbro-npm-test-node\n",
+            ),
+            (
+                login_launcher.join("npm"),
+                "#!/bin/sh\nprintf '%s\\n' 'login npm'\n",
+            ),
+            (
+                toolchain.join("agentbro-npm-test-node"),
+                r#"#!/bin/sh
+case "$2" in
+  list)
+    [ "$7" = "--no-update-notifier" ] || exit 1
+    printf '%s\n' '{"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}'
+    ;;
+  view)
+    [ "$6 $7 $8" = "--no-update-notifier --fetch-retries=0 --fetch-timeout=4000" ] || exit 1
+    printf '%s\n' '3.0.0'
+    ;;
+  install|uninstall) shift; printf 'selected npm %s\n' "$*" ;;
+  *) exit 1 ;;
+esac
+"#,
+            ),
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path =
+            std::env::join_paths([launcher.as_path(), Path::new("/usr/bin"), Path::new("/bin")])
+                .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .current_dir(&home)
+            .env(CHILD_PROBE, "1")
+            .env("HOME", &home)
+            .env("SHELL", "/bin/sh")
+            .env("PATH", path)
+            .args([
+                "--exact",
+                "agents::programs::tests::npm_operations_and_versions_use_the_detected_toolchain",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("running 1 test"), "{stdout}");
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_npm_probe_stops_its_process() {
+        let pid_file =
+            std::env::temp_dir().join(format!("agentbro-npm-pid-{}", uuid::Uuid::new_v4()));
+        let mut npm = tokio::process::Command::new("/bin/sh");
+        npm.args(["-c", r#"printf '%s' "$$" > "$1"; exec /bin/sleep 3"#, "npm"])
+            .arg(&pid_file);
+
+        assert!(
+            super::package_probe_output(&mut npm, tokio::time::Duration::from_millis(500))
+                .await
+                .is_none()
+        );
+        let pid = std::fs::read_to_string(&pid_file).expect("npm probe process started");
+        std::fs::remove_file(&pid_file).unwrap();
+        let stopped = tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+            loop {
+                let status = tokio::process::Command::new("/bin/kill")
+                    .args(["-0", &pid])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await
+                    .unwrap();
+                if !status.success() {
+                    return;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(stopped.is_ok(), "the timed-out npm probe was still running");
+    }
+
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn reads_the_installed_version_from_an_app_info_plist() {
@@ -1965,7 +2730,7 @@ mod tests {
         assert!(paths.iter().any(|path| path == "/usr/bin/cursor"));
         assert!(paths
             .iter()
-            .any(|path| path.ends_with("/.local/share/applications/cursor.desktop")));
+            .any(|path| Path::new(path).ends_with(".local/share/applications/cursor.desktop")));
     }
 
     #[test]
@@ -1977,6 +2742,53 @@ mod tests {
         assert!(paths
             .iter()
             .any(|path| path.ends_with("\\Programs\\Cursor\\Cursor.exe")));
+    }
+
+    #[test]
+    fn windows_qwenwork_candidates_include_the_packaged_launcher() {
+        let qwenwork = metadata_for("qwenwork-cn").expect("QwenWork metadata");
+        let paths =
+            app_path_candidates_for_platform("qwenwork-cn", &qwenwork, RuntimePlatform::Windows);
+
+        for executable in ["Launcher.exe", "QwenWorkCN.exe"] {
+            let suffix = format!("\\Programs\\QwenWorkCN\\{executable}");
+            assert!(paths.iter().any(|path| path.ends_with(&suffix)));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_registration_names_match_only_the_desktop_agent() {
+        let names = |agent| {
+            super::windows_registration_names(agent, &metadata_for(agent).expect("Agent metadata"))
+        };
+
+        assert_eq!(names("cursor"), ["Cursor.exe"]);
+        assert!(names("cursor-cli").is_empty());
+        assert!(names("cline").is_empty());
+        assert!(names("qwenwork-cn").contains(&"QwenWorkCN.exe".to_string()));
+        assert!(!names("qwenwork-cn").contains(&"Launcher.exe".to_string()));
+        assert_eq!(names("easyclaw-v2"), ["EasyClaw V2.exe"]);
+        assert!(!names("codebuddycn")
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("CodeBuddy.exe")));
+    }
+
+    #[test]
+    fn windows_workbuddy_launchers_match_the_two_installer_editions() {
+        for (agent, name) in [("workbuddy", "WorkBuddy"), ("workbuddy-ai", "WorkBuddyAI")] {
+            let meta = metadata_for(agent).expect("WorkBuddy metadata");
+            let paths = app_path_candidates_for_platform(agent, &meta, RuntimePlatform::Windows);
+            assert!(paths
+                .iter()
+                .any(|path| path.ends_with(&format!(r"\Programs\{name}\{name}.exe"))));
+            let other = if agent == "workbuddy" {
+                "WorkBuddyAI.exe"
+            } else {
+                "WorkBuddy.exe"
+            };
+            assert!(!paths.iter().any(|path| path.ends_with(other)));
+        }
     }
 
     #[test]

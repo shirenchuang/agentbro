@@ -1,6 +1,7 @@
 import type { CSSProperties, MouseEvent, ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
+import { islandActionProps } from '../../utils/islandActions'
 import { SessionContextHeader } from './SessionContextHeader'
 import './OverlayCard.css'
 
@@ -11,6 +12,7 @@ interface OverlayCardProps {
   onShowSessions?: () => void
   sessionCount?: number
   maxHeight?: number
+  controls?: ReactNode
   className?: string
   bodyClassName?: string
   onCardClick?: () => void
@@ -22,7 +24,7 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
   )
 }
 
-export function OverlayCard({ session, children, onDismiss, onShowSessions, sessionCount, maxHeight, className, bodyClassName, onCardClick }: OverlayCardProps) {
+export function OverlayCard({ session, children, onDismiss, onShowSessions, sessionCount, maxHeight, controls, className, bodyClassName, onCardClick }: OverlayCardProps) {
   const { t } = useTranslation()
   const cardClassName = ['overlay-card', onCardClick ? 'overlay-card--clickable' : undefined, className].filter(Boolean).join(' ')
   const bodyClass = ['overlay-card__body', bodyClassName].filter(Boolean).join(' ')
@@ -50,21 +52,19 @@ export function OverlayCard({ session, children, onDismiss, onShowSessions, sess
       <div className={bodyClass}>
         {children}
       </div>
+      {controls}
       <div className="overlay-card__secondary">
         {onShowSessions && sessionCount != null ? (
           <button
             type="button"
             className="overlay-card__show-sessions"
-            onMouseDown={(event) => {
-              event.preventDefault()
-              onShowSessions()
-            }}
+            {...islandActionProps(onShowSessions)}
           >
             <span className="overlay-card__brand-logo-stack" aria-hidden="true">
               <img className="overlay-card__brand-logo overlay-card__brand-logo--light" src="/agentbro-logo.png" alt="" />
               <img className="overlay-card__brand-logo overlay-card__brand-logo--dark" src="/agentbro-logo-dark.png" alt="" />
             </span>
-            <span>{t('notch.slogan', { defaultValue: '让 Agent 更好用' })}</span>
+            <span>{t('notch.showAllSessions', { count: sessionCount })}</span>
           </button>
         ) : (
           <div className="overlay-card__show-sessions overlay-card__show-sessions--static">

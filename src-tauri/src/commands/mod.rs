@@ -114,12 +114,14 @@ impl CodexAppServerBridge {
         thread_id: &str,
         allowed: bool,
         always: bool,
+        tool_use_id: Option<&str>,
     ) -> Result<bool, String> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = CodexAppServerCommand::Permission {
             thread_id: thread_id.to_string(),
             allowed,
             always,
+            tool_use_id: tool_use_id.map(str::to_owned),
             reply: reply_tx,
         };
         let Some(tx) = self.tx.lock().await.clone() else {
@@ -138,11 +140,13 @@ impl CodexAppServerBridge {
         &self,
         thread_id: &str,
         answers: BTreeMap<String, Vec<String>>,
+        tool_use_id: Option<&str>,
     ) -> Result<bool, String> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = CodexAppServerCommand::Question {
             thread_id: thread_id.to_string(),
             answers,
+            tool_use_id: tool_use_id.map(str::to_owned),
             reply: reply_tx,
         };
         let Some(tx) = self.tx.lock().await.clone() else {
@@ -214,11 +218,13 @@ enum CodexAppServerCommand {
         thread_id: String,
         allowed: bool,
         always: bool,
+        tool_use_id: Option<String>,
         reply: oneshot::Sender<Result<bool, String>>,
     },
     Question {
         thread_id: String,
         answers: BTreeMap<String, Vec<String>>,
+        tool_use_id: Option<String>,
         reply: oneshot::Sender<Result<bool, String>>,
     },
     RateLimits {
@@ -1416,6 +1422,7 @@ async fn handle_codex_app_server_command(
             thread_id,
             allowed,
             always,
+            tool_use_id,
             reply,
         } => {
             let result = match pending_requests.remove(&thread_id) {
@@ -1425,7 +1432,9 @@ async fn handle_codex_app_server_command(
                         CodexAppServerPendingKind::CommandApproval
                             | CodexAppServerPendingKind::FileApproval
                             | CodexAppServerPendingKind::PermissionsApproval
-                    ) =>
+                    ) && tool_use_id
+                        .as_ref()
+                        .is_none_or(|id| *id == request_id_to_string(&pending.request_id)) =>
                 {
                     let response = codex_app_server_permission_response(&pending, allowed, always);
                     match write_ws_json(
@@ -1438,7 +1447,10 @@ async fn handle_codex_app_server_command(
                     .await
                     {
                         Ok(()) => {
-                            clear_codex_app_server_interaction(store, &thread_id);
+                            store.clear_matching_permission(
+                                &thread_id,
+                                Some(&request_id_to_string(&pending.request_id)),
+                            );
                             Ok(true)
                         }
                         Err(err) => Err(err),
@@ -1455,10 +1467,16 @@ async fn handle_codex_app_server_command(
         CodexAppServerCommand::Question {
             thread_id,
             answers,
+            tool_use_id,
             reply,
         } => {
             let result = match pending_requests.remove(&thread_id) {
-                Some(pending) if pending.kind == CodexAppServerPendingKind::UserInput => {
+                Some(pending)
+                    if pending.kind == CodexAppServerPendingKind::UserInput
+                        && tool_use_id
+                            .as_ref()
+                            .is_none_or(|id| *id == request_id_to_string(&pending.request_id)) =>
+                {
                     match write_ws_json(
                         sink,
                         serde_json::json!({
@@ -1469,10 +1487,16 @@ async fn handle_codex_app_server_command(
                     .await
                     {
                         Ok(()) => {
-                            clear_codex_app_server_interaction(store, &thread_id);
+                            store.clear_matching_question(
+                                &thread_id,
+                                Some(&request_id_to_string(&pending.request_id)),
+                            );
                             Ok(true)
                         }
-                        Err(err) => Err(err),
+                        Err(err) => {
+                            pending_requests.insert(thread_id, pending);
+                            Err(err)
+                        }
                     }
                 }
                 Some(pending) => {
@@ -1602,15 +1626,6 @@ fn upsert_codex_app_server_pending_question(
         session.pending_question = Some(pending_question);
         session.pending_permission = None;
         session.pending_plan = None;
-    });
-}
-
-fn clear_codex_app_server_interaction(store: &SessionStore, thread_id: &str) {
-    store.update_session(thread_id, |session| {
-        session.pending_permission = None;
-        session.pending_question = None;
-        session.pending_plan = None;
-        session.phase = SessionPhase::Processing;
     });
 }
 
@@ -2428,8 +2443,25 @@ pub async fn respond_permission(
     session_id: String,
     allowed: bool,
     always: Option<bool>,
+    tool_use_id: Option<String>,
 ) -> Result<(), String> {
-    let always = always.unwrap_or(false);
+    respond_to_permission(
+        &state,
+        &session_id,
+        allowed,
+        always.unwrap_or(false),
+        tool_use_id.as_deref(),
+    )
+    .await
+}
+
+pub(crate) async fn respond_to_permission(
+    state: &AppState,
+    session_id: &str,
+    allowed: bool,
+    always: bool,
+    tool_use_id: Option<&str>,
+) -> Result<(), String> {
     let harness = session_id.starts_with("deepseek-harness:");
     if harness && always {
         return Err("DeepSeek Harness only supports one-time approval".to_string());
@@ -2443,7 +2475,7 @@ pub async fn respond_permission(
 
     match state
         .codex_app_server
-        .respond_permission(&session_id, allowed, always)
+        .respond_permission(session_id, allowed, always, tool_use_id)
         .await
     {
         Ok(true) => return Ok(()),
@@ -2458,12 +2490,12 @@ pub async fn respond_permission(
     // Try hook socket first
     let hook_result = state
         .hook_server
-        .respond_permission(&session_id, allowed, always)
+        .respond_permission(session_id, allowed, always, tool_use_id)
         .await;
 
     match hook_result {
         Ok(()) => Ok(()),
-        Err(error) if harness => Err(error.to_string()),
+        Err(error) if harness || tool_use_id.is_some() => Err(error.to_string()),
         Err(e) => {
             #[cfg(target_os = "windows")]
             {
@@ -2482,7 +2514,7 @@ pub async fn respond_permission(
 
                 let session = state
                     .session_store
-                    .get_session(&session_id)
+                    .get_session(session_id)
                     .ok_or_else(|| format!("Session {} not found", session_id))?;
 
                 let pid = session
@@ -2508,7 +2540,7 @@ pub async fn respond_permission(
                 // Clear pending permission since we handled it via tmux
                 state
                     .session_store
-                    .set_pending_permission(&session_id, None);
+                    .clear_matching_permission(session_id, None);
                 Ok(())
             }
         }
@@ -2531,6 +2563,9 @@ pub async fn send_message(
         .get_session(&session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
+    if session.wsl_distribution.is_some() {
+        return Err("Continue the conversation in the WSL terminal".to_string());
+    }
     if is_codex_desktop_session(&session) {
         // Prefer the persistent app-server WebSocket bridge when it's attached.
         // This is the only free-form reply path available on Windows, and it
@@ -2710,6 +2745,8 @@ fn native_app_bundle_matches_session(session: &SessionState, bundle_id: &str) ->
             | ("stepfun", "com.stepfun.app")
             | ("opencode", "ai.opencode.desktop")
             | ("workbuddy", "com.workbuddy.workbuddy")
+            | ("workbuddy", "com.tencent.workbuddy.mac")
+            | ("workbuddy-ai", "com.workbuddy.workbuddy-ai")
     )
 }
 
@@ -2736,6 +2773,8 @@ fn is_known_ide_or_agent_host_bundle(bundle_id: &str) -> bool {
         || lower == "com.stepfun.app"
         || lower == "ai.opencode.desktop"
         || lower == "com.workbuddy.workbuddy"
+        || lower == "com.tencent.workbuddy.mac"
+        || lower == "com.workbuddy.workbuddy-ai"
 }
 
 fn is_ide_terminal_session(session: &SessionState) -> bool {
@@ -3595,52 +3634,60 @@ pub async fn respond_question(
     state: State<'_, AppState>,
     session_id: String,
     answer: String,
+    tool_use_id: Option<String>,
 ) -> Result<(), String> {
-    log::info!(
-        "Question response: session={}, answer={}",
-        session_id,
-        answer
-    );
+    respond_to_question(&state, &session_id, answer, tool_use_id.as_deref()).await
+}
 
-    if let Some(session) = state.session_store.get_session(&session_id) {
-        if let Some(question) = session.pending_question.clone() {
-            if is_codex_app_server_question(&question) {
-                let answers = codex_answers_for_pending_question(&question, &answer);
-                match state
-                    .codex_app_server
-                    .respond_question(&session_id, answers)
-                    .await
-                {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => {}
-                    Err(err) => log::warn!(
-                        "Codex app-server question response failed for {}: {}",
-                        session_id,
-                        err
-                    ),
-                }
-            }
-            if is_codex_rollout_question(&question) {
-                let call_id = question
-                    .tool_use_id
-                    .as_deref()
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "Codex question is missing call_id".to_string())?;
-                let answers = codex_answers_for_pending_question(&question, &answer);
-                submit_codex_request_user_input_output(&session_id, call_id, answers).await?;
-                state.session_store.set_pending_question(&session_id, None);
-                state.session_store.update_phase(
-                    &session_id,
-                    crate::hooks::session_store::SessionPhase::Processing,
-                );
-                return Ok(());
-            }
+pub(crate) async fn respond_to_question(
+    state: &AppState,
+    session_id: &str,
+    answer: String,
+    tool_use_id: Option<&str>,
+) -> Result<(), String> {
+    log::info!("Question response: session={}", session_id);
+    let pending = state
+        .session_store
+        .get_session(session_id)
+        .and_then(|session| session.pending_question);
+    if tool_use_id.is_some_and(|id| {
+        pending
+            .as_ref()
+            .and_then(|question| question.tool_use_id.as_deref())
+            != Some(id)
+    }) {
+        return Err("The original question is no longer waiting for an answer.".to_string());
+    }
+    if let Some(question) = pending {
+        if is_codex_app_server_question(&question) {
+            let answers = codex_answers_for_pending_question(&question, &answer);
+            return match state
+                .codex_app_server
+                .respond_question(session_id, answers, question.tool_use_id.as_deref())
+                .await?
+            {
+                true => Ok(()),
+                false => Err("Codex is no longer waiting for this answer.".to_string()),
+            };
+        }
+        if is_codex_rollout_question(&question) {
+            let call_id = question
+                .tool_use_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Codex question is missing call_id".to_string())?;
+            let answers = codex_answers_for_pending_question(&question, &answer);
+            submit_codex_request_user_input_output(session_id, call_id, answers).await?;
+            state
+                .session_store
+                .clear_matching_question(session_id, Some(call_id));
+            return Ok(());
         }
     }
 
     state
         .hook_server
-        .respond_question(&session_id, answer)
+        .respond_question(session_id, answer, tool_use_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -3847,6 +3894,7 @@ pub async fn respond_plan(
     session_id: String,
     mode: String,
     message: Option<String>,
+    request_id: Option<String>,
 ) -> Result<(), String> {
     log::info!(
         "Plan response: session={}, mode={}, has_message={}",
@@ -3857,7 +3905,7 @@ pub async fn respond_plan(
 
     state
         .hook_server
-        .respond_plan(&session_id, mode, message)
+        .respond_plan(&session_id, mode, message, request_id.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -3868,16 +3916,21 @@ pub async fn respond_plan(
 pub async fn respond_auto_approve(
     state: State<'_, AppState>,
     session_id: String,
+    tool_use_id: Option<String>,
 ) -> Result<(), String> {
     if session_id.starts_with("deepseek-harness:") {
         return Err("DeepSeek Harness requires a one-time user decision".to_string());
     }
     log::info!("Auto-approve: session={}", session_id);
 
-    let hook_result = state.hook_server.respond_auto_approve(&session_id).await;
+    let hook_result = state
+        .hook_server
+        .respond_auto_approve(&session_id, tool_use_id.as_deref())
+        .await;
 
     match hook_result {
         Ok(()) => Ok(()),
+        Err(error) if tool_use_id.is_some() => Err(error.to_string()),
         Err(e) => {
             #[cfg(target_os = "windows")]
             {
@@ -3911,7 +3964,7 @@ pub async fn respond_auto_approve(
 
                 state
                     .session_store
-                    .set_pending_permission(&session_id, None);
+                    .clear_matching_permission(&session_id, None);
                 Ok(())
             }
         }
@@ -4284,6 +4337,23 @@ pub async fn jump_to_terminal(
         .get_session(&session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
+    #[cfg(target_os = "windows")]
+    if let Some(distribution) = &session.wsl_distribution {
+        return crate::platform::wsl::open_workspace(distribution, &session.cwd);
+    }
+    #[cfg(target_os = "windows")]
+    if matches!(
+        session.agent_type.as_str(),
+        "qwenwork-cn" | "workbuddy" | "workbuddy-ai"
+    ) {
+        return crate::agents::programs::open_agent_app(&session.agent_type);
+    }
+    #[cfg(target_os = "macos")]
+    if matches!(session.agent_type.as_str(), "workbuddy" | "workbuddy-ai")
+        && app_host_bundle_id(&session).is_none()
+    {
+        return crate::agents::programs::open_agent_app(&session.agent_type);
+    }
     if is_codex_desktop_session(&session) {
         return open_app_host_session(&session);
     }
@@ -4310,7 +4380,13 @@ pub async fn jump_to_terminal(
         return open_app_host_session(&session);
     }
 
-    let pid = session.pid.unwrap_or(0);
+    let pid = session
+        .pid
+        .filter(|_| {
+            !cfg!(target_os = "windows")
+                || (session.remote_host_id.is_none() && session.remote_host_name.is_none())
+        })
+        .unwrap_or(0);
     let resolved_tty = resolve_session_tty(&session);
     if let Some(tty) = &resolved_tty {
         if session.tty.as_deref() != Some(tty.as_str()) {
@@ -5713,6 +5789,9 @@ fn resolve_transcript_path_for_session(
     session_id: &str,
 ) -> Option<PathBuf> {
     let session = state.session_store.get_session(session_id)?;
+    if session.wsl_distribution.is_some() {
+        return None;
+    }
     let cwd = session.cwd.clone();
     let mut projects_dirs = all_projects_dirs();
     if let Some(root) = session

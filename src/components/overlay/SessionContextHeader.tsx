@@ -10,6 +10,7 @@ const AGENT_NAMES: Record<string, string> = {
   'claude-code': 'Claude',
   'gemini-cli': 'Gemini',
   'workbuddy': 'WorkBuddy',
+  'workbuddy-ai': 'WorkBuddy AI',
   'zcode': 'ZCode',
   'doubao': 'Doubao',
 }

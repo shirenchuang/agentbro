@@ -21,6 +21,7 @@ pub mod theme;
 pub mod webhook;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
@@ -36,14 +37,18 @@ use hooks::conversation_parser::{
 };
 use hooks::file_watcher::ConversationWatcher;
 use hooks::server::HookServer;
-use hooks::session_store::{SessionPhase, SessionState, SessionStore};
+use hooks::session_store::{SessionState, SessionStore};
 use network_monitor::NetworkMonitor;
 use platform::display::{find_target_monitor, list_displays_inner, DisplayInfo};
 use sound::{SoundEngine, SoundEvent, SoundPack, SoundPackImportResult};
 use telemetry::TelemetryService;
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(Default))]
 struct NotchDragState {
+    gesture_id: u64,
+    moving: bool,
+    track_mouse_button: bool,
     start_x: f64,
     start_offset: f64,
     current_offset: f64,
@@ -53,6 +58,7 @@ struct NotchDragState {
     min_center: f64,
     max_center: f64,
     last_window_x: f64,
+    monitor_scale: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,12 +73,22 @@ struct PetDragState {
     start_anchor: PetStageAnchor,
 }
 
+static NEXT_NOTCH_DRAG_ID: AtomicU64 = AtomicU64::new(0);
 static NOTCH_DRAG_STATE: OnceLock<Mutex<Option<NotchDragState>>> = OnceLock::new();
 static PET_DRAG_STATE: OnceLock<Mutex<Option<PetDragState>>> = OnceLock::new();
 static TRAY_ICON_RECT: OnceLock<Mutex<Option<tauri::Rect>>> = OnceLock::new();
 
 fn notch_drag_state() -> &'static Mutex<Option<NotchDragState>> {
     NOTCH_DRAG_STATE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn trace_island_position(message: std::fmt::Arguments<'_>) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if *ENABLED.get_or_init(|| std::env::var_os("AGENTBRO_TRACE_ISLAND_DRAG").is_some()) {
+        let utc = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        log::info!("Island position trace {utc}: {message}");
+    }
 }
 
 fn pet_drag_state() -> &'static Mutex<Option<PetDragState>> {
@@ -147,6 +163,26 @@ async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(
         }
     })
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_notch_webview_focus(window: tauri::WebviewWindow) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    if window.label() == "notch" {
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        if hwnd.0 == unsafe { GetForegroundWindow() } {
+            window
+                .as_ref()
+                .set_focus()
+                .map_err(|error| error.to_string())?;
+            return Ok(true);
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = window;
+    Ok(false)
 }
 
 #[tauri::command]
@@ -1237,6 +1273,21 @@ async fn uninstall_remote_agent_hooks(
 }
 
 #[tauri::command]
+async fn get_remote_agent_hook_status(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+    agent_id: String,
+) -> Result<remote::installer::RemoteAgentHookStatus, String> {
+    let host = state
+        .remote_manager
+        .hosts()
+        .into_iter()
+        .find(|host| host.id == id)
+        .ok_or_else(|| format!("Host {id} not found"))?;
+    remote::installer::RemoteInstaller::check_agent_hook(&host, &agent_id).await
+}
+
+#[tauri::command]
 async fn check_remote_hooks(
     state: tauri::State<'_, commands::AppState>,
     id: String,
@@ -2086,62 +2137,28 @@ fn handle_permission_shortcut(app: tauri::AppHandle, allowed: bool) {
     let Some(session) = first_pending_permission(&state.session_store) else {
         return;
     };
-    let session_id = session.id.clone();
-    let codex_app_server = state.codex_app_server.clone();
-    let hook_server = state.hook_server.clone();
-    let session_store = state.session_store.clone();
+    let session_id = session.id;
+    let tool_use_id = session
+        .pending_permission
+        .and_then(|permission| permission.tool_use_id);
 
     tauri::async_runtime::spawn(async move {
-        match codex_app_server
-            .respond_permission(&session_id, allowed, false)
-            .await
+        let state = app.state::<AppState>();
+        if let Err(error) = commands::respond_to_permission(
+            &state,
+            &session_id,
+            allowed,
+            false,
+            tool_use_id.as_deref(),
+        )
+        .await
         {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(err) => log::warn!(
-                "Global permission shortcut Codex app-server response failed for {}: {}",
-                session_id,
-                err
-            ),
-        }
-        let hook_result = hook_server
-            .respond_permission(&session_id, allowed, false)
-            .await;
-        if let Err(err) = hook_result {
             log::warn!(
-                "Global permission shortcut hook response failed for {}: {}. Falling back to tmux.",
+                "Global permission shortcut failed for {}: {}",
                 session_id,
-                err
+                error
             );
-            let fallback_result = (|| -> Result<(), String> {
-                let pid = session
-                    .pid
-                    .ok_or_else(|| "Session has no PID for tmux fallback".to_string())?;
-                let tmux_target = crate::terminal::approval::resolve_tmux_target(pid)
-                    .ok_or_else(|| "Could not find tmux pane for session".to_string())?;
-                if allowed {
-                    crate::terminal::approval::approve_once(&tmux_target)
-                        .map_err(|e| e.to_string())?;
-                } else {
-                    crate::terminal::approval::reject(
-                        &tmux_target,
-                        Some("Denied via keyboard shortcut"),
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-                Ok(())
-            })();
-            if let Err(fallback_err) = fallback_result {
-                log::warn!(
-                    "Global permission shortcut tmux fallback failed for {}: {}",
-                    session_id,
-                    fallback_err
-                );
-                return;
-            }
         }
-        session_store.set_pending_permission(&session_id, None);
-        session_store.update_phase(&session_id, SessionPhase::Processing);
     });
 }
 
@@ -2150,52 +2167,28 @@ fn handle_question_skip_shortcut(app: tauri::AppHandle) {
     let Some(session) = first_pending_question(&state.session_store) else {
         return;
     };
-    let session_id = session.id.clone();
-    let answer = session
-        .pending_question
-        .as_ref()
-        .and_then(|question| question.options.first().cloned())
-        .unwrap_or_default();
-    let hook_server = state.hook_server.clone();
-    let codex_app_server = state.codex_app_server.clone();
-    let session_store = state.session_store.clone();
+    let session_id = session.id;
+    let Some(question) = session.pending_question else {
+        return;
+    };
+    let answer = question.options.first().cloned().unwrap_or_default();
 
     tauri::async_runtime::spawn(async move {
-        if let Some(question) = session.pending_question.as_ref() {
-            if question.source.as_deref() == Some("codex_app_server_request_user_input")
-                && question.response_mode.as_deref() == Some("app_server")
-            {
-                let mut answers = std::collections::BTreeMap::new();
-                let answer_id = question
-                    .questions
-                    .first()
-                    .and_then(|item| item.id.clone())
-                    .unwrap_or_else(|| question.question.clone());
-                answers.insert(answer_id, vec![answer.clone()]);
-                match codex_app_server
-                    .respond_question(&session_id, answers)
-                    .await
-                {
-                    Ok(true) => return,
-                    Ok(false) => {}
-                    Err(err) => log::warn!(
-                        "Global question shortcut Codex app-server response failed for {}: {}",
-                        session_id,
-                        err
-                    ),
-                }
-            }
-        }
-        if let Err(err) = hook_server.respond_question(&session_id, answer).await {
+        let state = app.state::<AppState>();
+        if let Err(err) = commands::respond_to_question(
+            &state,
+            &session_id,
+            answer,
+            question.tool_use_id.as_deref(),
+        )
+        .await
+        {
             log::warn!(
                 "Global question skip shortcut failed for {}: {}",
                 session_id,
                 err
             );
-            return;
         }
-        session_store.set_pending_question(&session_id, None);
-        session_store.update_phase(&session_id, SessionPhase::Processing);
     });
 }
 
@@ -3230,10 +3223,11 @@ async fn import_github_repo_skills(
     let mut imported = Vec::new();
     if !active_selections.is_empty() {
         let clone_source = github_repo_clone_source(&repo);
-        let (repo_root, temp_root) = skills::installer::resolve_external_skill_source_with_token(
+        let (repo_root, _temp_root) = skills::installer::resolve_external_skill_source_with_token(
             &clone_source,
             github_token.as_deref(),
         )?;
+        let checkout_commit = skills::installer::read_checkout_commit(&repo_root);
         let install_result = (|| {
             for selection in active_selections {
                 let source_path = selection
@@ -3261,6 +3255,7 @@ async fn import_github_repo_skills(
                     &source,
                     resolution,
                     rename_to,
+                    checkout_commit.as_deref(),
                 )?;
                 imported.push(serde_json::json!({
                     "sourcePath": source_path,
@@ -3273,9 +3268,6 @@ async fn import_github_repo_skills(
             }
             Ok::<(), String>(())
         })();
-        if let Some(root) = temp_root {
-            let _ = std::fs::remove_dir_all(root);
-        }
         if let Err(error) = &install_result {
             log::warn!("GitHub Skill import failed: {error}");
         }
@@ -3305,6 +3297,7 @@ fn install_github_skill_into_center(
     source_uri: &str,
     resolution: &str,
     rename_to: Option<&str>,
+    checkout_commit: Option<&str>,
 ) -> Result<(String, String), String> {
     let original_skill_id = skills::v2::fsutil::infer_skill_id(local_source);
     if original_skill_id.is_empty() {
@@ -3327,7 +3320,7 @@ fn install_github_skill_into_center(
             "update".to_string()
         },
     };
-    let result = manager.execute_add_center_skill(
+    let result = manager.execute_add_center_skill_with_commit(
         skills::v2::models::AddCenterSkillInput {
             source_path: local_source.display().to_string(),
             source_type: "github".to_string(),
@@ -3338,12 +3331,14 @@ fn install_github_skill_into_center(
             import_mode: Some("copy".to_string()),
         },
         vec![decision],
+        checkout_commit,
     )?;
     let imported_skill_id = result
         .skill_ids
         .first()
         .or_else(|| result.updated.first())
         .cloned()
+        .or_else(|| (resolution == "overwrite").then(|| original_skill_id.clone()))
         .ok_or_else(|| format!("GitHub Skill '{}' was not imported", original_skill_id))?;
     Ok((original_skill_id, imported_skill_id))
 }
@@ -3592,13 +3587,43 @@ mod github_import_source_tests {
         std::env::set_var("HOME", &temp_home);
 
         let test_result = (|| -> Result<(String, bool, bool, bool, bool), String> {
-            let source = temp_home.join("repo").join("skills").join("github-skill");
+            let checkout = temp_home.join("repo");
+            let source = checkout.join("skills").join("github-skill");
             fs::create_dir_all(&source).map_err(|error| error.to_string())?;
             fs::write(
                 source.join("SKILL.md"),
                 "---\nname: github-skill\ndescription: GitHub import test\n---\n",
             )
             .map_err(|error| error.to_string())?;
+            let git = |args: &[&str]| -> Result<String, String> {
+                let output = std::process::Command::new("git")
+                    .current_dir(&checkout)
+                    .args(args)
+                    .output()
+                    .map_err(|error| error.to_string())?;
+                if !output.status.success() {
+                    return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+                }
+                Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            };
+            git(&["init", "--quiet"])?;
+            git(&["add", "--all"])?;
+            let commit = |message: &str| {
+                git(&[
+                    "-c",
+                    "user.name=AgentBro Test",
+                    "-c",
+                    "user.email=agentbro-test@example.com",
+                    "-c",
+                    "commit.gpgSign=false",
+                    "commit",
+                    "--quiet",
+                    "--allow-empty",
+                    "-m",
+                    message,
+                ])
+            };
+            commit("Skill fixture")?;
             let requested_center = temp_home.join("custom-center");
             let fixed_center = temp_home.join(".agentbro").join("skills");
             let sqlite = temp_home.join("skill-manager.db");
@@ -3620,7 +3645,32 @@ mod github_import_source_tests {
                 "github:owner/repo/skills/github-skill",
                 "overwrite",
                 None,
+                None,
             )?;
+            for _ in 0..2 {
+                let expected = git(&["log", "-1", "--format=%H"])?;
+                let actual = crate::skills::installer::read_checkout_commit(&checkout);
+                if actual.as_deref() != Some(expected.as_str()) {
+                    return Err("Could not read the checked-out Skill commit".to_string());
+                }
+                for _ in 0..2 {
+                    let (_, reimported) = install_github_skill_into_center(
+                        &manager,
+                        &source,
+                        "github:owner/repo/skills/github-skill",
+                        "overwrite",
+                        None,
+                        actual.as_deref(),
+                    )?;
+                    let saved = manager.get_skill_detail(&reimported)?.source;
+                    if saved.and_then(|source| source.source_ref).as_deref()
+                        != Some(expected.as_str())
+                    {
+                        return Err("Skill detail has the wrong checkout commit".to_string());
+                    }
+                }
+                commit("Commit without a Skill content change")?;
+            }
             let listed = manager
                 .list_center_skills()?
                 .into_iter()
@@ -4447,8 +4497,29 @@ fn position_notch_window(
     horizontal_offset: f64,
 ) -> f64 {
     let (x, y, anchor_offset_x) = notch_window_geometry(monitor, width, horizontal_offset);
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+    #[cfg(target_os = "windows")]
+    trace_island_position(format_args!(
+        "reposition offset={horizontal_offset} target=({x}, {y}) width={width}"
+    ));
+    let _ = window.set_position(notch_window_position(x, y, monitor.scale_factor()));
     anchor_offset_x
+}
+
+fn notch_window_position(x: f64, y: f64, _monitor_scale: f64) -> tauri::Position {
+    #[cfg(target_os = "windows")]
+    {
+        tauri::Position::Physical(notch_physical_position(x, y, _monitor_scale))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        tauri::Position::Logical(tauri::LogicalPosition::new(x, y))
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn notch_physical_position(x: f64, y: f64, monitor_scale: f64) -> tauri::PhysicalPosition<i32> {
+    tauri::LogicalPosition::new(x, y).to_physical(monitor_scale)
 }
 
 fn notch_window_geometry(
@@ -4474,13 +4545,14 @@ fn notch_window_geometry(
 }
 
 #[cfg(target_os = "macos")]
-fn set_notch_window_frame(
+async fn set_notch_window_frame(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
     x: f64,
     top_y: f64,
     width: f64,
     height: f64,
+    _monitor_scale: f64,
 ) -> Result<(), String> {
     use objc2_app_kit::NSWindow;
     use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -4534,19 +4606,105 @@ fn set_notch_window_frame(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn set_notch_window_frame(
+async fn set_notch_window_frame(
     _app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
     x: f64,
     top_y: f64,
     width: f64,
     height: f64,
+    monitor_scale: f64,
 ) -> Result<(), String> {
-    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-        x, top_y,
-    )));
-    Ok(())
+    let size = tauri::LogicalSize::new(width, height);
+    let position = notch_window_position(x, top_y, monitor_scale);
+
+    #[cfg(target_os = "windows")]
+    {
+        let size = tauri::Size::Physical(size.to_physical(monitor_scale));
+        let window = window.clone();
+        let (applied, completion) = tokio::sync::oneshot::channel();
+        // Tauri queues individual setters off the main thread. A completed resize
+        // must acknowledge both changes from the same event-loop callback.
+        _app.run_on_main_thread(move || {
+            let result = window
+                .set_position(position)
+                .and_then(|()| window.set_size(size))
+                .and_then(|()| {
+                    // Wry notifies WebView2 on moves. Refresh accessibility
+                    // bounds after a resize that leaves the window in place.
+                    window.with_webview(|webview| {
+                        if let Err(error) =
+                            unsafe { webview.controller().NotifyParentWindowPositionChanged() }
+                        {
+                            log::debug!("Island WebView2 bounds notification failed: {error}");
+                        }
+                    })
+                })
+                .map_err(|error| error.to_string());
+            let _ = applied.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+        completion
+            .await
+            .map_err(|_| "The Island window closed before its resize completed".to_string())?
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window.set_size(tauri::Size::Logical(size));
+        let _ = window.set_position(position);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod notch_position_tests {
+    use super::{
+        notch_drag_for_tick, notch_physical_position, take_notch_drag_offset, NotchDragState,
+    };
+    use tauri::PhysicalPosition;
+
+    #[test]
+    fn mixed_dpi_notch_coordinates_use_the_target_display_scale() {
+        let right_monitor_start = 1920.0 / 1.5;
+        let left_monitor_start = -2560.0 / 1.5;
+        let center_window = (2560.0 / 1.5 - 420.0) / 2.0;
+        assert_eq!(
+            notch_physical_position(right_monitor_start + center_window, 0.0, 1.5),
+            PhysicalPosition::new(2885, 0)
+        );
+        assert_eq!(
+            notch_physical_position(left_monitor_start + center_window, -150.0 / 1.5, 1.5),
+            PhysicalPosition::new(-1595, -150)
+        );
+    }
+
+    #[test]
+    fn an_old_notch_drag_cannot_update_or_expire_a_newer_gesture() {
+        let mut active = Some(NotchDragState {
+            gesture_id: 2,
+            moving: true,
+            ..Default::default()
+        });
+        assert!(notch_drag_for_tick(&mut active, 1, false).is_none());
+        assert!(notch_drag_for_tick(&mut active, 1, true).is_none());
+        assert!(notch_drag_for_tick(&mut active, 2, false).is_some());
+        assert!(notch_drag_for_tick(&mut active, 2, true).is_none());
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn stopped_notch_drag_preserves_its_offset_until_matching_end() {
+        let mut active = Some(NotchDragState {
+            gesture_id: 2,
+            current_offset: 36.4,
+            ..Default::default()
+        });
+        assert!(notch_drag_for_tick(&mut active, 2, false).is_none());
+        assert_eq!(take_notch_drag_offset(&mut active, 1), None);
+        assert_eq!(take_notch_drag_offset(&mut active, 2), Some(36.0));
+        assert!(active.is_none());
+    }
 }
 
 const PET_DEFAULT_TRAILING_INSET: f64 = 24.0;
@@ -5115,10 +5273,14 @@ async fn start_notch_drag(
     width: f64,
     height: f64,
     display_id: Option<String>,
-) -> Result<bool, String> {
+    track_mouse_button: bool,
+) -> Result<Option<u64>, String> {
     let Some(window) = app.get_webview_window("notch") else {
-        return Ok(false);
+        return Ok(None);
     };
+    if notch_mouse_button_released(track_mouse_button) {
+        return Ok(None);
+    }
     let (cursor_x, _) = get_cursor_position_sync()?;
     let config_store = app.state::<AppState>();
     let configured_display_id = config_store.config_store.get().display_id;
@@ -5130,7 +5292,7 @@ async fn start_notch_drag(
         .or_else(|| window.current_monitor().ok().flatten())
         .or_else(|| window.primary_monitor().ok().flatten());
     let Some(monitor) = monitor else {
-        return Ok(false);
+        return Ok(None);
     };
     let (base_center, min_center, max_center, y, window_x) =
         notch_drag_geometry(&monitor, width, horizontal_offset);
@@ -5140,18 +5302,32 @@ async fn start_notch_drag(
         (window_x + width / 2.0) - base_center
     };
 
-    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-        window_x.round(),
-        y,
-    )));
+    let monitor_scale = monitor.scale_factor();
+    #[cfg(target_os = "windows")]
+    set_notch_window_frame(&app, &window, window_x, y, width, height, monitor_scale).await?;
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
+        let _ = window.set_position(notch_window_position(window_x.round(), y, monitor_scale));
+    }
     configure_notch_window_for_spaces(&app);
+    if notch_mouse_button_released(track_mouse_button) {
+        return Ok(None);
+    }
 
+    let gesture_id = NEXT_NOTCH_DRAG_ID.fetch_add(1, Ordering::Relaxed);
+    #[cfg(target_os = "windows")]
+    trace_island_position(format_args!(
+        "start drag={gesture_id} offset={start_offset} windowX={window_x} cursorX={cursor_x} width={width}"
+    ));
     {
         let mut drag = notch_drag_state()
             .lock()
             .map_err(|e| format!("Drag lock error: {}", e))?;
         *drag = Some(NotchDragState {
+            gesture_id,
+            moving: true,
+            track_mouse_button,
             start_x: cursor_x,
             start_offset,
             current_offset: start_offset,
@@ -5161,6 +5337,7 @@ async fn start_notch_drag(
             min_center,
             max_center,
             last_window_x: window_x.round(),
+            monitor_scale,
         });
     }
 
@@ -5169,21 +5346,42 @@ async fn start_notch_drag(
         let started_at = std::time::Instant::now();
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(16)).await;
-            if started_at.elapsed() > std::time::Duration::from_secs(30) {
-                if let Ok(mut drag) = notch_drag_state().lock() {
-                    *drag = None;
-                }
-                break;
-            }
+            let expired = started_at.elapsed() > std::time::Duration::from_secs(30);
             let keep_dragging =
-                drain_pool(|| update_notch_drag_position(&app_handle)).unwrap_or(false);
+                drain_pool(|| update_notch_drag_position(&app_handle, gesture_id, expired))
+                    .unwrap_or(false);
             if !keep_dragging {
                 break;
             }
         }
     });
 
-    Ok(true)
+    Ok(Some(gesture_id))
+}
+
+fn notch_mouse_button_released(track_mouse_button: bool) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+
+        track_mouse_button
+            && unsafe {
+                let primary = if GetSystemMetrics(SM_SWAPBUTTON) == 0 {
+                    VK_LBUTTON
+                } else {
+                    VK_RBUTTON
+                };
+                GetAsyncKeyState(i32::from(primary)) >= 0
+            }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = track_mouse_button;
+        false
+    }
 }
 
 /// Run `f` inside a macOS autorelease pool so any NSScreen / NSWindow /
@@ -5203,20 +5401,58 @@ fn drain_pool<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
-fn update_notch_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
-    let Some(window) = app.get_webview_window("notch") else {
-        return Ok(false);
-    };
-    let (cursor_x, _) = get_cursor_position_sync()?;
+fn notch_drag_for_tick(
+    active: &mut Option<NotchDragState>,
+    gesture_id: u64,
+    expired: bool,
+) -> Option<&mut NotchDragState> {
+    if active.as_ref()?.gesture_id != gesture_id {
+        return None;
+    }
+    if expired {
+        *active = None;
+    }
+    active.as_mut().filter(|state| state.moving)
+}
 
-    let next_position = {
+fn update_notch_drag_position(
+    app: &tauri::AppHandle,
+    gesture_id: u64,
+    expired: bool,
+) -> Result<bool, String> {
+    let (window, next_position) = {
         let mut drag = notch_drag_state()
             .lock()
             .map_err(|e| format!("Drag lock error: {}", e))?;
-        let Some(state) = drag.as_mut() else {
+        let Some(state) = notch_drag_for_tick(&mut drag, gesture_id, expired) else {
             return Ok(false);
         };
-        let desired_offset = state.start_offset + cursor_x - state.start_x;
+        let Some(window) = app.get_webview_window("notch") else {
+            return Ok(false);
+        };
+        let cursor = get_cursor_position_sync();
+        // WebView2 can miss the release if the pointer leaves the transparent host.
+        if notch_mouse_button_released(state.track_mouse_button) {
+            state.moving = false;
+            #[cfg(target_os = "windows")]
+            trace_island_position(format_args!(
+                "native release drag={gesture_id} offset={}",
+                state.current_offset
+            ));
+            drop(drag);
+            window
+                .emit("notch-drag-stopped", gesture_id)
+                .map_err(|error| error.to_string())?;
+            return Ok(false);
+        }
+        let (cursor_x, _) = cursor?;
+        let cursor_delta = cursor_x - state.start_x;
+        let cursor_delta = if cfg!(target_os = "windows") {
+            cursor_delta / state.monitor_scale
+        } else {
+            cursor_delta
+        };
+        let desired_offset = state.start_offset + cursor_delta;
         let next_offset = if state.min_center > state.max_center {
             0.0
         } else {
@@ -5229,30 +5465,55 @@ fn update_notch_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
         }
         state.current_offset = next_offset;
         state.last_window_x = window_x;
-        (window_x, state.y)
+        (
+            window,
+            notch_window_position(window_x, state.y, state.monitor_scale),
+        )
     };
 
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-        next_position.0,
-        next_position.1,
-    )));
+    app.run_on_main_thread(move || {
+        if let Ok(drag) = notch_drag_state().lock() {
+            if drag
+                .as_ref()
+                .is_some_and(|state| state.gesture_id == gesture_id && state.moving)
+            {
+                let _ = window.set_position(next_position);
+                #[cfg(target_os = "windows")]
+                trace_island_position(format_args!(
+                    "drag move drag={gesture_id} position={next_position:?}"
+                ));
+            }
+        }
+    })
+    .map_err(|error| error.to_string())?;
     Ok(true)
 }
 
 #[tauri::command]
-async fn end_notch_drag(app: tauri::AppHandle) -> Result<Option<f64>, String> {
+async fn end_notch_drag(app: tauri::AppHandle, gesture_id: u64) -> Result<Option<f64>, String> {
     let final_offset = {
         let mut drag = notch_drag_state()
             .lock()
             .map_err(|e| format!("Drag lock error: {}", e))?;
-        drag.take().map(|state| state.current_offset.round())
+        take_notch_drag_offset(&mut drag, gesture_id)
     };
 
+    #[cfg(target_os = "windows")]
+    trace_island_position(format_args!(
+        "end drag={gesture_id} offset={final_offset:?}"
+    ));
     if let Some(offset) = final_offset {
         reposition_notch_to_display(&app, None, Some(offset))?;
     }
 
     Ok(final_offset)
+}
+
+fn take_notch_drag_offset(active: &mut Option<NotchDragState>, gesture_id: u64) -> Option<f64> {
+    if active.as_ref()?.gesture_id != gesture_id {
+        return None;
+    }
+    active.take().map(|state| state.current_offset.round())
 }
 
 #[tauri::command]
@@ -5526,7 +5787,12 @@ async fn resize_notch(
             // on the dedicated "pet" window.
             let (x, y, anchor_offset_x) =
                 notch_window_geometry(&monitor, width, horizontal_offset.unwrap_or(0.0));
-            set_notch_window_frame(&app, &window, x, y, width, height)?;
+            #[cfg(target_os = "windows")]
+            trace_island_position(format_args!(
+                "resize offset={horizontal_offset:?} target=({x}, {y}) size=({width}, {height})"
+            ));
+            set_notch_window_frame(&app, &window, x, y, width, height, monitor.scale_factor())
+                .await?;
             return Ok(ResizeNotchResult { anchor_offset_x });
         }
         let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
@@ -5538,7 +5804,24 @@ async fn resize_notch(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "windows")]
+    let context = {
+        let mut context = context;
+        if let Some(island) = context
+            .config_mut()
+            .app
+            .windows
+            .iter_mut()
+            .find(|window| window.label == "notch" && !window.visible)
+        {
+            // Wry 0.55 can abort WebView2 creation when the host cannot take focus.
+            island.focus = false;
+        }
+        context
+    };
+
+    let app = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
                 .targets([
@@ -5561,6 +5844,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
+            log::info!("Startup: configured windows created");
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -5629,6 +5913,7 @@ pub fn run() {
             // monitor transitions.
             platform::monitor_tracker::start(app.handle().clone());
 
+            log::info!("Startup: restoring active sessions");
             // Bootstrap: discover sessions that were already running before we launched
             {
                 let config = config_store.get();
@@ -5693,8 +5978,8 @@ pub fn run() {
                             });
                         }
                         log::info!(
-                            "  session {}: project={}, title={:?}",
-                            &ds.session_id[..8.min(ds.session_id.len())],
+                            "  session {:.8}: project={}, title={:?}",
+                            ds.session_id,
                             ds.project,
                             ds.session_title,
                         );
@@ -5709,6 +5994,7 @@ pub fn run() {
                 });
             }
 
+            log::info!("Startup: initializing agent adapters");
             // Initialize adapters: default ~/.claude + custom engine instances
             let default_cc = ClaudeCodeAdapter::new();
             let mut cc_adapters: Vec<ClaudeCodeAdapter> = vec![];
@@ -5793,6 +6079,7 @@ pub fn run() {
                 }
             });
 
+            log::info!("Startup: scheduling Hook server");
             // Initialize and start hook server
             let hook_server = HookServer::new(session_store.clone(), adapters.clone());
             let hook_server = Arc::new(hook_server);
@@ -5925,7 +6212,7 @@ pub fn run() {
 
             hooks::claude_desktop_watcher::start(session_store.clone(), app.handle().clone());
             hooks::doubao_watcher::start(session_store.clone());
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             hooks::qwenwork_watcher::start(session_store.clone());
             commands::start_codex_app_server_background_sync(
                 config_store.clone(),
@@ -6043,6 +6330,9 @@ pub fn run() {
             commands::respond_plan,
             commands::send_message,
             commands::jump_to_terminal,
+            platform::wsl::list_wsl_distributions,
+            platform::wsl::get_wsl_hook_status,
+            platform::wsl::set_wsl_hook,
             commands::get_config,
             commands::update_config,
             commands::set_language,
@@ -6139,6 +6429,7 @@ pub fn run() {
             uninstall_remote_hooks,
             install_remote_agent_hooks,
             uninstall_remote_agent_hooks,
+            get_remote_agent_hook_status,
             check_remote_hooks,
             probe_remote_host,
             remote_skill_manager_invoke,
@@ -6165,6 +6456,7 @@ pub fn run() {
             set_global_action_shortcuts,
             perform_haptic,
             set_notch_focusable,
+            restore_notch_webview_focus,
             restart_app,
             is_homebrew_install,
             open_image,
@@ -6251,6 +6543,7 @@ pub fn run() {
             remove_marketplace_source_cmd,
             agents::programs::agent_list,
             agents::programs::agent_refresh,
+            agents::programs::agent_package_output,
             agents::programs::agent_install,
             agents::programs::agent_update,
             agents::programs::agent_uninstall,
@@ -6294,6 +6587,8 @@ pub fn run() {
             skills::v2::commands::skill_manager_update_settings,
             skills::v2::commands::list_center_skills_v2,
             skills::v2::commands::get_skill_detail_v2,
+            skills::v2::commands::check_skill_source_update,
+            skills::v2::commands::apply_skill_source_update,
             skills::v2::commands::preview_add_center_skill,
             skills::v2::commands::execute_add_center_skill,
             skills::v2::commands::execute_marketplace_skill_batch,
@@ -6318,6 +6613,12 @@ pub fn run() {
             skills::v2::commands::delete_skill_target_distributions,
             skills::v2::commands::list_skill_packs_v2,
             skills::v2::commands::get_skill_pack_detail,
+            skills::v2::commands::read_skill_pack_manifest,
+            skills::v2::commands::read_skill_pack_manifest_link,
+            skills::v2::commands::write_skill_pack_manifest,
+            skills::v2::commands::get_skill_pack_fingerprints,
+            skills::v2::commands::restore_skill_pack_member,
+            skills::v2::commands::execute_import_skill_pack_manifest,
             skills::v2::commands::execute_upsert_skill_pack,
             skills::v2::commands::preview_delete_skill_pack,
             skills::v2::commands::execute_delete_skill_pack,
@@ -6346,6 +6647,8 @@ pub fn run() {
             skills::v2::commands::remove_skill_project_v2,
             skills::v2::commands::get_skill_project_detail_v2,
             skills::v2::commands::scan_skill_project_v2,
+            skills::v2::commands::restore_project_skill_lock_v2,
+            skills::v2::commands::verify_project_skill_lock_v2,
             skills::v2::commands::install_center_skills_to_project_v2,
             skills::v2::commands::install_skill_pack_to_project_v2,
             skills::v2::commands::run_skill_manager_diagnosis,
@@ -6358,6 +6661,8 @@ pub fn run() {
             skills::v2::commands::open_skill_path,
             skills::v2::commands::reveal_skill_path,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running AgentBro");
+        .build(context)
+        .expect("error while building AgentBro");
+    log::info!("Startup: creating configured windows");
+    app.run(|_, _| {});
 }

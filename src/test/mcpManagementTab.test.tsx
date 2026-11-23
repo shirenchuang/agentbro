@@ -1,14 +1,18 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
+import { invoke } from '@tauri-apps/api/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { McpManagementTab } from '../components/skills-v2/McpManagementTab'
 import i18n from '../i18n'
+import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../stores/runtimeEnvironmentStore'
+import { useSkillStoreV2 } from '../stores/skillStoreV2'
 import {
   skillApiV2,
   type AgentDetail,
   type McpInspectionReport,
   type McpInventory,
   type McpServerEntry,
+  type McpValidationResultV2,
 } from '../services/skillApiV2'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
@@ -197,6 +201,54 @@ describe('McpManagementTab', () => {
     expect(await screen.findByText('已保存 MCP「context7」')).toBeInTheDocument()
   })
 
+  it.each(['runtime', 'runtime and back', 'agent and back', 'runtime before validation'])(
+    'cancels saving when the selection changes: %s',
+    async (change) => {
+      const runtime = useRuntimeEnvironmentStore.getState()
+      const skill = useSkillStoreV2.getState()
+      let finishValidation!: (result: McpValidationResultV2) => void
+      const validation = new Promise<McpValidationResultV2>((resolve) => {
+        finishValidation = resolve
+      })
+      vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory())
+      const validate = vi.spyOn(skillApiV2, 'validateMcpServerDraft').mockReturnValue(validation)
+      const save = vi.spyOn(skillApiV2, 'saveMcpServer').mockResolvedValue(inventory())
+
+      try {
+        const { unmount } = render(<McpManagementTab detail={detail} />)
+        fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
+        if (change === 'runtime before validation') runtime.selectEnvironment('remote-test')
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+        if (change === 'runtime before validation') {
+          expect(validate).not.toHaveBeenCalled()
+          expect(save).not.toHaveBeenCalled()
+          return
+        }
+        expect(validate).toHaveBeenCalledOnce()
+
+        if (change === 'agent and back') {
+          useSkillStoreV2.setState({ selectedAgentId: 'claude-code', agentSelectionRevision: skill.agentSelectionRevision + 1 })
+          useSkillStoreV2.setState({ selectedAgentId: skill.selectedAgentId, agentSelectionRevision: skill.agentSelectionRevision + 2 })
+        } else {
+          runtime.selectEnvironment('remote-test')
+          if (change === 'runtime and back') runtime.selectEnvironment(runtime.selectedEnvironmentId)
+        }
+        unmount()
+        await act(async () => { finishValidation({ valid: true, message: 'ok', warnings: [] }) })
+        expect(save).not.toHaveBeenCalled()
+      } finally {
+        useRuntimeEnvironmentStore.setState({
+          selectedEnvironmentId: runtime.selectedEnvironmentId,
+          selectionRevision: runtime.selectionRevision,
+        })
+        useSkillStoreV2.setState({
+          selectedAgentId: skill.selectedAgentId,
+          agentSelectionRevision: skill.agentSelectionRevision,
+        })
+      }
+    },
+  )
+
   it('adds HTTP servers and supports test, toggle, and confirmed deletion', async () => {
     const empty = inventory([])
     const remote = server({
@@ -219,9 +271,9 @@ describe('McpManagementTab', () => {
       async (_agent, _serverName, inspectionId) => inspectionReport(inspectionId),
     )
     vi.spyOn(skillApiV2, 'cancelMcpInspection').mockResolvedValue()
-    const toggle = vi.spyOn(skillApiV2, 'setMcpServerEnabled').mockResolvedValue(
-      inventory([{ ...remote, enabled: false }]),
-    )
+    let finishToggle!: (result: McpInventory) => void
+    const pendingToggle = new Promise<McpInventory>((resolve) => { finishToggle = resolve })
+    const toggle = vi.spyOn(skillApiV2, 'setMcpServerEnabled').mockReturnValue(pendingToggle)
     const remove = vi.spyOn(skillApiV2, 'deleteMcpServer').mockResolvedValue(inventory([]))
 
     render(<McpManagementTab detail={detail} />)
@@ -246,11 +298,12 @@ describe('McpManagementTab', () => {
       null,
     ))
 
-    fireEvent.click(screen.getByRole('button', { name: '检查' }))
+    fireEvent.click(await screen.findByRole('button', { name: '检查' }))
     await waitFor(() => expect(inspect).toHaveBeenCalledWith(
       'codex',
       'remote',
       expect.any(String),
+      LOCAL_RUNTIME_ENVIRONMENT_ID,
     ))
     expect(
       (await screen.findAllByText('Connected · 1 tool · 1 resource · 1 prompt')).length,
@@ -259,14 +312,49 @@ describe('McpManagementTab', () => {
     expect(screen.getByText('Search')).toBeInTheDocument()
     expect(screen.getByText('只读')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('switch', { name: '启用或停用 remote' }))
-    await waitFor(() => expect(toggle).toHaveBeenCalledWith('codex', 'remote', 'sha256:one', false))
+    const toggleSwitch = screen.getByRole('switch', { name: '启用或停用 remote' })
+    fireEvent.click(toggleSwitch)
+    fireEvent.click(toggleSwitch)
+    expect(toggle).toHaveBeenCalledTimes(1)
+    expect(toggle).toHaveBeenCalledWith('codex', 'remote', 'sha256:one', false)
+    expect(toggleSwitch).toBeDisabled()
+    expect(toggleSwitch).toHaveAttribute('aria-busy', 'true')
 
-    fireEvent.click(screen.getByRole('button', { name: '删除' }))
+    finishToggle({ ...inventory([{ ...remote, enabled: false }]), revision: 'sha256:two' })
+    const deleteButton = screen.getByRole('button', { name: '删除' })
+    await waitFor(() => expect(deleteButton).toBeEnabled())
+    expect(toggleSwitch).toHaveAttribute('aria-checked', 'false')
+    expect(toggleSwitch).toBeEnabled()
+    fireEvent.click(deleteButton)
     const dialog = screen.getByRole('dialog', { name: '删除 MCP「remote」？' })
     fireEvent.click(within(dialog).getByRole('button', { name: '确认删除' }))
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('codex', 'remote', 'sha256:one'))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('codex', 'remote', 'sha256:two'))
     expect(await screen.findByText('还没有 MCP 服务器')).toBeInTheDocument()
+  })
+
+  it('waits for the rescanned config revision before changing an MCP server', async () => {
+    let finishScan!: (result: McpInventory) => void
+    const pendingScan = new Promise<McpInventory>((resolve) => { finishScan = resolve })
+    vi.spyOn(skillApiV2, 'listMcpInventory')
+      .mockResolvedValueOnce(inventory())
+      .mockReturnValueOnce(pendingScan)
+    const toggle = vi.spyOn(skillApiV2, 'setMcpServerEnabled').mockResolvedValue(inventory())
+
+    render(<McpManagementTab detail={detail} />)
+    fireEvent.click(await screen.findByRole('button', { name: '重新扫描' }))
+    const serverSwitch = screen.getByRole('switch', { name: '启用或停用 context7' })
+    fireEvent.click(serverSwitch)
+
+    expect(toggle).not.toHaveBeenCalled()
+    expect(serverSwitch).toBeDisabled()
+    for (const name of ['新增 MCP', '编辑', '删除']) {
+      expect(screen.getByRole('button', { name })).toBeDisabled()
+    }
+
+    finishScan({ ...inventory(), revision: 'sha256:rescanned' })
+    await waitFor(() => expect(serverSwitch).toBeEnabled())
+    fireEvent.click(serverSwitch)
+    expect(toggle).toHaveBeenCalledExactlyOnceWith('codex', 'context7', 'sha256:rescanned', false)
   })
 
   it('renders resource, prompt, and structured log discovery without invoking tools', async () => {
@@ -380,6 +468,7 @@ describe('McpManagementTab', () => {
       expect.any(String),
       'search',
       { query: 'Blender' },
+      LOCAL_RUNTIME_ENVIRONMENT_ID,
     ))
     expect(await screen.findByText('Found one result')).toBeInTheDocument()
     expect(screen.getByText('结构化结果')).toBeInTheDocument()
@@ -422,6 +511,7 @@ describe('McpManagementTab', () => {
       expect.any(String),
       'summarize',
       { topic: 'Blender' },
+      LOCAL_RUNTIME_ENVIRONMENT_ID,
     ))
     expect(await screen.findByText('Summarize Blender')).toBeInTheDocument()
     expect(screen.getByText('user')).toBeInTheDocument()
@@ -443,6 +533,101 @@ describe('McpManagementTab', () => {
     await waitFor(() => expect(inspectionId).not.toBe(''))
     fireEvent.click(screen.getByRole('button', { name: '关闭' }))
 
-    await waitFor(() => expect(cancel).toHaveBeenCalledWith(inspectionId))
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith(inspectionId, LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
+  it.each(['switch hosts', 'switch hosts and back'])(
+    'cancels an inspection on its original host and ignores a late report after %s',
+    async (change) => {
+      const runtime = useRuntimeEnvironmentStore.getState()
+      const tauriInvoke = vi.mocked(invoke)
+      let finishInspection!: (report: McpInspectionReport) => void
+      const pendingInspection = new Promise<McpInspectionReport>((resolve) => {
+        finishInspection = resolve
+      })
+      vi.stubGlobal('isTauri', true)
+      tauriInvoke.mockClear()
+      tauriInvoke.mockReturnValueOnce(pendingInspection)
+      vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory())
+      const inspect = vi.spyOn(skillApiV2, 'inspectMcpServer')
+
+      try {
+        render(<McpManagementTab detail={detail} />)
+        fireEvent.click(await screen.findByRole('button', { name: '检查' }))
+        const inspectionId = inspect.mock.calls[0][2]
+        expect(tauriInvoke).toHaveBeenCalledWith('inspect_mcp_server_cmd', {
+          agent: 'codex',
+          serverName: 'context7',
+          inspectionId,
+        })
+
+        act(() => {
+          runtime.selectEnvironment('remote-test')
+          if (change === 'switch hosts and back') runtime.selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+        })
+        expect(tauriInvoke).toHaveBeenLastCalledWith('cancel_mcp_inspection_cmd', { inspectionId })
+        await act(async () => {
+          finishInspection(inspectionReport(inspectionId))
+        })
+        expect(screen.queryByRole('tab', { name: /Tools/ })).not.toBeInTheDocument()
+        expect(tauriInvoke).toHaveBeenCalledTimes(2)
+      } finally {
+        cleanup()
+        vi.unstubAllGlobals()
+        useRuntimeEnvironmentStore.setState({
+          selectedEnvironmentId: runtime.selectedEnvironmentId,
+          selectionRevision: runtime.selectionRevision,
+        })
+      }
+    },
+  )
+
+  it.each(['Tool', 'Prompt'])('cancels a pending %s on the original remote host', async (kind) => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    const tauriInvoke = vi.mocked(invoke)
+    const remoteHost = 'remote-test'
+    const isTool = kind === 'Tool'
+    vi.stubGlobal('isTauri', true)
+    tauriInvoke.mockClear()
+    tauriInvoke.mockReturnValueOnce(new Promise(() => {}))
+    vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory())
+    vi.spyOn(skillApiV2, 'inspectMcpServer').mockImplementation(
+      async (_agent, _serverName, inspectionId) => inspectionReport(inspectionId),
+    )
+    const operation = isTool ? vi.spyOn(skillApiV2, 'callMcpTool') : vi.spyOn(skillApiV2, 'getMcpPrompt')
+
+    try {
+      runtime.selectEnvironment(remoteHost)
+      const { unmount } = render(<McpManagementTab detail={detail} />)
+      fireEvent.click(await screen.findByRole('button', { name: '检查' }))
+      fireEvent.click(await screen.findByRole('tab', { name: isTool ? /Tools/ : /Prompts/ }))
+      fireEvent.click(screen.getByRole('button', { name: isTool ? '测试调用' : '预览 Prompt' }))
+      if (!isTool) {
+        fireEvent.change(screen.getByLabelText(/topic/), { target: { value: 'Blender' } })
+      }
+      const run = screen.getByRole('button', { name: isTool ? '调用 Tool' : '生成预览' })
+      fireEvent.click(run)
+      const operationId = operation.mock.calls[0][2]
+      expect(tauriInvoke).toHaveBeenLastCalledWith('remote_skill_manager_invoke', {
+        id: remoteHost,
+        command: isTool ? 'call_mcp_tool_cmd' : 'get_mcp_prompt_cmd',
+        args: expect.objectContaining({ operationId }),
+      })
+
+      act(() => runtime.selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID))
+      unmount()
+      expect(tauriInvoke).toHaveBeenLastCalledWith('remote_skill_manager_invoke', {
+        id: remoteHost,
+        command: 'cancel_mcp_operation_cmd',
+        args: { operationId },
+      })
+    } finally {
+      cleanup()
+      vi.unstubAllGlobals()
+      useRuntimeEnvironmentStore.setState({
+        selectedEnvironmentId: runtime.selectedEnvironmentId,
+        selectionRevision: runtime.selectionRevision,
+      })
+    }
   })
 })

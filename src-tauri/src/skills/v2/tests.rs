@@ -7,7 +7,7 @@ use crate::skills::v2::service::{AdoptBatchItem, ClaimOrigin, Service, UpsertPac
 use crate::skills::v2::{db, fsutil};
 use rusqlite::params;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -92,6 +92,226 @@ fn add_center_test_skill(svc: &Service, source_dir: &str, skill_id: &str) -> Pat
     )
     .unwrap();
     PathBuf::from(svc.get_skill_detail(skill_id).unwrap().summary.center_path)
+}
+
+#[test]
+fn pack_manifest_verifies_live_skill_files_before_import() {
+    let (_home, svc, _lock) = fresh_service("pack-content-review");
+    let directory = add_center_test_skill(&svc, "sender-folder", "review");
+    fs::remove_file(directory.join("reference.md")).unwrap();
+    let docs = directory.join("docs");
+    fs::create_dir(&docs).unwrap();
+    fs::write(
+        directory.join("SKILL.md"),
+        b"---\nname: review\n---\nReview\n",
+    )
+    .unwrap();
+    fs::write(docs.join("data.bin"), b"\0\r\n").unwrap();
+    fs::write(docs.join("metadata.json"), b"{\"task\":\"review\"}\n").unwrap();
+    let mut text = vec![b'x'; 65_535];
+    text.extend_from_slice(b"\nreference\r");
+    fs::write(docs.join("notes.txt"), &text).unwrap();
+    let mut manifest = SkillPackManifest {
+        format: "agentbro-skill-pack".to_string(),
+        version: 2,
+        name: "Shared review".to_string(),
+        description: String::new(),
+        tags: vec![],
+        skill_ids: vec!["review".to_string()],
+        skill_fingerprints: Default::default(),
+        skill_sources: Default::default(),
+    };
+    let reviewed = svc
+        .skill_pack_fingerprints(&manifest.skill_ids, false)
+        .unwrap();
+    let expected = "f01a46a872990d61dbb42eb09dcd3d38051e4fa727ddca5a2da56d81968be8ef";
+    assert_eq!(reviewed[0].fingerprint.as_deref(), Some(expected));
+    manifest
+        .skill_fingerprints
+        .insert("review".to_string(), expected.to_string());
+    let initial_packs = svc.list_skill_packs().unwrap().len();
+
+    text[0] = b'y';
+    fs::write(docs.join("notes.txt"), &text).unwrap();
+    let error = svc
+        .import_reviewed_skill_pack(manifest.clone(), &reviewed, true)
+        .unwrap_err();
+    assert!(error.contains("changed since review"));
+    let updated = svc
+        .skill_pack_fingerprints(&manifest.skill_ids, false)
+        .unwrap();
+    assert_ne!(reviewed, updated);
+    let error = svc
+        .import_reviewed_skill_pack(manifest.clone(), &updated, false)
+        .unwrap_err();
+    assert!(error.contains("Confirm the local copy"));
+    assert_eq!(svc.list_skill_packs().unwrap().len(), initial_packs);
+
+    let pack = svc
+        .import_reviewed_skill_pack(manifest, &updated, true)
+        .unwrap();
+    assert_eq!(pack.name, "Shared review");
+    assert_eq!(pack.members[0].skill_id, "review");
+    assert!(!pack.members[0].missing);
+    assert!(pack.applied_agents.is_empty());
+    assert_eq!(fs::read(docs.join("notes.txt")).unwrap(), text);
+
+    fs::remove_file(directory.join("SKILL.md")).unwrap();
+    let missing = svc
+        .skill_pack_fingerprints(&["review".to_string()], false)
+        .unwrap();
+    assert!(missing[0].missing);
+    assert_eq!(missing[0].fingerprint, None);
+}
+
+#[test]
+fn pack_recheck_discovers_a_manually_copied_skill_in_a_cold_library() {
+    let (_home, svc, _lock) = fresh_service("pack-recheck-manual-copy");
+    let center = svc.center_path().unwrap();
+    let skill_ids = vec!["manual-review".to_string()];
+    let initial_review = svc.skill_pack_fingerprints(&skill_ids, false).unwrap();
+    assert!(initial_review[0].missing);
+
+    let skill = write_skill(&center, "copied-folder", "manual-review", Some("copied"));
+    let fingerprint = super::project_lock::fingerprint_canonical_skill_directory(
+        &skill.canonicalize().unwrap(),
+        false,
+    )
+    .unwrap();
+    let manifest = SkillPackManifest {
+        format: "agentbro-skill-pack".to_string(),
+        version: 2,
+        name: "Portable review".to_string(),
+        description: String::new(),
+        tags: Vec::new(),
+        skill_ids,
+        skill_fingerprints: [(String::from("manual-review"), fingerprint.clone())].into(),
+        skill_sources: Default::default(),
+    };
+
+    let reviewed = svc
+        .skill_pack_fingerprints(&manifest.skill_ids, false)
+        .unwrap();
+    assert!(!reviewed[0].missing);
+    assert_eq!(
+        reviewed[0].fingerprint.as_deref(),
+        Some(fingerprint.as_str())
+    );
+    let pack = svc
+        .import_reviewed_skill_pack(manifest, &reviewed, false)
+        .unwrap();
+    assert_eq!(pack.members[0].skill_id, "manual-review");
+    assert!(!pack.members[0].missing);
+    assert!(skill.join("SKILL.md").is_file());
+}
+
+#[test]
+fn pack_restore_checks_the_pinned_git_content_before_installing() {
+    let (home, svc, _lock) = fresh_service("pinned-pack-restore");
+    let upstream = home.path.join("upstream");
+    let skill = write_skill(&upstream, "skills/审阅", "review", Some("recorded"));
+    fs::create_dir(skill.join("output")).unwrap();
+    fs::write(
+        skill.join("output/generated.txt"),
+        "included by SSH imports",
+    )
+    .unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .current_dir(&upstream)
+            .args([
+                "-c",
+                "user.name=AgentBro Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    git(&["init", "-b", "main"]);
+    git(&["add", "--force", "."]);
+    git(&["commit", "-m", "recorded"]);
+    let commit = git(&["rev-parse", "HEAD"]);
+    let expected = super::project_lock::fingerprint_canonical_skill_directory(
+        &skill.canonicalize().unwrap(),
+        false,
+    )
+    .unwrap();
+    fs::write(skill.join("reference.md"), "later version").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "later"]);
+    let pin = SkillPackGitHubSource {
+        repository: "example/workflows".to_string(),
+        commit,
+        skill_path: "skills/审阅/SKILL.md".to_string(),
+    };
+    let skill_id = "team-review".to_string();
+    let mut manifest = SkillPackManifest {
+        format: "agentbro-skill-pack".to_string(),
+        version: 3,
+        name: "Team workflows".to_string(),
+        description: String::new(),
+        tags: Vec::new(),
+        skill_ids: vec![skill_id.clone()],
+        skill_fingerprints: [(skill_id.clone(), "0".repeat(64))].into(),
+        skill_sources: [(skill_id.clone(), pin.clone())].into(),
+    };
+    let fetch = |url: &str, revision: &str| {
+        assert_eq!(url, "https://github.com/example/workflows.git");
+        assert_eq!(revision, pin.commit);
+        crate::skills::installer::checkout_skill_lock_ref(upstream.to_str().unwrap(), revision)
+    };
+    let destination = svc.center_path().unwrap().join(&skill_id);
+    let error = svc
+        .restore_pack_skill_with(&manifest, &skill_id, fetch)
+        .unwrap_err();
+    assert!(error.contains("does not match the recorded fingerprint"));
+    assert!(!destination.exists());
+
+    manifest
+        .skill_fingerprints
+        .insert(skill_id.clone(), expected.clone());
+    let pack_file = home.path.join("pack.json");
+    super::pack_manifest::write(&pack_file, &manifest).unwrap();
+    assert_eq!(super::pack_manifest::read(&pack_file).unwrap(), manifest);
+    svc.restore_pack_skill_with(&manifest, &skill_id, fetch)
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(destination.join("reference.md")).unwrap(),
+        "recorded"
+    );
+    assert!(destination.join("output/generated.txt").is_file());
+    let error = svc
+        .restore_pack_skill_with(&manifest, &skill_id, |_, _| {
+            panic!("would fetch an existing Skill")
+        })
+        .unwrap_err();
+    assert!(error.contains("already exists"));
+    assert_eq!(
+        fs::read_to_string(destination.join("reference.md")).unwrap(),
+        "recorded"
+    );
+
+    let exported = svc
+        .skill_pack_fingerprints(&manifest.skill_ids, true)
+        .unwrap();
+    assert_eq!(exported[0].source.as_ref(), Some(&pin));
+    let reviewed = svc
+        .skill_pack_fingerprints(&manifest.skill_ids, false)
+        .unwrap();
+    assert_eq!(reviewed[0].source, None);
+    assert_eq!(reviewed[0].fingerprint.as_deref(), Some(expected.as_str()));
+    let pack = svc
+        .import_reviewed_skill_pack(manifest, &reviewed, false)
+        .unwrap();
+    assert_eq!(pack.members[0].skill_id, skill_id);
 }
 
 fn insert_shared_managed_target(
@@ -350,6 +570,113 @@ fn add_center_skill_can_link_to_local_source() {
 }
 
 #[test]
+fn center_import_can_copy_a_nested_source_before_replacing_its_parent() {
+    let (_home, svc, _lock) = fresh_service("overwrite-from-nested");
+    let center = add_center_test_skill(&svc, "source", "review");
+    let source = write_skill(&center, "incoming", "review", Some("replacement"));
+    let result = overwrite_review_skill(&svc, &source, "copy").unwrap();
+
+    assert_eq!(result.updated, ["review"]);
+    assert_eq!(
+        fs::read_to_string(center.join("reference.md")).unwrap(),
+        "replacement"
+    );
+}
+
+#[test]
+fn center_import_rejects_a_link_to_a_source_inside_the_replaced_skill() {
+    let (_home, svc, _lock) = fresh_service("overwrite-link-to-nested");
+    let center = add_center_test_skill(&svc, "source", "review");
+    let source = write_skill(&center, "incoming", "review", Some("replacement"));
+
+    assert!(overwrite_review_skill(&svc, &source, "link").is_err());
+    assert_eq!(
+        fs::read_to_string(center.join("reference.md")).unwrap(),
+        "center"
+    );
+    assert!(source.join("SKILL.md").is_file());
+}
+
+#[test]
+#[cfg(unix)]
+fn center_import_keeps_the_previous_skill_when_the_prepared_copy_is_incomplete() {
+    let (_home, svc, _lock) = fresh_service("overwrite-incomplete-copy");
+    let center = add_center_test_skill(&svc, "source", "review");
+    let source = svc.home.join("incoming");
+    fs::create_dir(&source).unwrap();
+    std::os::unix::fs::symlink(center.join("SKILL.md"), source.join("SKILL.md")).unwrap();
+
+    let error = overwrite_review_skill(&svc, &source, "copy").unwrap_err();
+    assert!(error.contains("missing SKILL.md"));
+    assert!(center.join("SKILL.md").is_file());
+    assert_eq!(
+        fs::read_to_string(center.join("reference.md")).unwrap(),
+        "center"
+    );
+}
+
+#[test]
+fn center_import_restores_the_previous_skill_when_recording_the_source_fails() {
+    let (_home, svc, _lock) = fresh_service("overwrite-source-write-failure");
+    let center = add_center_test_skill(&svc, "source", "review");
+    let source = write_skill(&svc.home, "incoming", "review", Some("replacement"));
+    let original_source = svc
+        .get_skill_detail("review")
+        .unwrap()
+        .source
+        .unwrap()
+        .source_uri;
+    svc.db
+        .with_conn(|connection| {
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER reject_skill_import BEFORE INSERT ON skill_sources
+             BEGIN SELECT RAISE(ABORT, 'source write blocked'); END;",
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    let error = overwrite_review_skill(&svc, &source, "copy").unwrap_err();
+    assert!(error.contains("source write blocked"));
+    assert_eq!(
+        fs::read_to_string(center.join("reference.md")).unwrap(),
+        "center"
+    );
+    assert_eq!(
+        svc.get_skill_detail("review")
+            .unwrap()
+            .source
+            .unwrap()
+            .source_uri,
+        original_source
+    );
+}
+
+fn overwrite_review_skill(
+    svc: &Service,
+    source: &Path,
+    mode: &str,
+) -> Result<AddCenterSkillResult, String> {
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some(mode.to_string()),
+        },
+        vec![AddCenterSkillDecision {
+            skill_id: "review".to_string(),
+            proposed_skill_id: None,
+            resolution: "update".to_string(),
+        }],
+    )
+}
+
+#[test]
 fn local_parent_import_matches_existing_child_source() {
     let (_home, svc, _lock) = fresh_service("parent-child-source");
     let root = svc.home.join("dev-skills");
@@ -449,6 +776,38 @@ fn windows_center_link_import_falls_back_to_copy() {
     let center_skill = fsutil::default_center_path().join("live-review");
     assert!(center_skill.join("SKILL.md").is_file());
     assert!(!center_skill.is_symlink());
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_skill_paths_import_and_register_home_relative_paths() {
+    let (_home, svc, _lock) = fresh_service("windows-home-relative");
+    let project = svc.home.join("Local Project");
+    write_skill(&project, "review", "review", Some("v1"));
+
+    let result = svc
+        .execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: r"~\Local Project\review".to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(result.skill_ids, ["review"]);
+
+    let from_backslashes = svc.add_project(r"~\Local Project".to_string()).unwrap();
+    let from_slashes = svc.add_project("~/Local Project".to_string()).unwrap();
+    assert_eq!(from_backslashes.summary.id, from_slashes.summary.id);
+    assert_eq!(
+        Path::new(&from_backslashes.summary.root_path),
+        project.canonicalize().unwrap()
+    );
 }
 
 #[test]
@@ -642,6 +1001,192 @@ fn distribute_link_and_copy_record_actual_mode() {
     assert_eq!(preview2.changes[0].actual_mode.as_deref(), Some("copy"));
     let detail = svc.get_skill_detail("release-checklist").unwrap();
     assert_eq!(detail.targets.len(), 2);
+}
+
+#[test]
+fn windows_skill_paths_distribution_preserves_a_target_created_after_preview() {
+    let (_home, svc, _lock) = fresh_service("late-distribution-target");
+    let skill_id = "review";
+    add_center_test_skill(&svc, "source", skill_id);
+    let agent_id = "claude-code";
+    let mode = if cfg!(windows) { "link" } else { "copy" };
+    let preview = || {
+        svc.preview_distribute_skill(
+            vec![skill_id.to_string()],
+            vec![agent_id.to_string()],
+            mode.to_string(),
+        )
+        .unwrap()
+    };
+    let reviewed = preview();
+    assert!(reviewed.blockers.is_empty());
+    assert_eq!(reviewed.changes[0].action, "create");
+    assert_eq!(reviewed.changes[0].actual_mode.as_deref(), Some("copy"));
+
+    let target = Path::new(&reviewed.changes[0].target_path);
+    let local = write_skill(target.parent().unwrap(), skill_id, skill_id, Some("local"));
+    let error = svc
+        .execute_distribute_skill(reviewed, ClaimOrigin::Direct)
+        .unwrap_err();
+    assert!(error.contains("already exists"), "{error}");
+    assert_eq!(
+        fs::read_to_string(local.join("reference.md")).unwrap(),
+        "local"
+    );
+    assert!(svc.get_skill_detail(skill_id).unwrap().targets.is_empty());
+
+    let mut refreshed = preview();
+    assert!(refreshed.changes.is_empty());
+    assert_eq!(refreshed.blockers.len(), 1);
+    refreshed
+        .blocker_decisions
+        .push(DistributionBlockerDecision {
+            skill_id: skill_id.to_string(),
+            agent_id: agent_id.to_string(),
+            action: "overwrite".to_string(),
+        });
+    svc.execute_distribute_skill(refreshed, ClaimOrigin::Direct)
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(local.join("reference.md")).unwrap(),
+        "center"
+    );
+    assert_eq!(svc.get_skill_detail(skill_id).unwrap().targets.len(), 1);
+}
+
+#[test]
+fn windows_skill_paths_distribution_cleans_up_a_failed_new_copy() {
+    let (_home, svc, _lock) = fresh_service("failed-distribution-copy");
+    let center = add_center_test_skill(&svc, "source", "review");
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["review".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    let target = PathBuf::from(&preview.changes[0].target_path);
+    fs::remove_dir_all(center).unwrap();
+
+    assert!(svc
+        .execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .is_err());
+    assert!(!target.exists());
+    assert!(svc.get_skill_detail("review").unwrap().targets.is_empty());
+}
+
+#[test]
+fn windows_skill_paths_distribution_rolls_back_a_new_copy_if_registration_fails() {
+    let (_home, svc, _lock) = fresh_service("failed-distribution-registration");
+    add_center_test_skill(&svc, "source", "review");
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["review".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    let target = PathBuf::from(&preview.changes[0].target_path);
+    svc.db()
+        .with_conn(|connection| {
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER reject_new_target BEFORE INSERT ON skill_targets
+                     BEGIN SELECT RAISE(ABORT, 'registration failed'); END;",
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    let error = svc
+        .execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap_err();
+    assert!(error.contains("registration failed"), "{error}");
+    assert!(!target.exists());
+    assert!(svc.get_skill_detail("review").unwrap().targets.is_empty());
+}
+
+#[test]
+fn windows_skill_paths_distribution_requires_a_new_review_after_an_existing_copy_changes() {
+    let (_home, svc, _lock) = fresh_service("edited-distribution-target");
+    add_center_test_skill(&svc, "source", "review");
+    let preview = || {
+        svc.preview_distribute_skill(
+            vec!["review".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap()
+    };
+    let install = preview();
+    let copy_file = Path::new(&install.changes[0].target_path).join("reference.md");
+    svc.execute_distribute_skill(install, ClaimOrigin::Direct)
+        .unwrap();
+
+    let reinstall = preview();
+    assert_eq!(reinstall.changes[0].action, "reinstall");
+    fs::write(&copy_file, "local edit").unwrap();
+    let error = svc
+        .execute_distribute_skill(reinstall, ClaimOrigin::Direct)
+        .unwrap_err();
+    assert!(error.contains("Preview distribution again"), "{error}");
+    assert_eq!(fs::read_to_string(&copy_file).unwrap(), "local edit");
+
+    let overwrite = || {
+        let mut plan = preview();
+        assert!(plan.changes.is_empty());
+        assert_eq!(plan.blockers.len(), 1);
+        plan.blocker_decisions.push(DistributionBlockerDecision {
+            skill_id: "review".to_string(),
+            agent_id: "claude-code".to_string(),
+            action: "overwrite".to_string(),
+        });
+        plan
+    };
+    let reviewed = overwrite();
+    fs::write(&copy_file, "second local edit").unwrap();
+    let error = svc
+        .execute_distribute_skill(reviewed, ClaimOrigin::Direct)
+        .unwrap_err();
+    assert!(error.contains("Preview distribution again"), "{error}");
+    assert_eq!(fs::read_to_string(&copy_file).unwrap(), "second local edit");
+
+    svc.execute_distribute_skill(overwrite(), ClaimOrigin::Direct)
+        .unwrap();
+    assert_eq!(fs::read_to_string(copy_file).unwrap(), "center");
+}
+
+#[test]
+fn windows_skill_paths_distribution_preserves_reviewed_pack_members_and_target_content() {
+    let (_home, svc, _lock) = fresh_service("reviewed-pack-distribution");
+    add_center_test_skill(&svc, "source", "review");
+    let preview = || {
+        svc.preview_distribute_skill(
+            vec!["review".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap()
+    };
+    let install = preview();
+    let agent_target = PathBuf::from(&install.changes[0].target_path);
+    svc.apply_reviewed_skill_pack("default", install, vec![])
+        .unwrap();
+    let refresh = preview();
+    let copy_file = agent_target.join("reference.md");
+    fs::write(&copy_file, "local edit").unwrap();
+    let error = svc
+        .apply_reviewed_skill_pack("default", refresh.clone(), vec![])
+        .unwrap_err();
+    assert!(error.contains("Preview distribution again"), "{error}");
+
+    add_center_test_skill(&svc, "second-source", "another-skill");
+    let error = svc
+        .apply_reviewed_skill_pack("default", refresh, vec![])
+        .unwrap_err();
+    assert!(error.contains("membership changed"), "{error}");
+    assert_eq!(fs::read_to_string(copy_file).unwrap(), "local edit");
+    assert!(!agent_target.with_file_name("another-skill").exists());
 }
 
 #[test]
@@ -1289,6 +1834,7 @@ fn distribution_execution_rejects_preview_paths_outside_agent_skill_dir() {
             existing_path: Some(outside_target.display().to_string()),
             existing_path_kind: Some("directory".to_string()),
             resolved_existing_path: None,
+            target_fingerprint: None,
         }],
         blocker_decisions: vec![DistributionBlockerDecision {
             skill_id: "github-code-review".to_string(),
@@ -2250,6 +2796,116 @@ fn remove_skill_from_applied_pack_can_keep_standalone() {
 
 // ── Copy sync: outdated / modified / diverged ───────────────────
 
+fn copy_sync_fixture(svc: &Service) -> (PathBuf, SkillTargetDetail) {
+    let center = add_center_test_skill(svc, "source", "review");
+    let preview = svc
+        .preview_distribute_skill(vec!["review".into()], vec!["codex".into()], "copy".into())
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let target = svc.get_skill_detail("review").unwrap().targets.remove(0);
+    fs::write(
+        Path::new(&target.target_path).join("reference.md"),
+        "agent edit",
+    )
+    .unwrap();
+    (center, target)
+}
+
+#[test]
+fn windows_skill_paths_copy_sync_preserves_the_destination_when_the_source_is_missing() {
+    for action in ["center_over_agent", "agent_over_center"] {
+        let (_home, svc, _lock) = fresh_service("copy-sync-missing-source");
+        let (center, target) = copy_sync_fixture(&svc);
+        let agent = Path::new(&target.target_path);
+        let (source, destination, expected) = if action == "center_over_agent" {
+            (center.as_path(), agent, "agent edit")
+        } else {
+            (agent, center.as_path(), "center")
+        };
+        fs::remove_dir_all(source).unwrap();
+
+        assert!(svc.execute_sync_copy_target(&target.id, action).is_err());
+        assert_eq!(
+            fs::read_to_string(destination.join("reference.md")).unwrap(),
+            expected
+        );
+        assert!(destination.join("SKILL.md").is_file());
+    }
+}
+
+#[test]
+fn windows_skill_paths_copy_sync_restores_both_versions_after_a_database_failure() {
+    for action in ["center_over_agent", "agent_over_center"] {
+        let (_home, svc, _lock) = fresh_service("copy-sync-database-failure");
+        let (center, target) = copy_sync_fixture(&svc);
+        let agent = Path::new(&target.target_path);
+        svc.db()
+            .with_conn(|connection| {
+                connection
+                    .execute_batch(
+                        "CREATE TRIGGER reject_copy_reconciliation BEFORE UPDATE ON skill_targets
+                     BEGIN SELECT RAISE(ABORT, 'synchronization failed'); END;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let error = svc
+            .execute_sync_copy_target(&target.id, action)
+            .unwrap_err();
+        assert!(error.contains("synchronization failed"), "{error}");
+        assert_eq!(
+            fs::read_to_string(center.join("reference.md")).unwrap(),
+            "center"
+        );
+        assert_eq!(
+            fs::read_to_string(agent.join("reference.md")).unwrap(),
+            "agent edit"
+        );
+    }
+}
+
+#[test]
+fn windows_skill_paths_copy_sync_reports_the_backup_if_rollback_is_blocked() {
+    let (_home, svc, _lock) = fresh_service("copy-sync-recovery");
+    let destination = add_center_test_skill(&svc, "source", "review");
+    let pending_path = std::cell::RefCell::new(PathBuf::new());
+
+    let error = fsutil::replace_skill_directory(
+        &destination,
+        |pending| {
+            write_skill(
+                pending.parent().unwrap(),
+                "incoming",
+                "review",
+                Some("replacement"),
+            );
+            pending_path.replace(pending.to_path_buf());
+            Ok(())
+        },
+        || {
+            let pending = pending_path.borrow();
+            fs::create_dir(&*pending).unwrap();
+            fs::write(pending.join("collision"), "existing").unwrap();
+            Err::<(), _>("synchronization failed".into())
+        },
+    )
+    .unwrap_err();
+    let pending = pending_path.into_inner();
+    let recovery = pending.parent().unwrap();
+    assert!(error.contains("Skill recovery files are at"), "{error}");
+    assert!(error.contains(&recovery.display().to_string()), "{error}");
+    assert_eq!(
+        fs::read_to_string(recovery.join("previous/reference.md")).unwrap(),
+        "center"
+    );
+    assert_eq!(
+        fs::read_to_string(pending.join("collision")).unwrap(),
+        "existing"
+    );
+}
+
 #[test]
 fn copy_sync_detects_outdated_modified_diverged() {
     let (_home, svc, _lock) = fresh_service("sync");
@@ -3154,6 +3810,43 @@ fn delete_unmanaged_agent_skill_removes_local_copy_without_importing_center() {
         .unwrap()
         .iter()
         .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_skill_paths_remove_agent_directory_link_and_preserve_source() {
+    let (_home, svc, _lock) = fresh_service("windows-remove-skill-link");
+    let source = write_skill(&svc.home.join("shared"), "review", "review", Some("keep"));
+    let agent_root = svc.home.join(".claude").join("skills");
+    fs::create_dir_all(&agent_root).unwrap();
+    let link = agent_root.join("review");
+    std::os::windows::fs::symlink_dir(&source, &link).unwrap();
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| {
+            item.agent_id.as_deref() == Some("claude-code") && Path::new(&item.path) == link
+        })
+        .expect("Claude Code directory link in the skill list");
+
+    svc.delete_unmanaged_agent_skill("claude-code", &unmanaged.id)
+        .unwrap();
+
+    assert_eq!(
+        fs::symlink_metadata(&link).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        fs::read_to_string(source.join("reference.md")).unwrap(),
+        "keep"
+    );
+    assert!(svc
+        .list_unmanaged()
+        .unwrap()
+        .iter()
+        .all(|item| item.id != unmanaged.id));
 }
 
 #[test]
@@ -5979,6 +6672,38 @@ fn snapshot_written_and_read() {
 }
 
 #[test]
+fn snapshot_refresh_preserves_a_readers_open_file() {
+    let (_home, svc, _lock) = fresh_service("snapshot-open-reader");
+    let path = crate::skills::v2::snapshot::export_to_file(&svc).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let original = fs::read(&path).unwrap();
+    let mut reader = fs::File::open(&path).unwrap();
+    let project = svc.home.join("工作区/snapshot-project");
+    fs::create_dir_all(&project).unwrap();
+    svc.add_project(project.display().to_string()).unwrap();
+
+    crate::skills::v2::snapshot::export_to_file(&svc).unwrap();
+
+    let mut observed = Vec::new();
+    reader.read_to_end(&mut observed).unwrap();
+    assert_eq!(observed, original);
+    let published: Snapshot = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(published.projects.len(), 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
 fn writes_refresh_snapshot_best_effort() {
     let (_home, svc, _lock) = fresh_service("snapshot-auto");
     let src = write_skill(&svc.home.join("s"), "auto", "auto-snapshot", Some("v1"));
@@ -6074,6 +6799,34 @@ enabled = true
         .mcp_servers
         .iter()
         .any(|server| server.name == "filesystem"));
+}
+
+#[test]
+fn project_inventory_keeps_missing_project_diagnostics() {
+    let (_home, svc, _lock) = fresh_service("missing-project-inventory");
+    let root = svc.home.join("workspace/repo");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("AGENTS.md"), "# Repo instructions").unwrap();
+    let added = svc.add_project(root.display().to_string()).unwrap();
+    assert_eq!(added.summary.instruction_count, 1);
+
+    fs::rename(&root, root.with_file_name("moved")).unwrap();
+    let detail = svc.get_project_detail(&added.summary.id).unwrap();
+    assert!(detail.agents.is_empty());
+    assert!(detail.instructions.is_empty());
+    assert_eq!(detail.summary.instruction_count, 0);
+    assert_eq!(detail.summary.issue_count, 1);
+    assert_eq!(detail.health.len(), 1);
+    assert_eq!(detail.health[0].kind, "project_missing");
+
+    let projects = svc.list_projects().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].id, detail.summary.id);
+    assert_eq!(projects[0].issue_count, detail.summary.issue_count);
+    assert_eq!(
+        projects[0].instruction_count,
+        detail.summary.instruction_count
+    );
 }
 
 #[test]
@@ -6309,15 +7062,136 @@ fn real_smoke_against_actual_home() {
 }
 
 #[test]
+fn skill_source_update_lists_the_regular_files_it_will_change() {
+    use super::service::SkillSourceFiles;
+    use SkillSourceFileChangeKind::{Added, Modified, Removed};
+
+    let temporary =
+        crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+    let installed = temporary.path().join("installed");
+    let latest = temporary.path().join("latest");
+    for root in [&installed, &latest] {
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join("same.bin"), [0_u8, 255]).unwrap();
+    }
+    fs::write(installed.join("SKILL.md"), "customized").unwrap();
+    fs::write(latest.join("SKILL.md"), "upstream").unwrap();
+    fs::write(installed.join("old.md"), "gone").unwrap();
+    fs::write(latest.join("nested/例.md"), "new").unwrap();
+    fs::write(latest.join(".git/config"), "Git metadata").unwrap();
+    fs::write(installed.join("cache.tmp"), "ignored by the copy").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(installed.join("tool.sh"), "same script").unwrap();
+        fs::write(latest.join("tool.sh"), "same script").unwrap();
+        fs::set_permissions(installed.join("tool.sh"), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(latest.join("tool.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(installed.join("old.md"), latest.join("ignored-link")).unwrap();
+    }
+    let installed = SkillSourceFiles::read(&installed).unwrap();
+    let latest = SkillSourceFiles::read(&latest).unwrap();
+    let changes = installed.changes(&latest);
+    let expected = [
+        ("SKILL.md", Modified),
+        ("nested/例.md", Added),
+        ("old.md", Removed),
+        #[cfg(unix)]
+        ("tool.sh", Modified),
+    ];
+    assert_eq!(
+        changes
+            .iter()
+            .map(|file| (file.path.as_str(), file.kind))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_ne!(installed.hash(), latest.hash());
+}
+
+#[test]
+fn checked_skill_source_update_preserves_the_installed_id_and_guards_local_edits() {
+    let (_home, svc, _lock) = fresh_service("checked-source-update");
+    let source = write_skill(&svc.home, "first", "toolkit", Some("original"));
+    let installed_ref = "1".repeat(40);
+    let latest_ref = "2".repeat(40);
+    let source_uri = "github:example/skills/toolkit".to_string();
+    svc.execute_add_center_skill_with_commit(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "github".to_string(),
+            source_uri: Some(source_uri.clone()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some("copy".to_string()),
+        },
+        vec![AddCenterSkillDecision {
+            skill_id: "toolkit".to_string(),
+            resolution: "create".to_string(),
+            proposed_skill_id: Some("my-toolkit".to_string()),
+        }],
+        Some(&installed_ref),
+    )
+    .unwrap();
+
+    let dir = svc.center_path().unwrap().join("my-toolkit");
+    let notes = dir.join("reference.md");
+    let mut check = SkillSourceUpdateCheck {
+        source_uri,
+        installed_ref: Some(installed_ref),
+        latest_ref: latest_ref.clone(),
+        current_hash: super::service::SkillSourceFiles::read(&dir).unwrap().hash(),
+        update_available: true,
+        file_changes: Vec::new(),
+    };
+    let upstream = write_skill(&svc.home, "next", "new-toolkit-name", Some("updated"));
+    assert!(svc
+        .install_checked_git_skill("my-toolkit", &check, &upstream, &"3".repeat(40))
+        .is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = notes.metadata().unwrap().permissions();
+        fs::set_permissions(
+            &notes,
+            fs::Permissions::from_mode(permissions.mode() ^ 0o100),
+        )
+        .unwrap();
+        assert!(svc
+            .install_checked_git_skill("my-toolkit", &check, &upstream, &latest_ref)
+            .is_err());
+        fs::set_permissions(&notes, permissions).unwrap();
+    }
+    fs::write(&notes, "local edits").unwrap();
+    assert!(svc
+        .install_checked_git_skill("my-toolkit", &check, &upstream, &latest_ref)
+        .is_err());
+    assert_eq!(fs::read_to_string(&notes).unwrap(), "local edits");
+    check.current_hash = super::service::SkillSourceFiles::read(&dir).unwrap().hash();
+    let detail = svc
+        .install_checked_git_skill("my-toolkit", &check, &upstream, &latest_ref)
+        .unwrap();
+    assert_eq!(detail.summary.id, "my-toolkit");
+    assert_eq!(detail.summary.name, "new-toolkit-name");
+    assert_eq!(
+        detail.source.unwrap().source_ref.as_deref(),
+        Some(latest_ref.as_str())
+    );
+    assert_eq!(fs::read_to_string(notes).unwrap(), "updated");
+    assert_eq!(svc.list_center_skills().unwrap().len(), 1);
+}
+
+#[test]
 fn add_center_skill_from_zip() {
     let (_home, svc, _lock) = fresh_service("zip");
-    // build a skill dir, then zip it
-    let skill_dir = write_skill(
-        &svc.home.join("src"),
-        "zipped",
-        "zip-skill",
-        Some("payload"),
-    );
+    let other_import =
+        crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+    let other_skill = other_import.path().join("SKILL.md");
+    std::fs::write(&other_skill, "other import").unwrap();
     let zip_path = svc.home.join("zip-skill.zip");
     let file = std::fs::File::create(&zip_path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
@@ -6328,7 +7202,6 @@ fn add_center_skill_from_zip() {
     zip.start_file("zip-skill/reference.md", opts).unwrap();
     zip.write_all(b"payload").unwrap();
     zip.finish().unwrap();
-    let _ = &skill_dir;
 
     let preview = svc
         .preview_add_center_skill(AddCenterSkillInput {
@@ -6343,6 +7216,8 @@ fn add_center_skill_from_zip() {
         .unwrap();
     assert_eq!(preview.candidates.len(), 1);
     assert_eq!(preview.candidates[0].skill_id, "zip-skill");
+    assert!(!Path::new(&preview.candidates[0].source_dir).exists());
+    assert!(other_skill.is_file());
     let r = svc
         .execute_add_center_skill(
             AddCenterSkillInput {
@@ -6358,5 +7233,112 @@ fn add_center_skill_from_zip() {
         )
         .unwrap();
     assert_eq!(r.skill_ids, vec!["zip-skill".to_string()]);
-    assert!(svc.center_path().unwrap().join("zip-skill").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(svc.center_path().unwrap().join("zip-skill/reference.md")).unwrap(),
+        "payload"
+    );
+    assert!(zip_path.is_file());
+    assert!(other_skill.is_file());
+}
+
+#[test]
+fn add_center_skill_from_public_download_links() {
+    use std::io::{BufRead, BufReader, Cursor};
+    use std::net::TcpListener;
+
+    let (_home, svc, _lock) = fresh_service("public-download");
+    let markdown = b"---\nname: remote-markdown\ndescription: Markdown fixture\n---\n# Markdown\n";
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("archive/SKILL.md", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(b"---\nname: remote-zip\ndescription: ZIP fixture\n---\n# Zip\n")
+        .unwrap();
+    let archive = zip.finish().unwrap().into_inner();
+    let mut linked_zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    linked_zip.start_file("archive/SKILL.md", options).unwrap();
+    linked_zip.write_all(markdown).unwrap();
+    linked_zip
+        .add_symlink("archive/guide.md", "SKILL.md", options)
+        .unwrap();
+    let linked_archive = linked_zip.finish().unwrap().into_inner();
+
+    for (target, payload, expected_id) in [
+        (
+            "/skill.MD?download=1",
+            markdown.to_vec(),
+            Some("remote-markdown"),
+        ),
+        ("/skill.ZIP?download=1", archive, Some("remote-zip")),
+        ("/linked.zip", linked_archive, None),
+    ] {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let url = format!("http://{}{target}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("The Skill download did not reach the fixture: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut headers = BufReader::new(&stream).lines();
+            let request = headers.next().unwrap().unwrap();
+            assert!(request.starts_with(&format!("GET {target} ")));
+            for header in headers
+                .map(Result::unwrap)
+                .take_while(|line| !line.is_empty())
+            {
+                assert!(!header.to_ascii_lowercase().starts_with("authorization:"));
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )
+            .unwrap();
+            stream.write_all(&payload).unwrap();
+        });
+
+        let installed = svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_uri: Some(url.clone()),
+                source_path: url.clone(),
+                source_type: "url".to_string(),
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: Some("copy".to_string()),
+            },
+            vec![],
+        );
+        server.join().unwrap();
+
+        let Some(expected_id) = expected_id else {
+            assert!(installed
+                .unwrap_err()
+                .contains("regular files and directories"));
+            continue;
+        };
+        assert_eq!(installed.unwrap().skill_ids, [expected_id]);
+        let detail = svc.get_skill_detail(expected_id).unwrap();
+        assert_eq!(
+            detail.source.unwrap().source_uri.as_deref(),
+            Some(url.as_str())
+        );
+        assert!(Path::new(&detail.summary.center_path)
+            .join("SKILL.md")
+            .is_file());
+    }
 }

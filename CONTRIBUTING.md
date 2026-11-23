@@ -40,11 +40,11 @@
 
 ### 环境
 
-- macOS(目前只支持 macOS)
-- Node.js 20+
+- macOS 需要 Xcode Command Line Tools。Windows x64 需要 Microsoft C++ Build Tools 的「使用 C++ 的桌面开发」工作负载、MSVC Rust 工具链和 WebView2。详见 [Tauri 开发环境](https://v2.tauri.app/start/prerequisites/)。
+- Node.js 20（20.19 起）或 Node.js 22.12 及以上
 - pnpm 9+
 - Rust 稳定版 + Cargo
-- Tauri CLI:`cargo install tauri-cli` 或 `pnpm dlx @tauri-apps/cli`
+- 用 `cargo install tauri-cli --locked` 安装 Tauri CLI，供原生构建命令使用。
 
 ### 启动
 
@@ -58,6 +58,12 @@ pnpm dev         # 仅浏览器 UI,适合调样式 → http://localhost:1423
 ```
 
 `pnpm tauri:dev` 会先 `cargo build` 一份 `agentbro-bridge` 二进制,再启 Vite + 原生窗口。第一次构建比较慢,Rust 依赖编译可能要 5-10 分钟,后续增量很快。
+
+### 验证 Windows 安装包
+
+在 Windows x64 运行 `pnpm tauri:build:windows`。NSIS 和 MSI 安装包分别位于 `src-tauri/target/release/bundle/nsis/` 和 `src-tauri/target/release/bundle/msi/`。
+
+Windows 相关 PR 可从任务分支手动运行 [Build 工作流](https://github.com/shirenchuang/agentbro/actions/workflows/build.yml)。其中 `Smoke test installed Windows app` 在全新的 Windows runner 中安装并启动 NSIS 包，验证 TCP Hook 投递，再用系统鼠标打开灵动岛的会话列表和详情。
 
 ### 提交前必跑
 
@@ -114,7 +120,7 @@ chore: 升级 vitest 到 4.2
 2. Fork → 在 `dev` 上拉分支 → 改动 → 跑完上面四条检查。
 3. PR base 选 `dev`,标题写清楚改了什么(中英都可)。
 4. 按 PR 模板填写内容，并在正文保留 `Closes #<Issue 编号>`；`PR policy / Issue link` 会校验它。
-5. CI 会跑 `ci.yml`(lint + test + cargo check/clippy/fmt + cargo test)和 `build.yml`(macOS 双架构构建)。两个都得绿。
+5. `dev` PR 必须通过 Issue 关联、前端 lint、测试和构建，以及 Rust 格式、Clippy 和测试检查。Windows 安装包验证可以单独运行 Build 工作流。
 6. Review 节奏:工作日基本能在 48 小时内给到第一轮反馈。如果一周没人理,可以在 PR 里 @maintainer 提醒一下。
 7. Merge 用 squash；仓库成员可预先开启 auto-merge，所有必需检查通过后会自动合并并删除任务分支。`Close linked Issues` 会在 PR 合并进 `dev` 后关闭正文中关联的 Issue。
 

@@ -4,7 +4,7 @@
 //! cross the Tauri boundary match the TypeScript types in `skillApi.ts`.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub const SCHEMA_VERSION: i64 = 4;
 
@@ -126,6 +126,45 @@ pub struct ProjectDetail {
     pub agents: Vec<ProjectAgentDetail>,
     pub instructions: Vec<ProjectInstructionFile>,
     pub health: Vec<ProjectHealthIssue>,
+    pub skill_lock: Option<ProjectSkillLock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSkillLock {
+    pub version: Option<u32>,
+    pub revision: String,
+    pub skills: Vec<ProjectLockedSkill>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectLockedSkill {
+    pub name: String,
+    pub source: String,
+    pub reference: Option<String>,
+    pub status: ProjectLockedSkillStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectLockedSkillStatus {
+    Existing,
+    Verified,
+    Modified,
+    Unverified,
+    Ready,
+    Legacy,
+    Unsupported,
+    Invalid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSkillRestoreResult {
+    pub name: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +266,33 @@ pub struct SkillSourceDetail {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillSourceUpdateCheck {
+    pub source_uri: String,
+    pub installed_ref: Option<String>,
+    pub latest_ref: String,
+    pub current_hash: String,
+    pub update_available: bool,
+    #[serde(default)]
+    pub file_changes: Vec<SkillSourceFileChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSourceFileChange {
+    pub path: String,
+    pub kind: SkillSourceFileChangeKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SkillSourceFileChangeKind {
+    Added,
+    Modified,
+    Removed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillTargetDetail {
     pub id: String,
     pub skill_id: String,
@@ -324,6 +390,48 @@ pub struct SkillPackSummary {
     pub failed_sync_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillPackManifest {
+    pub format: String,
+    pub version: u32,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub skill_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skill_fingerprints: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skill_sources: BTreeMap<String, SkillPackGitHubSource>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedSkillPackManifest {
+    pub manifest: SkillPackManifest,
+    pub source_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillPackGitHubSource {
+    pub repository: String,
+    pub commit: String,
+    pub skill_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackFingerprint {
+    pub skill_id: String,
+    pub missing: bool,
+    pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SkillPackGitHubSource>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillPackPickerData {
@@ -408,6 +516,8 @@ pub struct ConflictBlocker {
     pub existing_path: Option<String>,
     pub existing_path_kind: Option<String>,
     pub resolved_existing_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -427,6 +537,8 @@ pub struct DistributionChange {
     pub actual_mode: Option<String>,
     pub reason: Option<String>,
     pub target_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

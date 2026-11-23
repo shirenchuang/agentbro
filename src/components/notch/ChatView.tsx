@@ -1,7 +1,7 @@
 /* ChatView — Conversation-style message list for active session */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useSessionStore, selectActiveSession } from '../../stores/sessionStore'
+import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion, planReplyError, questionReplyError, useSessionStore, selectActiveSession } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { getChatHistoryTail, getSubagentChatHistory } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
@@ -12,19 +12,13 @@ import { CollapsedGroup } from './CollapsedGroup'
 import { ApprovalBar } from './ApprovalBar'
 import { TokenBar } from './TokenBar'
 import type { ChatMessage, SessionState, SubagentInfo, ToolStatus } from '../../types/agent'
-import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, respondAutoApprove, setNotchFocusable } from '../../services/tauriApi'
+import { sendMessage, jumpToTerminal, setNotchFocusable } from '../../services/tauriApi'
 import { getAgentDisplayName } from '../../utils/sessionDisplay'
 import './ChatView.css'
 
 interface MessageGroup {
   type: 'collapsed' | 'single'
   messages: ChatMessage[]
-}
-
-function clearPermissionAfter(sessionId: string, work: Promise<void>) {
-  work
-    .then(() => useSessionStore.getState().clearPermission(sessionId))
-    .catch((error) => console.warn('[chat] permission response failed:', error))
 }
 
 function isCollapsible(msg: ChatMessage): boolean {
@@ -113,9 +107,20 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   const showAgentActivityDetails = useConfigStore((s) => s.showAgentActivityDetails)
   const islandMonitorSubagents = useConfigStore((s) => s.islandMonitorSubagents)
   const contentRef = useRef<HTMLDivElement>(null)
+  const backRef = useRef<HTMLButtonElement>(null)
+  const restorePermissionFocus = useCallback(() => {
+    backRef.current?.focus({ preventScroll: true })
+  }, [])
   const [userScrolled, setUserScrolled] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  const hasPlan = Boolean(activeSession?.planTitle || activeSession?.planContent)
+  const replyError = useSessionStore((state) => {
+    if (!activeSession) return undefined
+    return hasPlan
+      ? planReplyError(state, activeSession.id, activeSession)
+      : questionReplyError(state, activeSession.id, activeSession.pendingQuestion)
+  })
   const [subagentHistory, setSubagentHistory] = useState<{
     sessionId: string
     agentId: string
@@ -194,43 +199,38 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
 
   const handleAllow = () => {
     if (!activeSession) return
-    if (activeSession.planContent) {
-      respondPlan(activeSession.id, 'acceptEdits')
-      useSessionStore.getState().clearPlan(activeSession.id)
+    if (hasPlan) {
+      void answerDisplayedPlan(activeSession.id, activeSession, 'acceptEdits')
       return
     }
-    clearPermissionAfter(activeSession.id, respondPermission(activeSession.id, true, false))
+    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, true, false)
   }
 
   const handleAllowAlways = () => {
     if (!activeSession) return
-    if (activeSession.planContent) {
-      respondPlan(activeSession.id, 'bypassPermissions')
-      useSessionStore.getState().clearPlan(activeSession.id)
+    if (hasPlan) {
+      void answerDisplayedPlan(activeSession.id, activeSession, 'bypassPermissions')
       return
     }
-    clearPermissionAfter(activeSession.id, respondPermission(activeSession.id, true, true))
+    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, true, true)
   }
 
   const handleDeny = () => {
     if (!activeSession) return
-    if (activeSession.planContent) {
-      respondPlan(activeSession.id, 'manual')
-      useSessionStore.getState().clearPlan(activeSession.id)
+    if (hasPlan) {
+      void answerDisplayedPlan(activeSession.id, activeSession, 'manual')
       return
     }
-    clearPermissionAfter(activeSession.id, respondPermission(activeSession.id, false))
+    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, false)
   }
 
   const handleAutoApprove = () => {
     if (!activeSession) return
-    if (activeSession.planContent) {
-      respondPlan(activeSession.id, 'bypassPermissions')
-      useSessionStore.getState().clearPlan(activeSession.id)
+    if (hasPlan) {
+      void answerDisplayedPlan(activeSession.id, activeSession, 'bypassPermissions')
       return
     }
-    respondAutoApprove(activeSession.id)
-    useSessionStore.getState().clearPermission(activeSession.id)
+    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, 'auto')
   }
 
   const handleSend = async (msg: string) => {
@@ -238,12 +238,13 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
     if (!msg.trim()) return
     setSendError(null)
     try {
-      if (activeSession.pendingQuestion) {
-        await respondQuestion(activeSession.id, msg)
-        useSessionStore.getState().clearQuestion(activeSession.id)
-      } else if (activeSession.planContent) {
-        await respondPlan(activeSession.id, 'feedback', msg)
-        useSessionStore.getState().clearPlan(activeSession.id)
+      if (hasPlan || activeSession.pendingQuestion) {
+        const delivered = hasPlan
+          ? await answerDisplayedPlan(activeSession.id, activeSession, 'feedback', msg)
+          : await answerDisplayedQuestion(activeSession.id, activeSession.pendingQuestion, msg)
+        if (!delivered) return
+        const current = useSessionStore.getState().sessions[activeSession.id]
+        if (current?.phase !== 'processing' || current.pendingQuestion || current.pendingPermission || current.planTitle || current.planContent) return
       } else {
         await sendMessage(activeSession.id, msg)
       }
@@ -332,7 +333,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
 
   return (
     <div className="chat-view">
-      <ChatHeader session={activeSession} onBack={handleBack} onJump={handleJump} />
+      <ChatHeader session={activeSession} backRef={backRef} onBack={handleBack} onJump={handleJump} />
 
       {islandMonitorSubagents && showAgentActivityDetails && activeSession.subagents && activeSession.subagents.length > 0 && (
         <SubagentList subagents={activeSession.subagents} onOpenHistory={handleOpenSubagentHistory} />
@@ -423,12 +424,14 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
         </button>
       )}
 
-      {!currentSubagentHistory && sendError && (
-        <div className="chat-view__send-error">
-          <span>{sendError}</span>
-          <button type="button" onClick={() => setSendError(null)}>
-            {t('notch.dismiss', '关闭')}
-          </button>
+      {!currentSubagentHistory && (sendError || replyError) && (
+        <div role="alert" className="chat-view__send-error">
+          <span>{sendError || replyError}</span>
+          {sendError && (
+            <button type="button" onClick={() => setSendError(null)}>
+              {t('notch.dismiss', '关闭')}
+            </button>
+          )}
         </div>
       )}
 
@@ -438,6 +441,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
           onAllow={handleAllow}
           onAllowAlways={handleAllowAlways}
           onDeny={handleDeny}
+          restorePermissionFocus={restorePermissionFocus}
           onAutoApprove={handleAutoApprove}
           onSendMessage={handleSend}
           onDraftStateChange={onInputDraftStateChange}

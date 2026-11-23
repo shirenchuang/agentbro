@@ -118,9 +118,12 @@ Agent Monitor 汇总当前和历史会话，可以按项目查看运行阶段、
 - 按 Agent 安装和修复 Hook，查看 Bridge 命令与配置路径，并分别控制审批、通知、生命周期和活动事件。
 - 扫描散落在不同目录中的 Skills，接管到中心库后，用软链接或副本分发给 Agent 与项目；批量操作、冲突处理和诊断状态都有记录。
 - 把常用 Skills 组合成技能包，一键应用到多个 Agent，也能安全撤销。
-- 管理 stdio、HTTP 和 SSE MCP 服务，检查 tools、resources、prompts 与连接日志；调用工具前会显示参数和风险确认。
+- [导入和导出技能包清单](docs/skill-pack-manifest.md)，方便在自己的 Git 仓库中分享和维护组合。
+- 管理 stdio、HTTP 和 SSE MCP 服务，检查 tools、resources、prompts 与连接日志；调用工具前会显示参数和风险确认。取消会关闭 AgentBro 发起的连接，服务已经执行的操作仍可能生效。
+- 通过 SSH 可从远端 Codex 的 TOML 配置查看并检查 stdio 和 HTTP MCP 服务。读取配置需要远端装有 Python 3.11 或更新版本，旧版 Python 可使用已安装的 `tomli`。凭据在 SSH 主机上读取和使用。
 - 查看 Codex、Claude Code、WorkBuddy、ZCode、Kimi 等 Agent 的插件，搜索、启停、检查清单和内置能力，并预览插件文件。
 - 在校验后编辑支持的 JSON 或文本配置文件；项目页可以导入仓库，检查项目级指令、Skills、MCP 和插件。
+- 在项目页预览 skills.sh 锁文件，选择缺失的 GitHub Skill 并恢复到项目的 .agents/skills 目录。恢复时校验 v2 内容哈希，保留已有条目。 [skills.sh 锁文件格式](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
 
 <table>
   <tr>
@@ -159,16 +162,19 @@ AgentBro 的支持分为两层。运行时 Hook 适配器负责把会话事件�
 
 | 范围 | Agent |
 | --- | --- |
-| 灵动岛 / Hook 接入 | Claude Code、Codex、Gemini CLI、Cursor / Cursor CLI、GitHub Copilot、Cline、Qoder / Qoder CLI、CodeBuddy / CodeBuddy CN、Qwen、Kimi、DeepSeek、OpenCode、Factory Droid、StepFun、AntiGravity、WorkBuddy、Hermes、Pi、Kiro、ZCode |
+| 灵动岛 / Hook 接入 | Claude Code、Codex、Gemini CLI、Cursor / Cursor CLI、GitHub Copilot、Cline、Qoder / Qoder CLI、CodeBuddy / CodeBuddy CN、Qwen、Kimi、DeepSeek、OpenCode、Factory Droid、StepFun、AntiGravity、WorkBuddy / WorkBuddy AI、Hermes、Pi、Kiro、ZCode |
 | Agent 管理扫描 | 上面所有 Agent，另支持豆包、`.agents` 共享目录、Junie、Windsurf、Augment、KiloCode、OB1、Amp、Aider、OpenClaw / QClaw / EasyClaw / AutoClaw，以及自定义 Agent |
 | 项目级扫描 | 目前聚焦 Claude Code 与 Codex 常见项目配置：项目级 Skills、MCP、插件和指令文件 |
 
-macOS 的 Agent 管理可以单独识别 DeepSeek Harness 和千问办公（QwenWork CN），并管理 `~/.dsh/skills` 和 `~/.qwenworkcn/skills` 下的目录式 Skills。DeepSeek Harness 也能显示默认 `~/.agents/skills` 中的继承项。
+macOS 和 Windows 的 Agent 管理可以单独识别 DeepSeek Harness 和千问办公（QwenWork CN），并管理 `~/.dsh/skills` 和 `~/.qwenworkcn/skills` 下的目录式 Skills。DeepSeek Harness 也能显示默认 `~/.agents/skills` 中的继承项。
 
 - **DeepSeek Harness**。先打开客户端一次生成桌面配置，再完全退出。在 AgentBro 的灵动岛集成页给 DeepSeek Harness 安装 Hook，然后重新打开客户端。灵动岛会显示任务开始、结束和可转发的审批。审批可允许一次或拒绝，AgentBro 不可用时回到客户端处理。
-- **千问办公**。灵动岛只读观察桌面客户端记录的任务状态，包括排队、运行、结束和等待交互。需要点击确认或回答的问题在千问办公里处理。
+- **千问办公**。灵动岛只读观察桌面客户端记录的任务状态，包括排队、运行、结束和等待交互。可以从会话打开千问办公，在客户端处理确认或回答问题。
+- **WorkBuddy / WorkBuddy AI**。在 Agent 管理中按版本安装 Hook，各自使用 `~/.workbuddy` 和 `~/.workbuddy-ai`。灵动岛显示 WorkBuddy AI 的活动和待确认状态，可打开桌面客户端处理确认。
 
 豆包 macOS 支持会检测 `/Applications/Doubao.app`、管理 `~/Doubao/skills`，并继续通过中心库覆盖豆包兼容的 `~/.agents/skills`。由于豆包目前没有公开 Hook，灵动岛中的任务状态来自本机进程与两个任务存储目录的只读元数据关联，不读取聊天内容；该状态属于尽力推断，页面同步可能造成短暂误报。
+
+Windows 用户可在「灵动岛 → 集成 → WSL Hook」选择已安装的发行版，为 Claude Code 或 Codex CLI 接入灵动岛。Hook 使用发行版默认用户的配置目录，通过 WSL 互操作调用 Windows 版 Bridge。灵动岛会标明发行版，点击箭头可以在该发行版的工作目录打开终端。
 
 ## 路线图
 

@@ -5,7 +5,7 @@
 
 ## What this is
 
-**AgentBro** is a macOS-only Tauri app (Rust backend + React 19 / TypeScript frontend) that surfaces events from AI coding agents (Claude Code, Codex, Gemini CLI, Cursor, Copilot, etc.) into a floating "Dynamic Island" overlay.
+**AgentBro** is a Tauri app for macOS and Windows x64 (Rust backend + React 19 / TypeScript frontend) that surfaces events from AI coding agents (Claude Code, Codex, Gemini CLI, Cursor, Copilot, etc.) into a floating "Dynamic Island" overlay.
 
 ## Local commands
 
@@ -94,4 +94,4 @@ If you fork and redistribute, you **must rename** the product — see [`TRADEMAR
 
 ## Platform support
 
-macOS only for now. Windows is on the roadmap but the codebase is not yet abstracted for it — don't `#[cfg(windows)]`-pepper the code preemptively.
+macOS has the widest Agent integration coverage. Windows x64 supports the floating overlay, local TCP hooks, Agent management, and Skills. Use the existing platform helpers for native differences. The contribution guide describes how to validate Windows changes with the installer smoke test.

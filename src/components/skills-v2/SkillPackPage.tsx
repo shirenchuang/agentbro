@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type {
   ConflictBlocker,
@@ -11,6 +13,8 @@ import type {
   RemovePackFromAgentPreview,
   RemoveSkillFromPackPreview,
   SkillPackDetail,
+  SkillPackFingerprint,
+  SkillPackManifest,
   SkillPackSummary,
 } from '../../services/skillApiV2'
 import { PreviewDialog } from './PreviewDialog'
@@ -19,8 +23,29 @@ import { SkillDetailSlider } from './SkillDetailSlider'
 import { skillModeLabel, skillSourceTypeLabel } from './skillLabels'
 
 type BuilderMode = 'create' | 'edit' | 'duplicate'
+type PackRuntime = Pick<ReturnType<typeof useRuntimeEnvironmentStore.getState>, 'selectedEnvironmentId' | 'selectionRevision'>
+type PackImport = {
+  manifest: SkillPackManifest
+  sourceUrl?: string
+  runtime: PackRuntime
+  reviewed: SkillPackFingerprint[] | null
+  acceptLocalCopies: boolean
+}
+type PackLink = {
+  runtime: PackRuntime
+  url: string
+  loading: boolean
+  error: string | null
+}
+type PackMemberStatus = 'missing' | 'unavailable' | 'unrecorded' | 'different' | 'match'
+type PackRemoval =
+  | { kind: 'delete'; preview: DeleteSkillPackPreview }
+  | { kind: 'member'; preview: RemoveSkillFromPackPreview }
+  | { kind: 'revoke'; preview: RemovePackFromAgentPreview }
+type PackRemovalReview = PackRemoval & { runtime: PackRuntime }
 type PackSyncConflictState = {
-  pack: SkillPackDetail
+  packId: string
+  runtime: PackRuntime
   targetAgents: string[]
   requestedMode: 'link' | 'copy'
   preview: DistributionPreview
@@ -104,18 +129,41 @@ export function SkillPackPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
   const [packQuery, setPackQuery] = useState('')
-  const [builderMode, setBuilderMode] = useState<BuilderMode | null>(null)
+  const [builderDraft, setBuilder] = useState<{ mode: BuilderMode; runtime: PackRuntime } | null>(null)
   const [applyFor, setApplyFor] = useState<SkillPackDetail | null>(null)
-  const [deletePreview, setDeletePreview] = useState<DeleteSkillPackPreview | null>(null)
-  const [removeSkillPreview, setRemoveSkillPreview] = useState<RemoveSkillFromPackPreview | null>(null)
-  const [revokePreview, setRevokePreview] = useState<RemovePackFromAgentPreview | null>(null)
-  const [syncConflict, setSyncConflict] = useState<PackSyncConflictState | null>(null)
+  const [removalDraft, setRemovalReview] = useState<PackRemovalReview | null>(null)
+  const [removalOperation, setRemovalOperation] = useState<{ runtime: PackRuntime } | null>(null)
+  const [syncConflictDraft, setSyncConflict] = useState<PackSyncConflictState | null>(null)
   const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [syncNotice, setSyncNotice] = useState<string | null>(null)
+  const [actionBusy, setBusy] = useState(false)
+  const [foregroundSync, setForegroundSync] = useState<{ runtime: PackRuntime } | null>(null)
+  const [notice, setNotice] = useState<{ revision: number; packId?: string; message: string } | null>(null)
+  const syncRequest = useRef(0)
+  const [packImportDraft, setPackImport] = useState<PackImport | null>(null)
+  const [packLinkDraft, setPackLink] = useState<PackLink | null>(null)
+  const [packImportError, setPackImportError] = useState<string | null>(null)
+  const [restoringMember, setRestoringMember] = useState<{ runtime: PackRuntime; skillId: string } | null>(null)
+  const runtimeRevision = useRuntimeEnvironmentStore((runtime) => runtime.selectionRevision)
+  const builder = builderDraft?.runtime.selectionRevision === runtimeRevision ? builderDraft : null
+  const builderMode = builder?.mode
+  const syncConflict = syncConflictDraft?.runtime.selectionRevision === runtimeRevision && syncConflictDraft.packId === state.selectedPackId
+    ? syncConflictDraft
+    : null
+  const removalReview = removalDraft?.runtime.selectionRevision === runtimeRevision && removalDraft.preview.packId === state.selectedPackId
+    ? removalDraft
+    : null
+  const busy = actionBusy || foregroundSync?.runtime.selectionRevision === runtimeRevision
+    || removalOperation?.runtime.selectionRevision === runtimeRevision
+  const syncNotice = notice?.revision === runtimeRevision && (!notice.packId || notice.packId === state.selectedPackId)
+    ? notice.message
+    : null
+  const packImport = packImportDraft?.runtime.selectionRevision === runtimeRevision ? packImportDraft : null
+  const packLink = packLinkDraft?.runtime.selectionRevision === runtimeRevision ? packLinkDraft : null
+  const activeRestore = restoringMember?.runtime.selectionRevision === runtimeRevision ? restoringMember : null
+  const packImportBusy = busy || Boolean(activeRestore)
 
   useEffect(() => {
-    state.loadOverview()
+    if (state.initialized && !state.startupScanInFlight) void state.loadOverview()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -136,7 +184,33 @@ export function SkillPackPage() {
     )
   }, [packQuery, state.packs])
 
-  const detail = state.selectedPackDetail
+  const detail = state.selectedPackDetail?.id === state.selectedPackId ? state.selectedPackDetail : null
+  const packMemberStatuses = useMemo(() => {
+    const result = new Map<string, PackMemberStatus>()
+    if (!packImport) return result
+    const { manifest, reviewed } = packImport
+    if (!reviewed) {
+      const existing = new Set(state.skills.map((skill) => skill.id))
+      for (const id of manifest.skillIds) {
+        if (!existing.has(id)) result.set(id, 'missing')
+      }
+      return result
+    }
+    const expected = new Map(Object.entries(manifest.skillFingerprints ?? {}))
+    for (const member of reviewed) {
+      if (member.missing) result.set(member.skillId, 'missing')
+      else if (!member.fingerprint) result.set(member.skillId, 'unavailable')
+      else if (!expected.has(member.skillId)) result.set(member.skillId, 'unrecorded')
+      else result.set(member.skillId, expected.get(member.skillId) === member.fingerprint ? 'match' : 'different')
+    }
+    return result
+  }, [packImport, state.skills])
+  const importStatuses = [...packMemberStatuses.values()]
+  const hasMissingPackSkills = importStatuses.includes('missing')
+  const hasUnavailablePackSkills = importStatuses.includes('unavailable')
+  const needsLocalCopyConfirmation = importStatuses.includes('different') || importStatuses.includes('unrecorded')
+  const packImportBlocked = hasMissingPackSkills || hasUnavailablePackSkills
+    || (needsLocalCopyConfirmation && !packImport?.acceptLocalCopies)
   const packMemberships = useSkillPackMemberships(state.packs, detail)
   const missingCount = detail?.members.filter((member) => member.missing).length || 0
   const totalMembers = state.packs.reduce((sum, pack) => sum + pack.memberCount, 0)
@@ -145,68 +219,287 @@ export function SkillPackPage() {
   const syncIssueCount = state.packs.reduce((sum, pack) => sum + (pack.pendingSyncCount || 0) + (pack.failedSyncCount || 0), 0)
   const issueCount = unhealthyPacks + missingCount + syncIssueCount
 
+  const setSyncNotice = (message: string | null, packId?: string) =>
+    setNotice(message === null ? null : { revision: runtimeRevision, packId, message })
+
   const startCreate = () => {
     state.selectPack(null)
-    setBuilderMode('create')
+    setBuilder({ mode: 'create', runtime: useRuntimeEnvironmentStore.getState() })
   }
 
-  const startEdit = () => setBuilderMode('edit')
-  const startDuplicate = () => setBuilderMode('duplicate')
+  const startEdit = () => setBuilder({ mode: 'edit', runtime: useRuntimeEnvironmentStore.getState() })
+  const startDuplicate = () => setBuilder({ mode: 'duplicate', runtime: useRuntimeEnvironmentStore.getState() })
 
-  const openDelete = async (packId: string) => {
+  const preparePackReview = async (manifest: SkillPackManifest, runtime: PackRuntime, sourceUrl?: string) => {
+    if (!isPackRuntimeCurrent(runtime)) return
+    const reviewed = manifest.version >= 2
+      ? await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
+      : null
+    if (!reviewed) await state.loadOverview(true)
+    if (isPackRuntimeCurrent(runtime)) {
+      setPackImport({ manifest, sourceUrl, runtime, reviewed, acceptLocalCopies: false })
+    }
+  }
+
+  const reviewPackManifest = async () => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    if (busy || !isPackRuntimeCurrent(runtime)) return
     setBusy(true)
+    state.setError(null)
+    setSyncNotice(null)
+    setPackImportError(null)
     try {
-      setDeletePreview(await skillApiV2.previewDeletePack(packId))
-    } catch (e) {
-      state.setError(String(e))
+      const path = await open({ filters: [{ name: 'JSON', extensions: ['json'] }] })
+      if (typeof path !== 'string' || !isPackRuntimeCurrent(runtime)) return
+      const manifest = await skillApiV2.readPackManifest(path)
+      await preparePackReview(manifest, runtime)
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) state.setError(String(error))
     } finally {
       setBusy(false)
     }
   }
 
-  const openRemoveSkill = async (packId: string, skillId: string) => {
-    setBusy(true)
+  const startPackLinkReview = () => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    if (packImportBusy || !isPackRuntimeCurrent(runtime)) return
+    state.setError(null)
+    setSyncNotice(null)
+    setPackImportError(null)
+    setPackLink({ runtime, url: '', loading: false, error: null })
+  }
+
+  const reviewPackLink = async () => {
+    if (!packLink || packLink.loading || !isPackRuntimeCurrent(packLink.runtime)) return
+    const { runtime } = packLink
+    const url = packLink.url.trim()
+    if (!url) return
+    setPackLink({ ...packLink, loading: true, error: null })
     try {
-      setRemoveSkillPreview(await skillApiV2.previewRemoveSkillFromPack(packId, skillId))
-    } catch (e) {
-      state.setError(String(e))
+      const { manifest, sourceUrl } = await skillApiV2.readPackManifestLink(url)
+      await preparePackReview(manifest, runtime, sourceUrl)
+      if (isPackRuntimeCurrent(runtime)) setPackLink(null)
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) setPackLink({ ...packLink, loading: false, error: String(error) })
+    }
+  }
+
+  const refreshPackComparison = async () => {
+    if (!packImport || packImportBusy) return
+    const { manifest, runtime } = packImport
+    if (!isPackRuntimeCurrent(runtime)) {
+      setPackImport(null)
+      return
+    }
+    setBusy(true)
+    setPackImportError(null)
+    try {
+      const reviewed = await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
+      if (isPackRuntimeCurrent(runtime)) setPackImport({ ...packImport, reviewed, acceptLocalCopies: false })
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) setPackImportError(String(error))
     } finally {
       setBusy(false)
     }
   }
 
-  const openRevoke = async (packId: string, agentId: string) => {
-    setBusy(true)
+  const restorePackMember = async (skillId: string) => {
+    if (packImportBusy || !packImport || !packImport.manifest.skillSources?.[skillId]
+      || packMemberStatuses.get(skillId) !== 'missing') return
+    const { manifest, runtime } = packImport
+    if (!isPackRuntimeCurrent(runtime)) return
+    const operation = { runtime, skillId }
+    setRestoringMember(operation)
+    setPackImportError(null)
     try {
-      setRevokePreview(await skillApiV2.previewRemovePackFromAgent(packId, agentId))
-    } catch (e) {
-      state.setError(String(e))
+      await skillApiV2.restorePackMember(manifest, skillId, runtime.selectedEnvironmentId)
+      if (!isPackRuntimeCurrent(runtime)) return
+      const reviewed = await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
+      if (isPackRuntimeCurrent(runtime)) {
+        setPackImport({ ...packImport, reviewed, acceptLocalCopies: false })
+        await state.loadOverview(true)
+      }
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) setPackImportError(String(error))
+    } finally {
+      setRestoringMember((current) => current === operation ? null : current)
+    }
+  }
+
+  const importPackManifest = async () => {
+    if (packImportBusy || !packImport || packImportBlocked) return
+    const { manifest, runtime, reviewed, acceptLocalCopies } = packImport
+    if (!isPackRuntimeCurrent(runtime)) {
+      setPackImport(null)
+      return
+    }
+    setBusy(true)
+    setPackImportError(null)
+    try {
+      const pack = reviewed
+        ? await skillApiV2.importReviewedPack(manifest, reviewed, acceptLocalCopies, runtime.selectedEnvironmentId)
+        : await skillApiV2.upsertPack({
+            id: '',
+            name: manifest.name,
+            description: manifest.description,
+            tags: manifest.tags,
+            skillIds: manifest.skillIds,
+          }, { deferSync: true })
+      if (!isPackRuntimeCurrent(runtime)) return
+      setPackImport(null)
+      setPackQuery('')
+      useSkillStoreV2.setState({ selectedPackId: pack.id, selectedPackDetail: pack })
+      setSyncNotice(t('skills.packManifest.imported', { name: pack.name }))
+      await state.loadOverview(true)
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) setPackImportError(String(error))
     } finally {
       setBusy(false)
     }
   }
 
-  const syncPack = async (packId: string, agentIds: string[] = [], options: SyncPackOptions = {}) => {
+  const exportPackManifest = async (pack: SkillPackDetail, includeSources = false) => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    if (busy || !isPackRuntimeCurrent(runtime)) return
+    setBusy(true)
+    state.setError(null)
+    setSyncNotice(null)
+    try {
+      const path = await save({
+        defaultPath: 'skill-pack.agentbro-pack.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      })
+      if (!path || !isPackRuntimeCurrent(runtime)) return
+      const skillIds = pack.members.map((member) => member.skillId)
+      const fingerprints = includeSources
+        ? await skillApiV2.getPackFingerprints(skillIds, runtime.selectedEnvironmentId, true)
+        : await skillApiV2.getPackFingerprints(skillIds, runtime.selectedEnvironmentId)
+      if (!isPackRuntimeCurrent(runtime)) return
+      const sources = includeSources ? Object.fromEntries(fingerprints.flatMap(({ skillId, source }) =>
+        source ? [[skillId, source]] : [],
+      )) : {}
+      const hasSources = Object.keys(sources).length > 0
+      await skillApiV2.writePackManifest(path, {
+        format: 'agentbro-skill-pack',
+        version: hasSources ? 3 : 2,
+        name: pack.name,
+        description: pack.description,
+        tags: pack.tags,
+        skillIds,
+        skillFingerprints: Object.fromEntries(fingerprints.flatMap(({ skillId, fingerprint }) =>
+          fingerprint ? [[skillId, fingerprint]] : [],
+        )),
+        ...(hasSources ? { skillSources: sources } : {}),
+      })
+      if (isPackRuntimeCurrent(runtime)) {
+        setSyncNotice(t(includeSources && !hasSources ? 'skills.packManifest.exportedWithoutSources' : 'skills.packManifest.exported'))
+      }
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) state.setError(String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const refreshSelectedPack = async (packId: string, runtime: PackRuntime) => {
+    if (!isPackRuntimeCurrent(runtime)) return
+    await state.loadOverview(true)
+    if (isPackRuntimeCurrent(runtime) && useSkillStoreV2.getState().selectedPackId === packId) {
+      await state.selectPack(packId)
+    }
+  }
+
+  const reviewPackRemoval = async (packId: string, load: (environmentId: string) => Promise<PackRemoval>) => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    if (busy || !isPackRuntimeCurrent(runtime)) return
+    const operation = { runtime }
+    const isReviewCurrent = () => isPackRuntimeCurrent(runtime) && useSkillStoreV2.getState().selectedPackId === packId
+    setRemovalOperation(operation)
+    try {
+      const removal = await load(runtime.selectedEnvironmentId)
+      if (isReviewCurrent()) setRemovalReview({ ...removal, runtime })
+    } catch (error) {
+      if (isReviewCurrent()) state.setError(String(error))
+    } finally {
+      setRemovalOperation((current) => current === operation ? null : current)
+    }
+  }
+
+  const executePackRemoval = async (review: PackRemovalReview, alsoRemoveTargets = false) => {
+    const { runtime } = review
+    const { packId } = review.preview
+    const environmentId = runtime.selectedEnvironmentId
+    const isSelected = () => useSkillStoreV2.getState().selectedPackId === packId
+    if (busy || !isPackRuntimeCurrent(runtime) || !isSelected()) return
+    const operation = { runtime }
+    setRemovalOperation(operation)
+    try {
+      switch (review.kind) {
+        case 'delete':
+          await skillApiV2.deletePack(packId, environmentId)
+          break
+        case 'member':
+          await skillApiV2.removeSkillFromPack(packId, review.preview.skillId, alsoRemoveTargets, environmentId)
+          break
+        case 'revoke':
+          await skillApiV2.removePackFromAgent(packId, review.preview.agentId, environmentId)
+          break
+      }
+      if (!isPackRuntimeCurrent(runtime)) return
+      setRemovalReview((current) => current === review ? null : current)
+      if (review.kind === 'delete') {
+        await state.loadOverview(true)
+        if (isPackRuntimeCurrent(runtime) && isSelected()) await state.selectPack(null)
+        return
+      }
+      await refreshSelectedPack(packId, runtime)
+      if (review.kind === 'revoke' && isPackRuntimeCurrent(runtime)
+        && useSkillStoreV2.getState().selectedAgentId === review.preview.agentId) {
+        await state.loadAgentDetail(review.preview.agentId, true)
+      }
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime) && isSelected()) state.setError(String(error))
+    } finally {
+      setRemovalOperation((current) => current === operation ? null : current)
+    }
+  }
+
+  const syncPack = async (
+    packId: string,
+    agentIds: string[] = [],
+    options: SyncPackOptions = {},
+    runtime: PackRuntime = useRuntimeEnvironmentStore.getState(),
+  ) => {
+    if (!isPackRuntimeCurrent(runtime)) return
+    const request = { runtime }
+    const revision = ++syncRequest.current
+    const isLatest = () => revision === syncRequest.current && isPackRuntimeCurrent(runtime)
+    const isSelected = () => useSkillStoreV2.getState().selectedPackId === packId
     if (options.background) {
-      setSyncNotice(`“${options.packName || '技能包'}”已保存，正在后台同步到 Agent…`)
+      setSyncNotice(`“${options.packName || '技能包'}”已保存，正在后台同步到 Agent…`, packId)
     } else {
-      setBusy(true)
+      setForegroundSync(request)
       setSyncNotice(null)
     }
     try {
-      const result = await skillApiV2.syncPackToAgents(packId, agentIds)
+      const result = await skillApiV2.syncPackToAgents(packId, agentIds, runtime.selectedEnvironmentId)
+      if (!isLatest()) {
+        await refreshSelectedPack(packId, runtime)
+        return
+      }
       const failedAgents = result.agents.filter((agent) => agent.status === 'failed')
-      if (failedAgents.length > 0) {
+      if (failedAgents.length > 0 && isSelected()) {
         const targetAgents = failedAgents.map((agent) => agent.agentId)
         const requestedMode = state.settings?.defaultDistributeMode || 'link'
-        const preview = await skillApiV2.previewApplyPack(packId, targetAgents, requestedMode)
-        if (preview.blockers.length > 0) {
-          const currentPack = useSkillStoreV2.getState().selectedPackDetail
-          const pack = currentPack?.id === packId ? currentPack : await skillApiV2.getPackDetail(packId)
-          setSyncConflict({ pack, targetAgents, requestedMode, preview })
-          setSyncNotice('同步遇到需要处理的冲突，请选择处理方式。')
-          await state.loadOverview(true)
-          await state.selectPack(packId)
+        const preview = await skillApiV2.previewApplyPack(packId, targetAgents, requestedMode, runtime.selectedEnvironmentId)
+        if (!isLatest()) {
+          await refreshSelectedPack(packId, runtime)
+          return
+        }
+        if (preview.blockers.length > 0 && isSelected()) {
+          setSyncConflict({ packId, runtime, targetAgents, requestedMode, preview })
+          setSyncNotice('同步遇到需要处理的冲突，请选择处理方式。', packId)
+          await refreshSelectedPack(packId, runtime)
           return
         }
       }
@@ -216,14 +509,15 @@ export function SkillPackPage() {
           : options.background
             ? `“${options.packName || '技能包'}”已保存，并同步到 ${result.agents.length} 个 Agent。`
           : t('skills.packSyncDoneNotice', { count: result.agents.length, defaultValue: '已同步 {{count}} 个 Agent。' }),
+        packId,
       )
-      await state.loadOverview(true)
-      await state.selectPack(packId)
+      await refreshSelectedPack(packId, runtime)
     } catch (e) {
-      state.setError(String(e))
-      if (options.background) setSyncNotice(`“${options.packName || '技能包'}”已保存，但后台同步失败。`)
+      if (!isLatest()) return
+      if (isSelected()) state.setError(String(e))
+      if (options.background) setSyncNotice(`“${options.packName || '技能包'}”已保存，但后台同步失败。`, packId)
     } finally {
-      if (!options.background) setBusy(false)
+      if (!options.background) setForegroundSync((current) => current === request ? null : current)
     }
   }
 
@@ -244,6 +538,12 @@ export function SkillPackPage() {
         </div>
         <div className="sm2__tabs">
           <button className="sm2__btn sm2__btn--primary" onClick={startCreate}>＋ 新建技能包</button>
+          <button className="sm2__btn" disabled={busy || state.loading} onClick={reviewPackManifest}>
+            {t('skills.packManifest.import')}
+          </button>
+          <button className="sm2__btn" disabled={busy || state.loading} onClick={startPackLinkReview}>
+            {t('skills.packManifest.importFromLink')}
+          </button>
           <button className="sm2__btn" onClick={() => state.loadOverview(true)} disabled={state.loading || busy}>
             {state.loading ? '刷新中…' : '刷新'}
           </button>
@@ -285,7 +585,9 @@ export function SkillPackPage() {
                   pack={pack}
                   active={state.selectedPackId === pack.id && !builderMode}
                   onClick={() => {
-                    setBuilderMode(null)
+                    setBuilder(null)
+                    setSyncConflict(null)
+                    setRemovalReview(null)
                     state.selectPack(pack.id)
                   }}
                 />
@@ -304,11 +606,18 @@ export function SkillPackPage() {
               busy={busy}
               onApply={() => setApplyFor(detail)}
               onEdit={startEdit}
+              onExport={(withSources) => exportPackManifest(detail, withSources)}
               onDuplicate={startDuplicate}
-              onDelete={() => openDelete(detail.id)}
-              onRemoveSkill={(skillId) => openRemoveSkill(detail.id, skillId)}
+              onDelete={() => reviewPackRemoval(detail.id, async (environmentId) => ({
+                kind: 'delete', preview: await skillApiV2.previewDeletePack(detail.id, environmentId),
+              }))}
+              onRemoveSkill={(skillId) => reviewPackRemoval(detail.id, async (environmentId) => ({
+                kind: 'member', preview: await skillApiV2.previewRemoveSkillFromPack(detail.id, skillId, environmentId),
+              }))}
               onOpenSkill={setDetailSkillId}
-              onRevoke={(agentId) => openRevoke(detail.id, agentId)}
+              onRevoke={(agentId) => reviewPackRemoval(detail.id, async (environmentId) => ({
+                kind: 'revoke', preview: await skillApiV2.previewRemovePackFromAgent(detail.id, agentId, environmentId),
+              }))}
               onSync={(agentIds) => syncPack(detail.id, agentIds)}
               membershipsBySkillId={packMemberships.membershipsBySkillId}
               membershipsLoading={packMemberships.loading}
@@ -323,122 +632,183 @@ export function SkillPackPage() {
         onClose={() => setDetailSkillId(null)}
       />
 
-      {builderMode && (
+      {packLink && (
+        <PreviewDialog
+          title={t('skills.packManifest.importFromLink')}
+          confirmLabel={t('skills.packManifest.reviewLink')}
+          cancelLabel={t('settings.cancel')}
+          busyLabel={t('skills.packManifest.readingLink')}
+          busy={packLink.loading}
+          disabled={!packLink.url.trim()}
+          onConfirm={reviewPackLink}
+          onCancel={() => setPackLink(null)}
+        >
+          <p id="sm2-pack-link-hint">{t('skills.packManifest.linkHint')}</p>
+          <div className="sm2__field">
+            <label htmlFor="sm2-pack-link">{t('skills.packManifest.link')}</label>
+            <input
+              id="sm2-pack-link"
+              type="url"
+              aria-describedby="sm2-pack-link-hint"
+              autoFocus
+              value={packLink.url}
+              disabled={packLink.loading}
+              onChange={(event) => setPackLink({ ...packLink, url: event.target.value, error: null })}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.nativeEvent.isComposing) void reviewPackLink()
+              }}
+            />
+          </div>
+          {packLink.error && <div className="sm2__error" role="alert">{packLink.error}</div>}
+        </PreviewDialog>
+      )}
+
+      {packImport && (
+        <PreviewDialog
+          title={t('skills.packManifest.import')}
+          confirmLabel={t('skills.packManifest.create')}
+          cancelLabel={t('settings.cancel')}
+          busyLabel={t(activeRestore ? 'skills.packManifest.restoring' : 'skills.packManifest.creating')}
+          busy={packImportBusy}
+          disabled={packImportBlocked}
+          onConfirm={importPackManifest}
+          onCancel={() => { if (!packImportBusy) setPackImport(null) }}
+        >
+          <h4>{packImport.manifest.name}</h4>
+          {packImport.sourceUrl && (
+            <p className="sm2__pack-manifest-url">{t('skills.packManifest.linkSource')} <code>{packImport.sourceUrl}</code></p>
+          )}
+          {packImport.manifest.description && <p>{packImport.manifest.description}</p>}
+          {packImport.manifest.tags.length > 0 && <p>{packImport.manifest.tags.join(', ')}</p>}
+          <p>{t(packImport.manifest.version >= 3 ? 'skills.packManifest.pinnedReview' : 'skills.packManifest.review')}</p>
+          {hasMissingPackSkills && <div className="sm2__notice sm2__notice--warn">{t('skills.packManifest.missingHelp')}</div>}
+          {hasUnavailablePackSkills && <div className="sm2__notice sm2__notice--warn">{t('skills.packManifest.unavailableHelp')}</div>}
+          {packImport.manifest.skillIds.length ? (
+            <ul className="sm2__pack-manifest-members">
+              {packImport.manifest.skillIds.map((id) => {
+                const status = packMemberStatuses.get(id)
+                const source = status === 'missing' ? packImport.manifest.skillSources?.[id] : undefined
+                return (
+                  <li key={id} className="sm2__change">
+                    <code>{id}</code>
+                    {status && (
+                      <span className={status === 'match' ? 'sm2__tag' : 'sm2__tag sm2__tag--warn'}>
+                        {t(`skills.packManifest.${status}`)}
+                      </span>
+                    )}
+                    {source && (
+                      <div className="sm2__pack-manifest-source">
+                        <code title={source.commit}>{source.repository}@{source.commit.slice(0, 12)} · {source.skillPath}</code>
+                        <button
+                          className="sm2__btn"
+                          type="button"
+                          aria-label={t('skills.packManifest.restoreMember', { name: id })}
+                          disabled={packImportBusy}
+                          onClick={() => void restorePackMember(id)}
+                        >
+                          {t(activeRestore?.skillId === id ? 'skills.packManifest.restoring' : 'skills.packManifest.restore')}
+                        </button>
+                      </div>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          ) : <p>{t('skills.packManifest.empty')}</p>}
+          {needsLocalCopyConfirmation && (
+            <label className="sm2__checkbox-row">
+              <input
+                type="checkbox"
+                checked={packImport.acceptLocalCopies}
+                disabled={packImportBusy || hasMissingPackSkills || hasUnavailablePackSkills}
+                onChange={(event) => setPackImport({ ...packImport, acceptLocalCopies: event.target.checked })}
+              />
+              {t('skills.packManifest.useLocalCopies')}
+            </label>
+          )}
+          {packImport.reviewed && (
+            <button className="sm2__btn" type="button" disabled={packImportBusy} onClick={refreshPackComparison}>
+              {t('skills.packManifest.recheck')}
+            </button>
+          )}
+          {packImportError && <div className="sm2__error" role="alert">{packImportError}</div>}
+        </PreviewDialog>
+      )}
+
+      {builder && (
         <PackBuilderDialog
-          mode={builderMode}
-          existing={builderMode === 'create' ? null : detail}
+          mode={builder.mode}
+          runtime={builder.runtime}
+          existing={builder.mode === 'create' ? null : detail}
           membershipsBySkillId={packMemberships.membershipsBySkillId}
           membershipsLoading={packMemberships.loading}
-          onCancel={() => setBuilderMode(null)}
+          onCancel={() => setBuilder(null)}
           onSaved={(saved, options) => {
-            setBuilderMode(null)
+            if (!isPackRuntimeCurrent(builder.runtime)) return
+            setBuilder((current) => current === builder ? null : current)
             useSkillStoreV2.setState({
               selectedPackId: saved.id,
               selectedPackDetail: saved,
             })
             if ((options.forceSync || state.settings?.autoSyncSkillPacks !== false) && packNeedsSync(saved)) {
-              void syncPack(saved.id, [], { background: true, packName: saved.name })
+              void syncPack(saved.id, [], { background: true, packName: saved.name }, builder.runtime)
               return
             }
-            setSyncNotice(`“${saved.name}”已保存。`)
-            void (async () => {
-              await state.loadOverview(true)
-              await state.selectPack(saved.id)
-            })()
+            setSyncNotice(`“${saved.name}”已保存。`, saved.id)
+            void refreshSelectedPack(saved.id, builder.runtime)
           }}
         />
       )}
 
       {applyFor && (
         <ApplyPackDialog
+          key={applyFor.id}
           pack={applyFor}
           agents={state.agents}
           defaultMode={state.settings?.defaultDistributeMode || 'link'}
           onClose={() => setApplyFor(null)}
           onDone={async () => {
             const packId = applyFor.id
+            const runtime = useRuntimeEnvironmentStore.getState()
             setApplyFor(null)
             await state.loadOverview(true)
-            await state.selectPack(packId)
+            if (isPackRuntimeCurrent(runtime)) await state.selectPack(packId)
           }}
         />
       )}
-      {deletePreview && (
+      {removalReview?.kind === 'delete' && (
         <DeletePackDialog
-          preview={deletePreview}
+          preview={removalReview.preview}
           busy={busy}
-          onClose={() => setDeletePreview(null)}
-          onDelete={async () => {
-            setBusy(true)
-            try {
-              await skillApiV2.deletePack(deletePreview.packId)
-              setDeletePreview(null)
-              await state.selectPack(null)
-              await state.loadOverview(true)
-            } catch (e) {
-              state.setError(String(e))
-            } finally {
-              setBusy(false)
-            }
-          }}
+          onClose={() => setRemovalReview(null)}
+          onDelete={() => executePackRemoval(removalReview)}
         />
       )}
-      {removeSkillPreview && (
+      {removalReview?.kind === 'member' && (
         <RemoveSkillFromPackDialog
-          preview={removeSkillPreview}
+          preview={removalReview.preview}
           busy={busy}
-          onClose={() => setRemoveSkillPreview(null)}
-          onExecute={async (alsoRemoveTargets) => {
-            setBusy(true)
-            try {
-              await skillApiV2.removeSkillFromPack(removeSkillPreview.packId, removeSkillPreview.skillId, alsoRemoveTargets)
-              const packId = removeSkillPreview.packId
-              setRemoveSkillPreview(null)
-              await state.selectPack(packId)
-              await state.loadOverview(true)
-            } catch (e) {
-              state.setError(String(e))
-            } finally {
-              setBusy(false)
-            }
-          }}
+          onClose={() => setRemovalReview(null)}
+          onExecute={(alsoRemoveTargets) => executePackRemoval(removalReview, alsoRemoveTargets)}
         />
       )}
-      {revokePreview && (
+      {removalReview?.kind === 'revoke' && (
         <RevokePackDialog
-          preview={revokePreview}
+          preview={removalReview.preview}
           busy={busy}
-          onClose={() => setRevokePreview(null)}
-          onExecute={async () => {
-            setBusy(true)
-            try {
-              await skillApiV2.removePackFromAgent(revokePreview.packId, revokePreview.agentId)
-              const packId = revokePreview.packId
-              const agentId = revokePreview.agentId
-              setRevokePreview(null)
-              await state.selectPack(packId)
-              await state.loadOverview(true)
-              if (useSkillStoreV2.getState().selectedAgentId === agentId) {
-                await state.loadAgentDetail(agentId, true)
-              }
-            } catch (e) {
-              state.setError(String(e))
-            } finally {
-              setBusy(false)
-            }
-          }}
+          onClose={() => setRemovalReview(null)}
+          onExecute={() => executePackRemoval(removalReview)}
         />
       )}
       {syncConflict && (
         <PackSyncConflictDialog
-          key={`${syncConflict.pack.id}:${syncConflict.targetAgents.join(',')}`}
+          key={`${syncConflict.packId}:${syncConflict.targetAgents.join(',')}`}
           conflict={syncConflict}
           onClose={() => setSyncConflict(null)}
           onDone={async () => {
-            const packId = syncConflict.pack.id
-            setSyncConflict(null)
-            await state.loadOverview(true)
-            await state.selectPack(packId)
+            setSyncConflict((current) => current === syncConflict ? null : current)
+            setSyncNotice(null)
+            await refreshSelectedPack(syncConflict.packId, syncConflict.runtime)
           }}
         />
       )}
@@ -448,6 +818,7 @@ export function SkillPackPage() {
 
 function PackBuilderDialog({
   mode,
+  runtime,
   existing,
   membershipsBySkillId,
   membershipsLoading,
@@ -455,6 +826,7 @@ function PackBuilderDialog({
   onSaved,
 }: {
   mode: BuilderMode
+  runtime: PackRuntime
   existing: SkillPackDetail | null
   membershipsBySkillId: SkillPackMembershipsBySkillId
   membershipsLoading: boolean
@@ -484,6 +856,7 @@ function PackBuilderDialog({
       >
         <PackBuilderPanel
           mode={mode}
+          runtime={runtime}
           existing={existing}
           membershipsBySkillId={membershipsBySkillId}
           membershipsLoading={membershipsLoading}
@@ -567,6 +940,7 @@ function PackDetail({
   membershipsLoading,
   onApply,
   onEdit,
+  onExport,
   onDuplicate,
   onDelete,
   onRemoveSkill,
@@ -580,6 +954,7 @@ function PackDetail({
   membershipsLoading: boolean
   onApply: () => void
   onEdit: () => void
+  onExport: (withSources: boolean) => void
   onDuplicate: () => void
   onDelete: () => void
   onRemoveSkill: (skillId: string) => void
@@ -587,6 +962,7 @@ function PackDetail({
   onRevoke: (agentId: string) => void
   onSync: (agentIds?: string[]) => void
 }) {
+  const { t } = useTranslation()
   const missing = detail.members.filter((member) => member.missing)
   const isDefault = detail.id === DEFAULT_SKILL_PACK_ID
   const syncStatus = detail.syncStatus || 'synced'
@@ -628,15 +1004,19 @@ function PackDetail({
               {busy ? '同步中…' : '同步全部'}
             </button>
           )}
-          {!isDefault && (
-            <details className="sm2__pack-more">
-              <summary aria-label="更多操作">•••</summary>
-              <div role="menu">
-                <button role="menuitem" onClick={onDuplicate} disabled={busy}>复制技能包</button>
-                <button role="menuitem" className="sm2__pack-more-danger" onClick={onDelete} disabled={busy}>删除技能包</button>
-              </div>
-            </details>
-          )}
+          <details className="sm2__pack-more">
+            <summary aria-label="更多操作">•••</summary>
+            <div role="menu">
+              <button role="menuitem" onClick={() => onExport(false)} disabled={busy}>{t('skills.packManifest.export')}</button>
+              <button role="menuitem" onClick={() => onExport(true)} disabled={busy}>{t('skills.packManifest.exportWithSources')}</button>
+              {!isDefault && (
+                <>
+                  <button role="menuitem" onClick={onDuplicate} disabled={busy}>复制技能包</button>
+                  <button role="menuitem" className="sm2__pack-more-danger" onClick={onDelete} disabled={busy}>删除技能包</button>
+                </>
+              )}
+            </div>
+          </details>
         </div>
       </header>
 
@@ -812,6 +1192,7 @@ function packSyncStatusLabel(status: string) {
 
 function PackBuilderPanel({
   mode,
+  runtime,
   existing,
   membershipsBySkillId,
   membershipsLoading,
@@ -819,6 +1200,7 @@ function PackBuilderPanel({
   onSaved,
 }: {
   mode: BuilderMode
+  runtime: PackRuntime
   existing: SkillPackDetail | null
   membershipsBySkillId: SkillPackMembershipsBySkillId
   membershipsLoading: boolean
@@ -887,6 +1269,7 @@ function PackBuilderPanel({
   }
 
   const save = async () => {
+    if (!isPackRuntimeCurrent(runtime)) return
     if (!name.trim()) {
       setError('技能包名称必填。')
       return
@@ -900,13 +1283,13 @@ function PackBuilderPanel({
         {
           id: mode === 'edit' ? existing?.id || '' : '',
           name: name.trim(),
-          description: '',
-          tags: [],
+          description: existing?.description ?? '',
+          tags: existing?.tags ?? [],
           skillIds,
         },
-        { deferSync: true },
+        { deferSync: true, environmentId: runtime.selectedEnvironmentId },
       )
-      onSaved(saved, { forceSync: removedExistingMember })
+      if (isPackRuntimeCurrent(runtime)) onSaved(saved, { forceSync: removedExistingMember })
     } catch (e) {
       setError(String(e))
     } finally {
@@ -1249,6 +1632,9 @@ function PackSyncConflictDialog({
   const unresolvedBlockers = preview.blockers.filter((blocker) => !blockerDecisions[blockerKey(blocker)]).length
 
   const execute = async () => {
+    const isCurrent = () => isPackRuntimeCurrent(conflict.runtime)
+      && useSkillStoreV2.getState().selectedPackId === conflict.packId
+    if (!isCurrent()) return
     setBusy(true)
     setError(null)
     try {
@@ -1259,11 +1645,14 @@ function PackSyncConflictDialog({
         })
         .filter((item): item is DistributionBlockerDecision => Boolean(item))
       const result = await skillApiV2.executeApplyPack(
-        conflict.pack.id,
+        conflict.packId,
         conflict.targetAgents,
         conflict.requestedMode,
         blockerDecisionsPayload,
+        preview,
+        conflict.runtime.selectedEnvironmentId,
       )
+      if (!isCurrent()) return
       if (result.blockers.length > 0) {
         setPreview(result)
         setBlockerDecisions({})
@@ -1359,6 +1748,18 @@ function distributionBlockerMessage(blocker: ConflictBlocker) {
   return blocker.reason
 }
 
+type PackApplicationReview = {
+  preview: DistributionPreview
+  runtime: PackRuntime
+}
+
+function isPackRuntimeCurrent(runtime: PackRuntime) {
+  const current = useRuntimeEnvironmentStore.getState()
+  return current.selectedEnvironmentId === runtime.selectedEnvironmentId
+    && current.selectionRevision === runtime.selectionRevision
+    && useSkillStoreV2.getState().runtimeEnvironmentId === runtime.selectedEnvironmentId
+}
+
 function ApplyPackDialog({
   pack,
   agents,
@@ -1370,15 +1771,17 @@ function ApplyPackDialog({
   agents: { id: string; displayName: string; iconKey: string; installed: boolean }[]
   defaultMode: 'link' | 'copy'
   onClose: () => void
-  onDone: () => void
+  onDone: () => void | Promise<void>
 }) {
   const { t } = useTranslation()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [mode, setMode] = useState<'link' | 'copy'>(defaultMode)
-  const [preview, setPreview] = useState<DistributionPreview | null>(null)
+  const [review, setReview] = useState<PackApplicationReview | null>(null)
   const [blockerDecisions, setBlockerDecisions] = useState<Record<string, BlockerDecision>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const previewRequest = useRef(0)
+  const preview = review?.preview
 
   const installedAgents = agents.filter((agent) => agent.installed && agent.id !== SHARED_SKILLS_AGENT_ID)
   const changesByAction = useMemo(() => {
@@ -1392,48 +1795,74 @@ function ApplyPackDialog({
     return grouped
   }, [preview])
 
-  const toggle = (id: string) =>
+  const resetPreview = () => {
+    previewRequest.current += 1
+    setReview(null)
+    setBlockerDecisions({})
+    setBusy(false)
+    setError(null)
+  }
+
+  const toggle = (id: string) => {
+    resetPreview()
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
-      setPreview(null)
-      setBlockerDecisions({})
       return next
     })
+  }
 
   const runPreview = async () => {
+    if (busy || !selected.size) return
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    const runtime = { selectedEnvironmentId, selectionRevision }
+    if (!isPackRuntimeCurrent(runtime)) return
+    const requestId = ++previewRequest.current
+    const isCurrent = () => requestId === previewRequest.current && isPackRuntimeCurrent(runtime)
     setBusy(true)
     setError(null)
     try {
-      setPreview(await skillApiV2.previewApplyPack(pack.id, Array.from(selected), mode))
-      setBlockerDecisions({})
+      const result = await skillApiV2.previewApplyPack(pack.id, Array.from(selected), mode)
+      if (isCurrent()) setReview({ preview: result, runtime })
     } catch (e) {
-      setError(String(e))
+      if (isCurrent()) setError(String(e))
     } finally {
-      setBusy(false)
+      if (requestId === previewRequest.current) setBusy(false)
     }
   }
 
   const execute = async () => {
+    if (!review || busy) return
+    const { preview, runtime } = review
+    if (!isPackRuntimeCurrent(runtime)) {
+      resetPreview()
+      return
+    }
     setBusy(true)
     setError(null)
     try {
-      const blockerDecisionsPayload = preview?.blockers
+      const blockerDecisionsPayload = preview.blockers
         .map((blocker) => {
           const action = blockerDecisions[blockerKey(blocker)]
           return action ? { skillId: blocker.skillId, agentId: blocker.agentId, action } : null
         })
-        .filter((item): item is DistributionBlockerDecision => Boolean(item)) ?? []
-      const result = await skillApiV2.executeApplyPack(pack.id, Array.from(selected), mode, blockerDecisionsPayload)
+        .filter((item): item is DistributionBlockerDecision => Boolean(item))
+      const result = await skillApiV2.executeApplyPack(
+        pack.id, preview.targetAgents, preview.requestedMode, blockerDecisionsPayload, preview,
+      )
+      if (!isPackRuntimeCurrent(runtime)) {
+        resetPreview()
+        return
+      }
       if (result.blockers.length > 0) {
-        setPreview(result)
+        setReview({ preview: result, runtime })
         setBlockerDecisions({})
         return
       }
-      onDone()
+      await onDone()
     } catch (e) {
-      setError(String(e))
+      if (isPackRuntimeCurrent(runtime)) setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -1454,7 +1883,10 @@ function ApplyPackDialog({
           <div className="sm2__apply-grid">
             <div className="sm2__field sm2__field--select">
               <label htmlFor="sm2-pack-apply-mode">分发方式</label>
-              <select id="sm2-pack-apply-mode" value={mode} onChange={(e) => setMode(e.target.value as 'link' | 'copy')}>
+              <select id="sm2-pack-apply-mode" value={mode} onChange={(event) => {
+                resetPreview()
+                setMode(event.target.value as 'link' | 'copy')
+              }}>
                 <option value="link">{skillModeLabel(t, 'link')}</option>
                 <option value="copy">{skillModeLabel(t, 'copy')}</option>
               </select>
@@ -1497,8 +1929,12 @@ function ApplyPackDialog({
       busy={busy}
       disabled={unresolvedBlockers > 0}
       onConfirm={execute}
-      onCancel={() => setPreview(null)}
+      onCancel={() => { if (!busy) resetPreview() }}
     >
+      <div className="sm2__detail-meta">
+        {preview.targetAgents.map((id) => agents.find((agent) => agent.id === id)?.displayName ?? id).join('、')}
+        {' · '}{skillModeLabel(t, preview.requestedMode)}
+      </div>
       <div className="sm2__preview-stats">
         <PackMetric label="新增 target" value={changesByAction.create} />
         <PackMetric label="复用 target" value={changesByAction.reuse} />

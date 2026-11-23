@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HoverList } from '../components/notch/HoverList'
 import { useConfigStore } from '../stores/configStore'
@@ -56,6 +57,12 @@ function session(overrides: Partial<SessionState> = {}): SessionState {
   }
 }
 
+function renderInlineQuestion(pendingQuestion: NonNullable<SessionState['pendingQuestion']>, onSessionClick = vi.fn()) {
+  const pending = session({ phase: 'waiting_input', pendingQuestion })
+  useSessionStore.setState({ sessions: { s1: pending }, sessionList: [pending], questionReplies: new Map() })
+  return render(<HoverList sessions={[pending]} onSessionClick={onSessionClick} />)
+}
+
 describe('HoverList interactions', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -109,6 +116,32 @@ describe('HoverList interactions', () => {
     fireEvent.mouseDown(screen.getByText('agentbro · Fix island interactions'), { button: 0 })
 
     expect(onSessionClick).toHaveBeenCalledWith('s1')
+  })
+
+  it('exposes the session opener and inline actions as independent controls', async () => {
+    const onSessionClick = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <HoverList
+        sessions={[session({ phase: 'waiting_approval', pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' } })]}
+        onSessionClick={onSessionClick}
+        onJumpToTerminal={vi.fn()}
+      />,
+    )
+
+    const title = 'agentbro · Fix island interactions'
+    const open = screen.getByRole('button', { name: title })
+    const group = screen.getByRole('group', { name: title })
+    expect(open.tagName).toBe('BUTTON')
+    const mute = within(group).getByRole('button', { name: 'Mute notifications (30 min)' })
+    const jump = within(group).getByRole('button', { name: 'notch.jumpToTerminal' })
+    const deny = within(group).getByRole('button', { name: '拒绝' })
+    for (const action of [mute, jump, deny]) expect(open).not.toContainElement(action)
+
+    await user.tab()
+    expect(open).toHaveFocus()
+    await user.click(open)
+    expect(onSessionClick).toHaveBeenCalledExactlyOnceWith('s1')
   })
 
   it('ignores right-click without opening the session', () => {
@@ -649,6 +682,45 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
+  it('opens a focused row with Enter or Space without jumping to the terminal', async () => {
+    const onSessionClick = vi.fn()
+    const onJumpToTerminal = vi.fn()
+    const user = userEvent.setup()
+    render(<HoverList sessions={[session()]} onSessionClick={onSessionClick} onJumpToTerminal={onJumpToTerminal} />)
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+
+    screen.getByRole('button', { name: /Fix island interactions/ }).focus()
+    await user.keyboard('{Enter}')
+    expect(onSessionClick).toHaveBeenCalledExactlyOnceWith('s1')
+    await user.keyboard(' ')
+    expect(onSessionClick).toHaveBeenCalledTimes(2)
+    expect(onJumpToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('keeps Enter and Space on the focused inline permission control', async () => {
+    const onSessionClick = vi.fn()
+    const onJumpToTerminal = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <HoverList
+        sessions={[session({ phase: 'waiting_approval', pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' } })]}
+        onSessionClick={onSessionClick}
+        onJumpToTerminal={onJumpToTerminal}
+      />,
+    )
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+
+    screen.getByRole('button', { name: '拒绝' }).focus()
+    await user.keyboard('{Enter}')
+    screen.getByRole('button', { name: '允许一次' }).focus()
+    await user.keyboard(' ')
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', false, undefined, undefined)
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, undefined, undefined)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(2)
+    expect(onSessionClick).not.toHaveBeenCalled()
+    expect(onJumpToTerminal).not.toHaveBeenCalled()
+  })
+
   it('routes inline permission actions without opening the row', () => {
     const onSessionClick = vi.fn()
     render(
@@ -668,10 +740,10 @@ describe('HoverList interactions', () => {
     fireEvent.click(within(permissionCard).getByRole('button', { name: '自动批准' }))
     fireEvent.click(within(permissionCard).getByRole('button', { name: '拒绝' }))
 
-    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', true)
-    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, true)
-    expect(tauriMocks.respondAutoApprove).toHaveBeenCalledWith('s1')
-    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(3, 's1', false)
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', true, undefined, undefined)
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, true, undefined)
+    expect(tauriMocks.respondAutoApprove).toHaveBeenCalledWith('s1', undefined)
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(3, 's1', false, undefined, undefined)
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
@@ -986,20 +1058,13 @@ describe('HoverList interactions', () => {
 
   it('routes inline question options without opening the row', async () => {
     const onSessionClick = vi.fn()
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_input',
-          pendingQuestion: { question: 'Pick a target', options: ['Preview', 'Ship'] },
-        })]}
-        onSessionClick={onSessionClick}
-      />,
-    )
+    renderInlineQuestion({ question: 'Pick a target', options: ['Preview', 'Ship'] }, onSessionClick)
 
     fireEvent.mouseDown(screen.getByText('Ship').closest('button')!)
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Ship')
     expect(onSessionClick).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('renders inline question options as compact question cards with descriptions', () => {
@@ -1023,52 +1088,37 @@ describe('HoverList interactions', () => {
     expect(screen.getByText('Expanded detail')).toHaveClass('hover-list__inline-question-opt-desc')
   })
 
-  it('routes inline multi-select question answers as joined text', () => {
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_input',
-          pendingQuestion: {
-            question: 'Pick targets',
-            options: ['Preview', 'Docs', 'Production'],
-            multiSelect: true,
-          },
-        })]}
-        onSessionClick={vi.fn()}
-      />,
-    )
+  it('routes inline multi-select question answers as joined text', async () => {
+    renderInlineQuestion({
+      question: 'Pick targets',
+      options: ['Preview', 'Docs', 'Production'],
+      multiSelect: true,
+    })
 
     fireEvent.mouseDown(screen.getByText('Preview').closest('button')!)
     fireEvent.mouseDown(screen.getByText('Production').closest('button')!)
     fireEvent.mouseDown(screen.getByRole('button', { name: '确认 (2)' }))
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Preview, Production')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes inline multi-question answers as JSON', () => {
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_input',
-          pendingQuestion: {
-            question: '[Deploy] Choose options',
-            options: ['Preview', 'Ship'],
-            questions: [
-              {
-                question: 'Which target?',
-                options: [{ label: 'Preview' }, { label: 'Ship' }],
-                multiSelect: true,
-              },
-              {
-                question: 'Notify channel?',
-                options: [{ label: 'Yes' }, { label: 'No' }],
-              },
-            ],
-          },
-        })]}
-        onSessionClick={vi.fn()}
-      />,
-    )
+  it('routes inline multi-question answers as JSON', async () => {
+    renderInlineQuestion({
+      question: '[Deploy] Choose options',
+      options: ['Preview', 'Ship'],
+      questions: [
+        {
+          question: 'Which target?',
+          options: [{ label: 'Preview' }, { label: 'Ship' }],
+          multiSelect: true,
+        },
+        {
+          question: 'Notify channel?',
+          options: [{ label: 'Yes' }, { label: 'No' }],
+        },
+      ],
+    })
 
     fireEvent.mouseDown(screen.getByText('Preview').closest('button')!)
     fireEvent.mouseDown(screen.getByText('Ship').closest('button')!)
@@ -1082,47 +1132,77 @@ describe('HoverList interactions', () => {
         'Notify channel?': 'No',
       }),
     )
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes inline plan actions without opening the row', () => {
+  it('routes inline plan actions without opening the row', async () => {
     const onSessionClick = vi.fn()
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_approval',
-          planTitle: 'Implementation plan',
-          planContent: '1. Fix the island',
-        })]}
-        onSessionClick={onSessionClick}
-      />,
-    )
+    const pending = session({
+      phase: 'waiting_approval',
+      planRequestId: 'inline-plan',
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix the island',
+    })
+    useSessionStore.setState({ sessions: { s1: pending }, sessionList: [pending], planReplies: new Map() })
+    render(<HoverList sessions={[pending]} onSessionClick={onSessionClick} />)
 
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Accept Edits' }))
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined)
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined, 'inline-plan')
+    expect(onSessionClick).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planRequestId).toBeUndefined())
+  })
+
+  it('accepts an inline plan by keyboard and ignores repeats after delivery', async () => {
+    const onSessionClick = vi.fn()
+    const user = userEvent.setup()
+    const pending = session({ phase: 'waiting_approval', planRequestId: 'inline-keyboard', planTitle: 'Implementation plan' })
+    useSessionStore.setState({ sessions: { s1: pending }, sessionList: [pending], planReplies: new Map() })
+    render(<HoverList sessions={[pending]} onSessionClick={onSessionClick} />)
+
+    const accept = screen.getByRole('button', { name: 'Accept Edits' })
+    accept.focus()
+    await user.keyboard('{Enter}')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'acceptEdits', undefined, 'inline-keyboard')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planRequestId).toBeUndefined())
+    await user.click(accept)
+    expect(tauriMocks.respondPlan).toHaveBeenCalledTimes(1)
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
-  it('sends inline plan feedback from the input row without opening the row', () => {
+  it('selects and submits an inline multi-select reply with the keyboard', async () => {
     const onSessionClick = vi.fn()
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_approval',
-          planTitle: 'Implementation plan',
-          planContent: '1. Fix the island',
-        })]}
-        onSessionClick={onSessionClick}
-      />,
-    )
+    const user = userEvent.setup()
+    renderInlineQuestion({ question: 'Pick a target', options: ['Preview', 'Ship'], multiSelect: true }, onSessionClick)
+
+    screen.getByRole('button', { name: /Preview$/ }).focus()
+    await user.keyboard(' ')
+    screen.getByRole('button', { name: '确认 (1)' }).focus()
+    await user.keyboard('{Enter}')
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Preview')
+    expect(onSessionClick).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+  })
+
+  it('sends inline plan feedback from the input row without opening the row', async () => {
+    const onSessionClick = vi.fn()
+    const pending = session({
+      phase: 'waiting_approval',
+      planRequestId: 'inline-feedback',
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix the island',
+    })
+    useSessionStore.setState({ sessions: { s1: pending }, sessionList: [pending], planReplies: new Map() })
+    render(<HoverList sessions={[pending]} onSessionClick={onSessionClick} />)
 
     const input = screen.getByPlaceholderText('Tell Claude what to change...')
     fireEvent.mouseDown(input)
     fireEvent.change(input, { target: { value: 'Please revise the scope' } })
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Send Feedback' }))
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'feedback', 'Please revise the scope')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'feedback', 'Please revise the scope', 'inline-feedback')
     expect(onSessionClick).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planRequestId).toBeUndefined())
   })
 
   it('only displays cache TTL when the setting is enabled', () => {

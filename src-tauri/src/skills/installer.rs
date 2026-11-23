@@ -3,14 +3,17 @@ use super::{
     GitHubSkillPreview, InstallMode, McpServerConfig, McpValidationResult, PluginInstallRequest,
     TargetConfig,
 };
+use crate::platform::process::background_command;
 use base64::{engine::general_purpose, Engine as _};
+use reqwest::Url;
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const GITHUB_API_CONNECT_TIMEOUT_SECS: u64 = 6;
 const GITHUB_API_MAX_TIME_SECS: u64 = 18;
@@ -20,6 +23,42 @@ const GITHUB_CLONE_TOTAL_TIMEOUT_SECS: u64 = 120;
 const GITHUB_SPARSE_CHECKOUT_TIMEOUT_SECS: u64 = 180;
 const GITHUB_TREE_TIMEOUT_SECS: u64 = 20;
 const MAX_GITHUB_SKILL_PREVIEWS: usize = 500;
+const SKILL_DOWNLOAD_TIMEOUT_SECS: u64 = 120;
+const SKILL_GITHUB_AUTH_HEADER: &str = "AGENTBRO_SKILL_GITHUB_AUTHORIZATION";
+
+pub(crate) struct TempInstallDir(PathBuf);
+
+impl TempInstallDir {
+    pub(crate) fn create_in(parent: &Path) -> Result<Self, String> {
+        Self::create_with_prefix(parent, "agentbro-skill-import-")
+    }
+
+    pub(crate) fn create_hidden_in(parent: &Path) -> Result<Self, String> {
+        Self::create_with_prefix(parent, ".agentbro-skill-import-")
+    }
+
+    fn create_with_prefix(parent: &Path, prefix: &str) -> Result<Self, String> {
+        fs::create_dir_all(parent).map_err(|error| format!("Prepare Skill import: {error}"))?;
+        let path = parent.join(format!("{prefix}{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&path)
+            .map_err(|error| format!("Create temporary Skill directory: {error}"))?;
+        Ok(Self(path))
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempInstallDir {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.0) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("Could not clean up temporary Skill directory: {error}");
+            }
+        }
+    }
+}
 
 pub fn install_skill(
     source_path: &str,
@@ -36,84 +75,76 @@ pub fn install_skill_named(
     directory_name: Option<&str>,
     display_name: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let (src, temp_root) = resolve_install_source(source_path)?;
-    let result = (|| {
-        if !src.exists() {
-            return Err(format!("Source not found: {}", source_path));
-        }
-
-        let source_skill_name = src
-            .file_name()
-            .ok_or("Invalid source path")?
-            .to_string_lossy()
-            .to_string();
-        let skill_name = directory_name
-            .map(sanitize_file_name)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(source_skill_name);
-        let installed_ids = display_name
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .map(|name| vec![name])
-            .unwrap_or_else(|| skill_id_candidates(&src, &skill_name));
-
-        let central_path = if matches!(mode, InstallMode::Symlink) {
-            let central_dir = agent_paths::agentbro_skills_dir();
-            fs::create_dir_all(&central_dir).map_err(|e| e.to_string())?;
-            let dest = central_dir.join(&skill_name);
-            copy_recursive(&src, &dest)?;
-            if let Some(name) = display_name {
-                rewrite_skill_name(&dest, name)?;
-            }
-            Some(dest)
-        } else {
-            None
-        };
-
-        for target in targets {
-            let paths = agent_paths::paths_for_agent(&target.agent);
-            let target_dir = paths
-                .skill_dirs
-                .first()
-                .ok_or_else(|| format!("No skill directory for agent: {}", target.agent))?;
-
-            fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
-            let dest = target_dir.join(&skill_name);
-            if same_location(&src, &dest) {
-                continue;
-            }
-
-            match mode {
-                InstallMode::Direct => {
-                    copy_recursive(&src, &dest)?;
-                    if let Some(name) = display_name {
-                        rewrite_skill_name(&dest, name)?;
-                    }
-                }
-                InstallMode::Symlink => {
-                    if let Some(ref central) = central_path {
-                        if dest.exists() || dest.symlink_metadata().is_ok() {
-                            fs::remove_file(&dest)
-                                .or_else(|_| fs::remove_dir_all(&dest))
-                                .map_err(|e| e.to_string())?;
-                        }
-                        #[cfg(unix)]
-                        std::os::unix::fs::symlink(central, &dest).map_err(|e| e.to_string())?;
-                        #[cfg(not(unix))]
-                        copy_recursive(central, &dest)?;
-                    }
-                }
-            }
-        }
-
-        Ok(installed_ids)
-    })();
-
-    if let Some(root) = temp_root {
-        let _ = fs::remove_dir_all(root);
+    let (src, _temp_root) = resolve_install_source(source_path)?;
+    if !src.exists() {
+        return Err(format!("Source not found: {}", source_path));
     }
 
-    result
+    let source_skill_name = src
+        .file_name()
+        .ok_or("Invalid source path")?
+        .to_string_lossy()
+        .to_string();
+    let skill_name = directory_name
+        .map(sanitize_file_name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(source_skill_name);
+    let installed_ids = display_name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .map(|name| vec![name])
+        .unwrap_or_else(|| skill_id_candidates(&src, &skill_name));
+
+    let central_path = if matches!(mode, InstallMode::Symlink) {
+        let central_dir = agent_paths::agentbro_skills_dir();
+        fs::create_dir_all(&central_dir).map_err(|e| e.to_string())?;
+        let dest = central_dir.join(&skill_name);
+        copy_recursive(&src, &dest)?;
+        if let Some(name) = display_name {
+            rewrite_skill_name(&dest, name)?;
+        }
+        Some(dest)
+    } else {
+        None
+    };
+
+    for target in targets {
+        let paths = agent_paths::paths_for_agent(&target.agent);
+        let target_dir = paths
+            .skill_dirs
+            .first()
+            .ok_or_else(|| format!("No skill directory for agent: {}", target.agent))?;
+
+        fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
+        let dest = target_dir.join(&skill_name);
+        if same_location(&src, &dest) {
+            continue;
+        }
+
+        match mode {
+            InstallMode::Direct => {
+                copy_recursive(&src, &dest)?;
+                if let Some(name) = display_name {
+                    rewrite_skill_name(&dest, name)?;
+                }
+            }
+            InstallMode::Symlink => {
+                if let Some(ref central) = central_path {
+                    if dest.exists() || dest.symlink_metadata().is_ok() {
+                        fs::remove_file(&dest)
+                            .or_else(|_| fs::remove_dir_all(&dest))
+                            .map_err(|e| e.to_string())?;
+                    }
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(central, &dest).map_err(|e| e.to_string())?;
+                    #[cfg(not(unix))]
+                    copy_recursive(central, &dest)?;
+                }
+            }
+        }
+    }
+
+    Ok(installed_ids)
 }
 
 pub fn preview_github_skills(source: &str) -> Result<Vec<GitHubSkillPreview>, String> {
@@ -147,16 +178,13 @@ pub(crate) fn preview_github_skills_with_token(
         Err(error) => log::warn!("GitHub API preview failed, falling back to clone: {error}"),
     }
 
-    let (src, temp_root) = resolve_install_source_with_token(&normalized, github_token)?;
+    let (src, _temp_root) = resolve_install_source_with_token(&normalized, github_token)?;
     let result = (|| {
         let mut previews = Vec::new();
         collect_skill_previews(&src, &src, &mut previews)?;
         previews.sort_by(|a, b| a.source_path.cmp(&b.source_path));
         Ok(previews)
     })();
-    if let Some(root) = temp_root {
-        let _ = fs::remove_dir_all(root);
-    }
     if let Ok(previews) = &result {
         log::info!(
             "GitHub Skill preview completed via clone: skills={}, elapsed_ms={}",
@@ -270,14 +298,14 @@ fn preview_github_skills_via_api(
     Ok(Some(previews))
 }
 
-fn resolve_install_source(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+fn resolve_install_source(source: &str) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     resolve_install_source_with_token(source, None)
 }
 
 fn resolve_install_source_with_token(
     source: &str,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let local = PathBuf::from(source);
     if local.exists() {
         return Ok((local, None));
@@ -291,19 +319,27 @@ fn resolve_install_source_with_token(
         return clone_skillssh_spec(spec, github_token);
     }
 
-    if source.starts_with("https://github.com/") || source.starts_with("http://github.com/") {
-        return clone_github_url(source, github_token);
-    }
-
     if source.starts_with("http://") || source.starts_with("https://") {
-        if source.ends_with(".zip") {
-            return download_zip(source);
-        }
-        if source.ends_with(".md")
-            || source.contains("/raw/")
-            || source.contains("raw.githubusercontent.com")
+        let mut url = Url::parse(source).map_err(|error| format!("Invalid Skill URL: {error}"))?;
+        let path = url.path().to_ascii_lowercase();
+        if url.host_str() == Some("github.com")
+            && !matches!(
+                url.path_segments().and_then(|mut segments| segments.nth(2)),
+                Some("raw" | "archive" | "releases")
+            )
         {
-            return download_markdown_skill(source);
+            url.set_query(None);
+            url.set_fragment(None);
+            return clone_github_url(url.as_str(), github_token);
+        }
+        if path.ends_with(".zip") {
+            return download_zip(&url, github_token);
+        }
+        if path.ends_with(".md")
+            || path.contains("/raw/")
+            || url.host_str() == Some("raw.githubusercontent.com")
+        {
+            return download_markdown_skill(&url, github_token);
         }
         return Err("Only GitHub repository URLs, raw Markdown skills, and .zip skill archives are supported for remote installs".to_string());
     }
@@ -313,15 +349,234 @@ fn resolve_install_source_with_token(
 
 pub(crate) fn resolve_external_skill_source(
     source: &str,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     resolve_install_source(source)
 }
 
 pub(crate) fn resolve_external_skill_source_with_token(
     source: &str,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     resolve_install_source_with_token(source, github_token)
+}
+
+pub(crate) fn read_checkout_commit(repo_dir: &Path) -> Option<String> {
+    read_git_object_id(repo_dir, "HEAD^{commit}")
+}
+
+fn is_full_git_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn read_git_object_id(repo_dir: &Path, revision: &str) -> Option<String> {
+    let git_dir = repo_dir.join(".git");
+    if !git_dir.is_dir() {
+        return None;
+    }
+    let mut command = background_command(crate::agents::executable::command_path("git"));
+    command
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["rev-parse", "--verify", "--end-of-options", revision])
+        .env_remove("GIT_COMMON_DIR")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let output = command_output_with_timeout_named(
+        &mut command,
+        Duration::from_secs(5),
+        None,
+        "reading a Git Skill revision",
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let object_id = std::str::from_utf8(&output.stdout).ok()?.trim();
+    is_full_git_object_id(object_id).then(|| object_id.to_string())
+}
+
+pub(crate) struct GitSkillCheckout {
+    pub(crate) skill_dir: PathBuf,
+    pub(crate) commit: String,
+    repo_dir: PathBuf,
+    relative_path: String,
+    _temporary: TempInstallDir,
+}
+
+pub(crate) fn checkout_git_skill(
+    source: &str,
+    github_token: Option<&str>,
+) -> Result<GitSkillCheckout, String> {
+    let (skill_dir, temporary) = resolve_external_skill_source_with_token(source, github_token)?;
+    let temporary = temporary.ok_or("The saved Skill source did not produce a Git checkout.")?;
+    GitSkillCheckout::from_resolved(skill_dir, temporary)
+}
+
+pub(crate) fn checkout_skill_lock_ref(
+    repository: &str,
+    reference: &str,
+) -> Result<(PathBuf, TempInstallDir), String> {
+    let temporary = TempInstallDir::create_in(&std::env::temp_dir())?;
+    let checkout = temporary.path().join("repo");
+    fs::create_dir(&checkout).map_err(|error| error.to_string())?;
+    let cancel = AtomicBool::new(false);
+    let network = GitNetwork::new(None, None);
+    for (args, operation) in [
+        (
+            &["init", "--quiet", "--template="][..],
+            "preparing the Skill checkout",
+        ),
+        (
+            &[
+                "fetch",
+                "--quiet",
+                "--depth=1",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "--",
+                repository,
+                reference,
+            ],
+            "fetching the locked Skill revision",
+        ),
+        (
+            &[
+                "-c",
+                "core.hooksPath=.git/agentbro-no-hooks",
+                "checkout",
+                "--quiet",
+                "--detach",
+                "FETCH_HEAD",
+            ],
+            "checking out the locked Skill revision",
+        ),
+    ] {
+        let output = run_git_with_cancel(
+            &checkout,
+            args,
+            Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
+            &cancel,
+            &network,
+            None,
+            operation,
+        )?;
+        if !output.status.success() {
+            return Err(format!("Git failed while {operation}"));
+        }
+    }
+    Ok((checkout, temporary))
+}
+
+impl GitSkillCheckout {
+    fn from_resolved(skill_dir: PathBuf, temporary: TempInstallDir) -> Result<Self, String> {
+        let repo_dir = temporary.path().join("repo");
+        let canonical_repo = repo_dir
+            .canonicalize()
+            .map_err(|_| "The saved Skill source did not produce a Git checkout.".to_string())?;
+        let skill_dir = skill_dir
+            .canonicalize()
+            .map_err(|_| "The Skill's saved directory is missing from the source.".to_string())?;
+        let relative = skill_dir
+            .strip_prefix(&canonical_repo)
+            .map_err(|_| "The Skill directory must be inside the Git checkout.".to_string())?;
+        if !skill_dir
+            .join("SKILL.md")
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            return Err(
+                "The Skill's saved directory no longer contains a regular SKILL.md file."
+                    .to_string(),
+            );
+        }
+        let relative_path = relative
+            .iter()
+            .map(|part| part.to_str())
+            .collect::<Option<Vec<_>>>()
+            .ok_or("The Skill source path must be valid UTF-8.")?
+            .join("/");
+        let commit =
+            read_checkout_commit(&repo_dir).ok_or("Could not read the latest Skill commit.")?;
+        Ok(Self {
+            skill_dir,
+            commit,
+            repo_dir,
+            relative_path,
+            _temporary: temporary,
+        })
+    }
+
+    pub(crate) fn has_changed_since(
+        &self,
+        installed: &str,
+        github_token: Option<&str>,
+    ) -> Result<bool, String> {
+        git_skill_tree_changed(
+            &self.repo_dir,
+            &self.relative_path,
+            installed,
+            &self.commit,
+            github_token,
+        )
+    }
+}
+
+fn git_skill_tree_changed(
+    repo_dir: &Path,
+    path: &str,
+    installed: &str,
+    latest: &str,
+    github_token: Option<&str>,
+) -> Result<bool, String> {
+    if !is_full_git_object_id(installed) {
+        return Err("The installed Skill version is not a Git commit ID.".to_string());
+    }
+    if installed.eq_ignore_ascii_case(latest) {
+        return Ok(false);
+    }
+
+    if read_git_object_id(repo_dir, &format!("{installed}^{{commit}}")).is_none() {
+        let token = effective_github_token(github_token);
+        let origin = token.as_ref().and_then(|_| skill_checkout_origin(repo_dir));
+        let network = GitNetwork::new(origin.as_deref(), token.as_deref());
+        let output = run_git_with_cancel(
+            repo_dir,
+            &[
+                "fetch",
+                "--quiet",
+                "--depth=1",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "origin",
+                installed,
+            ],
+            Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
+            &AtomicBool::new(false),
+            &network,
+            None,
+            "fetching the installed Skill version",
+        )?;
+        if !output.status.success() {
+            return Err(format!(
+                "Could not fetch the installed Skill version: {}",
+                redact_token(&String::from_utf8_lossy(&output.stderr), token.as_deref())
+            ));
+        }
+    }
+
+    let tree_revision = |commit: &str| {
+        if path.is_empty() {
+            format!("{commit}^{{tree}}")
+        } else {
+            format!("{commit}:{path}")
+        }
+    };
+    let latest_tree = read_git_object_id(repo_dir, &tree_revision(latest))
+        .ok_or("Could not read the latest Skill directory version.")?;
+    Ok(
+        read_git_object_id(repo_dir, &tree_revision(installed)).as_deref()
+            != Some(latest_tree.as_str()),
+    )
 }
 
 pub(crate) fn resolve_github_repo_skills_with_cancel(
@@ -329,7 +584,7 @@ pub(crate) fn resolve_github_repo_skills_with_cancel(
     skill_ids: &[String],
     github_token: Option<&str>,
     cancel: &AtomicBool,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let parsed = if let Some(spec) = source.strip_prefix("github:") {
         parse_github_spec_ref(spec)?
     } else if source.starts_with("https://github.com/") || source.starts_with("http://github.com/")
@@ -348,32 +603,21 @@ pub(crate) fn resolve_github_repo_skills_with_cancel(
     )
 }
 
-fn download_markdown_skill(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+fn download_markdown_skill(
+    source: &Url,
+    github_token: Option<&str>,
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let root = temp_install_dir()?;
-    let skill_dir = root.join(skill_dir_name_from_url(source));
+    let skill_dir = root.path().join(skill_dir_name_from_url(source));
     fs::create_dir_all(&skill_dir).map_err(|e| e.to_string())?;
     let dest = skill_dir.join("SKILL.md");
 
-    let output = Command::new(crate::agents::executable::command_path("curl"))
-        .args(authenticated_curl_args(None))
-        .arg("-L")
-        .arg("--fail")
-        .arg(source)
-        .arg("-o")
-        .arg(&dest)
-        .output()
-        .map_err(|e| format!("Failed to run curl: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = fs::remove_dir_all(&root);
-        return Err(format!("Failed to download {source}: {stderr}"));
-    }
-
+    download_skill_file(source, &dest, github_token)?;
     Ok((skill_dir, Some(root)))
 }
 
-fn skill_dir_name_from_url(source: &str) -> String {
-    let trimmed = source.trim_end_matches('/');
+fn skill_dir_name_from_url(source: &Url) -> String {
+    let trimmed = source.path().trim_end_matches('/');
     let mut parts = trimmed
         .split('/')
         .filter(|part| !part.is_empty())
@@ -386,7 +630,13 @@ fn skill_dir_name_from_url(source: &str) -> String {
     }
     parts
         .last()
-        .map(|part| sanitize_file_name(part.trim_end_matches(".md")))
+        .map(|part| {
+            let name = match part.rsplit_once('.') {
+                Some((name, ext)) if ext.eq_ignore_ascii_case("md") => name,
+                _ => part,
+            };
+            sanitize_file_name(name)
+        })
         .filter(|part| !part.is_empty())
         .unwrap_or_else(|| "downloaded-skill".to_string())
 }
@@ -404,7 +654,7 @@ fn sanitize_file_name(value: &str) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_string();
-    if sanitized.is_empty() {
+    if matches!(sanitized.as_str(), "" | "." | "..") {
         "downloaded-skill".to_string()
     } else {
         sanitized
@@ -474,7 +724,7 @@ fn parse_frontmatter_text(content: &str) -> std::collections::HashMap<String, St
 }
 
 pub fn install_plugin(request: &PluginInstallRequest) -> Result<String, String> {
-    let (src, temp_root) = resolve_install_source(&request.source)?;
+    let (src, _temp_root) = resolve_install_source(&request.source)?;
     if !src.exists() {
         return Err(format!("Plugin source not found: {}", request.source));
     }
@@ -499,9 +749,6 @@ pub fn install_plugin(request: &PluginInstallRequest) -> Result<String, String> 
         .join(version);
     copy_recursive(&src, &dest)?;
     super::registry::add_source(&format!("plugin:{plugin_id}"), &request.source)?;
-    if let Some(root) = temp_root {
-        let _ = fs::remove_dir_all(root);
-    }
     Ok(format!("plugin:{plugin_id}"))
 }
 
@@ -523,24 +770,18 @@ fn read_plugin_manifest(path: &Path) -> Option<serde_json::Value> {
         .and_then(|content| serde_json::from_str(&content).ok())
 }
 
-fn temp_install_dir() -> Result<PathBuf, String> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_millis();
-    let dir = dirs::home_dir()
+fn temp_install_dir() -> Result<TempInstallDir, String> {
+    let parent = dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".agentbro")
-        .join("tmp")
-        .join(format!("install-{millis}"));
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
+        .join("tmp");
+    TempInstallDir::create_in(&parent)
 }
 
 fn clone_github_spec(
     spec: &str,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let parsed = parse_github_spec_ref(spec)?;
     clone_repo(
         &parsed.repo_url,
@@ -553,7 +794,7 @@ fn clone_github_spec(
 fn clone_github_url(
     source: &str,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let parsed = parse_github_url_ref(source)?;
     clone_repo(
         &parsed.repo_url,
@@ -566,7 +807,7 @@ fn clone_github_url(
 fn clone_skillssh_spec(
     spec: &str,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let normalized = spec.trim().replace('@', "/");
     let parts: Vec<&str> = normalized
         .trim_matches('/')
@@ -590,15 +831,8 @@ fn clone_skillssh_spec(
         github_token,
         &cancel,
     )?;
-    match locate_skillssh_skill_dir(&repo_dir, &skill_id) {
-        Ok(skill_dir) => Ok((skill_dir, temp_root)),
-        Err(err) => {
-            if let Some(root) = temp_root {
-                let _ = fs::remove_dir_all(root);
-            }
-            Err(err)
-        }
-    }
+    let skill_dir = locate_skillssh_skill_dir(&repo_dir, &skill_id)?;
+    Ok((skill_dir, temp_root))
 }
 
 pub(crate) fn locate_skillssh_skill_dir(
@@ -800,9 +1034,9 @@ fn curl_text_with_timeout(
     max_time_secs: u64,
     github_token: Option<&str>,
 ) -> Result<String, String> {
-    let output = Command::new(crate::agents::executable::command_path("curl"))
-        .args(authenticated_curl_args(github_token))
-        .arg("-L")
+    let url = Url::parse(url).map_err(|error| format!("Invalid GitHub URL: {error}"))?;
+    let (mut command, token) = curl_request(&url, github_token)?;
+    command
         .arg("--fail")
         .arg("--connect-timeout")
         .arg(GITHUB_API_CONNECT_TIMEOUT_SECS.to_string())
@@ -812,13 +1046,13 @@ fn curl_text_with_timeout(
         .arg("Accept: application/vnd.github+json")
         .arg("-H")
         .arg("User-Agent: AgentBro")
-        .arg(url)
-        .output()
-        .map_err(|e| format!("Failed to run curl: {e}"))?;
+        .arg("--url")
+        .arg(url.as_str());
+    let output = curl_output(&mut command, token.as_deref())?;
     if !output.status.success() {
         return Err(format!(
             "Failed to fetch {url}: {}",
-            redact_token(&String::from_utf8_lossy(&output.stderr), github_token)
+            redact_token(&String::from_utf8_lossy(&output.stderr), token.as_deref())
         ));
     }
     String::from_utf8(output.stdout).map_err(|e| format!("GitHub response was not UTF-8: {e}"))
@@ -870,7 +1104,7 @@ fn clone_repo(
     branch: Option<&str>,
     subpath: Option<&str>,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     clone_repo_with_cancel(repo_url, branch, subpath, github_token, None)
 }
 
@@ -880,18 +1114,19 @@ fn clone_repo_with_cancel(
     subpath: Option<&str>,
     github_token: Option<&str>,
     cancel: Option<&AtomicBool>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let root = temp_install_dir()?;
-    let repo_dir = root.join("repo");
+    let repo_dir = root.path().join("repo");
     let started_at = Instant::now();
     let mut cloned = false;
     let mut last_error = "No GitHub clone attempts were available".to_string();
+    let token = effective_github_token(github_token);
+    let github_token = token.as_deref();
     let clone_urls = github_clone_urls(repo_url, github_token);
-    let network_env = git_network_env();
+    let network = GitNetwork::new(Some(repo_url), github_token);
     let single_attempt = clone_urls.len() == 1;
     for (attempt_index, clone_url) in clone_urls.into_iter().enumerate() {
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-            let _ = fs::remove_dir_all(&root);
             return Err("Installation cancelled".to_string());
         }
         let remaining = Duration::from_secs(GITHUB_CLONE_TOTAL_TIMEOUT_SECS)
@@ -913,10 +1148,8 @@ fn clone_repo_with_cancel(
             attempt_index + 1,
             attempt_timeout.as_secs()
         );
-        let mut attempt = Command::new(crate::agents::executable::command_path("git"));
+        let mut attempt = network.command();
         attempt
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GCM_INTERACTIVE", "Never")
             .arg("clone")
             .arg("--quiet")
             .arg("--depth")
@@ -927,9 +1160,6 @@ fn clone_repo_with_cancel(
         {
             use std::os::unix::process::CommandExt;
             attempt.process_group(0);
-        }
-        for (name, value) in &network_env {
-            attempt.env(name, value);
         }
         if let Some(branch) = branch {
             attempt.arg("--branch").arg(branch);
@@ -955,7 +1185,6 @@ fn clone_repo_with_cancel(
         let _ = fs::remove_dir_all(&repo_dir);
     }
     if !cloned {
-        let _ = fs::remove_dir_all(&root);
         return Err(format!("Failed to clone {repo_url}: {last_error}"));
     }
 
@@ -964,7 +1193,6 @@ fn clone_repo_with_cancel(
         _ => repo_dir,
     };
     if !src.exists() {
-        let _ = fs::remove_dir_all(&root);
         return Err(format!("GitHub path not found: {}", src.display()));
     }
     Ok((src, Some(root)))
@@ -977,19 +1205,20 @@ fn clone_repo_skills_with_cancel(
     skill_ids: &[String],
     github_token: Option<&str>,
     cancel: &AtomicBool,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let root = temp_install_dir()?;
-    let repo_dir = root.join("repo");
+    let repo_dir = root.path().join("repo");
     let started_at = Instant::now();
     let mut cloned = false;
     let mut last_error = "No GitHub clone attempts were available".to_string();
+    let token = effective_github_token(github_token);
+    let github_token = token.as_deref();
     let clone_urls = github_clone_urls(repo_url, github_token);
-    let network_env = git_network_env();
+    let network = GitNetwork::new(Some(repo_url), github_token);
     let single_attempt = clone_urls.len() == 1;
 
     for (attempt_index, clone_url) in clone_urls.into_iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
-            let _ = fs::remove_dir_all(&root);
             return Err("Installation cancelled".to_string());
         }
         let remaining = Duration::from_secs(GITHUB_CLONE_TOTAL_TIMEOUT_SECS)
@@ -1011,10 +1240,8 @@ fn clone_repo_skills_with_cancel(
             attempt_index + 1,
             attempt_timeout.as_secs()
         );
-        let mut attempt = Command::new(crate::agents::executable::command_path("git"));
+        let mut attempt = network.command();
         attempt
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GCM_INTERACTIVE", "Never")
             .arg("clone")
             .arg("--quiet")
             .arg("--filter=blob:none")
@@ -1027,9 +1254,6 @@ fn clone_repo_skills_with_cancel(
         {
             use std::os::unix::process::CommandExt;
             attempt.process_group(0);
-        }
-        for (name, value) in &network_env {
-            attempt.env(name, value);
         }
         if let Some(branch) = branch {
             attempt.arg("--branch").arg(branch);
@@ -1061,40 +1285,25 @@ fn clone_repo_skills_with_cancel(
     }
 
     if !cloned {
-        let _ = fs::remove_dir_all(&root);
         return Err(format!("Failed to prepare {repo_url}: {last_error}"));
     }
 
-    let tree_file = root.join("skill-tree.txt");
-    let tree_output = match run_git_with_cancel(
+    let tree_file = root.path().join("skill-tree.txt");
+    let tree_output = run_git_with_cancel(
         &repo_dir,
         &["ls-tree", "-r", "--name-only", "HEAD"],
         Duration::from_secs(GITHUB_TREE_TIMEOUT_SECS),
         cancel,
-        &network_env,
+        &network,
         Some(&tree_file),
         "Reading the GitHub repository directory",
-    ) {
-        Ok(output) => output,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&root);
-            return Err(error);
-        }
-    };
+    )?;
     if !tree_output.status.success() {
         let error = redact_token(&String::from_utf8_lossy(&tree_output.stderr), github_token);
-        let _ = fs::remove_dir_all(&root);
         return Err(format!("Failed to read {repo_url}: {error}"));
     }
-    let tree = match fs::read_to_string(&tree_file) {
-        Ok(tree) => tree,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&root);
-            return Err(format!(
-                "Failed to read the GitHub repository directory: {error}"
-            ));
-        }
-    };
+    let tree = fs::read_to_string(&tree_file)
+        .map_err(|error| format!("Failed to read the GitHub repository directory: {error}"))?;
     let prefix = subpath
         .map(normalize_repo_path)
         .filter(|path| !path.is_empty());
@@ -1110,24 +1319,17 @@ fn clone_repo_skills_with_cancel(
         .collect::<Vec<_>>();
 
     if !manifest_paths.is_empty() {
-        let init_output = match run_git_with_cancel(
+        let init_output = run_git_with_cancel(
             &repo_dir,
             &["sparse-checkout", "init", "--no-cone"],
             Duration::from_secs(GITHUB_TREE_TIMEOUT_SECS),
             cancel,
-            &network_env,
+            &network,
             None,
             "Preparing Skill manifests",
-        ) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&root);
-                return Err(error);
-            }
-        };
+        )?;
         if !init_output.status.success() {
             let error = redact_token(&String::from_utf8_lossy(&init_output.stderr), github_token);
-            let _ = fs::remove_dir_all(&root);
             return Err(format!("Failed to prepare Skill manifests: {error}"));
         }
 
@@ -1137,48 +1339,34 @@ fn clone_repo_skills_with_cancel(
             .collect::<Vec<_>>();
         let mut sparse_args = vec!["sparse-checkout", "set", "--no-cone", "--"];
         sparse_args.extend(manifest_patterns.iter().map(String::as_str));
-        let set_output = match run_git_with_cancel(
+        let set_output = run_git_with_cancel(
             &repo_dir,
             &sparse_args,
             Duration::from_secs(GITHUB_TREE_TIMEOUT_SECS),
             cancel,
-            &network_env,
+            &network,
             None,
             "Selecting Skill manifests",
-        ) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&root);
-                return Err(error);
-            }
-        };
+        )?;
         if !set_output.status.success() {
             let error = redact_token(&String::from_utf8_lossy(&set_output.stderr), github_token);
-            let _ = fs::remove_dir_all(&root);
             return Err(format!("Failed to select Skill manifests: {error}"));
         }
 
-        let checkout_output = match run_git_with_cancel(
+        let checkout_output = run_git_with_cancel(
             &repo_dir,
             &["checkout", "--quiet", "HEAD"],
             Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
             cancel,
-            &network_env,
+            &network,
             None,
             "Downloading Skill manifests",
-        ) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&root);
-                return Err(error);
-            }
-        };
+        )?;
         if !checkout_output.status.success() {
             let error = redact_token(
                 &String::from_utf8_lossy(&checkout_output.stderr),
                 github_token,
             );
-            let _ = fs::remove_dir_all(&root);
             return Err(format!("Failed to download Skill manifests: {error}"));
         }
     }
@@ -1187,24 +1375,17 @@ fn clone_repo_skills_with_cancel(
     if !selected_dirs.is_empty() {
         let mut sparse_args = vec!["sparse-checkout", "set", "--cone", "--"];
         sparse_args.extend(selected_dirs.iter().map(String::as_str));
-        let set_output = match run_git_with_cancel(
+        let set_output = run_git_with_cancel(
             &repo_dir,
             &sparse_args,
             Duration::from_secs(GITHUB_SPARSE_CHECKOUT_TIMEOUT_SECS),
             cancel,
-            &network_env,
+            &network,
             None,
             "Downloading selected Skills",
-        ) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&root);
-                return Err(error);
-            }
-        };
+        )?;
         if !set_output.status.success() {
             let error = redact_token(&String::from_utf8_lossy(&set_output.stderr), github_token);
-            let _ = fs::remove_dir_all(&root);
             return Err(format!("Failed to download selected Skills: {error}"));
         }
     }
@@ -1297,14 +1478,12 @@ fn run_git_with_cancel(
     args: &[&str],
     timeout: Duration,
     cancel: &AtomicBool,
-    network_env: &[(String, String)],
+    network: &GitNetwork,
     stdout_file: Option<&Path>,
     operation: &str,
 ) -> Result<Output, String> {
-    let mut command = Command::new(crate::agents::executable::command_path("git"));
+    let mut command = network.command();
     command
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "Never")
         .arg("-C")
         .arg(repo_dir)
         .args(args)
@@ -1313,9 +1492,6 @@ fn run_git_with_cancel(
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
-    }
-    for (name, value) in network_env {
-        command.env(name, value);
     }
     if let Some(path) = stdout_file {
         let file = fs::File::create(path)
@@ -1385,33 +1561,58 @@ fn terminate_child_process_group(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn download_zip(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+fn download_zip(
+    source: &Url,
+    github_token: Option<&str>,
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let root = temp_install_dir()?;
-    let archive = root.join("skill.zip");
-    let extract_dir = root.join("unzipped");
+    let archive = root.path().join("skill.zip");
+    let extract_dir = root.path().join("unzipped");
     fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
 
-    let output = Command::new(crate::agents::executable::command_path("curl"))
-        .args(authenticated_curl_args(None))
-        .arg("-L")
-        .arg("--fail")
-        .arg(source)
-        .arg("-o")
-        .arg(&archive)
-        .output()
-        .map_err(|e| format!("Failed to run curl: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = fs::remove_dir_all(&root);
-        return Err(format!("Failed to download {source}: {stderr}"));
-    }
+    download_skill_file(source, &archive, github_token)?;
 
     let file = fs::File::open(&archive).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|e| e.to_string())?;
+        if entry.is_symlink() {
+            return Err(
+                "Downloaded Skill archives must contain only regular files and directories."
+                    .to_string(),
+            );
+        }
+    }
     archive.extract(&extract_dir).map_err(|e| e.to_string())?;
 
     let src = single_child_dir(&extract_dir).unwrap_or(extract_dir);
     Ok((src, Some(root)))
+}
+
+fn download_skill_file(
+    source: &Url,
+    dest: &Path,
+    github_token: Option<&str>,
+) -> Result<(), String> {
+    let (mut command, token) = curl_request(source, github_token)?;
+    command
+        .arg("--fail")
+        .arg("--connect-timeout")
+        .arg(GITHUB_API_CONNECT_TIMEOUT_SECS.to_string())
+        .arg("--max-time")
+        .arg(SKILL_DOWNLOAD_TIMEOUT_SECS.to_string())
+        .arg("--output")
+        .arg(dest)
+        .arg("--url")
+        .arg(source.as_str());
+    let output = curl_output(&mut command, token.as_deref())?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to download Skill: {}",
+            redact_token(&String::from_utf8_lossy(&output.stderr), token.as_deref())
+        ));
+    }
+    Ok(())
 }
 
 fn github_token() -> Option<String> {
@@ -1434,25 +1635,167 @@ fn effective_github_token(explicit_token: Option<&str>) -> Option<String> {
         .or_else(github_token)
 }
 
-fn authenticated_curl_args(github_token: Option<&str>) -> Vec<String> {
-    effective_github_token(github_token)
-        .map(|token| vec!["-H".to_string(), format!("Authorization: Bearer {token}")])
-        .unwrap_or_default()
+fn is_github_https(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.port_or_known_default() == Some(443)
+        && matches!(
+            url.host_str(),
+            Some(
+                "github.com"
+                    | "api.github.com"
+                    | "raw.githubusercontent.com"
+                    | "codeload.github.com"
+            )
+        )
 }
 
-fn authenticated_github_url(repo_url: &str, github_token: Option<&str>) -> String {
-    let Some(token) = effective_github_token(github_token) else {
-        return repo_url.to_string();
+fn curl_request(
+    url: &Url,
+    github_token: Option<&str>,
+) -> Result<(Command, Option<String>), String> {
+    let protocols = if url.scheme() == "https" {
+        "=https"
+    } else {
+        "=http,https"
     };
-    if let Some(rest) = repo_url.strip_prefix("https://github.com/") {
-        return format!("https://x-access-token:{token}@github.com/{rest}");
+    let mut command = background_command(crate::agents::executable::command_path("curl"));
+    // On some curl versions, --no-location-trusted also clears --location.
+    command.args([
+        "--no-location-trusted",
+        "--location",
+        "--globoff",
+        "--proto",
+        protocols,
+        "--proto-redir",
+        protocols,
+    ]);
+    let token = is_github_https(url)
+        .then(|| effective_github_token(github_token))
+        .flatten();
+    if let Some(token) = token {
+        if token.contains(['\r', '\n']) {
+            return Err("The GitHub access token must be a single line.".to_string());
+        }
+        command.args(["--no-insecure", "--header", "@-"]);
+        return Ok((command, Some(token)));
     }
-    repo_url.to_string()
+    Ok((command, None))
+}
+
+fn curl_output(command: &mut Command, token: Option<&str>) -> Result<Output, String> {
+    let Some(token) = token else {
+        return command
+            .output()
+            .map_err(|error| format!("Failed to run curl: {error}"));
+    };
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to run curl: {error}"))?;
+    let written = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Could not open the curl header input.".to_string())
+        .and_then(|mut input| {
+            writeln!(input, "Authorization: Bearer {token}")
+                .map_err(|error| format!("Could not pass the GitHub authorization header: {error}"))
+        });
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Failed to read curl output: {error}"))?;
+    if output.status.success() {
+        written?;
+    }
+    Ok(output)
+}
+
+struct GitNetwork {
+    proxy_env: Vec<(String, String)>,
+    github_auth: Option<(String, String)>,
+}
+
+impl GitNetwork {
+    fn new(repository: Option<&str>, github_token: Option<&str>) -> Self {
+        let github_auth = repository
+            .and_then(|repository| {
+                let url = Url::parse(repository).ok()?;
+                (is_github_https(&url)
+                    && url.host_str() == Some("github.com")
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none())
+                .then_some(repository)
+            })
+            .and_then(|repository| {
+                github_token.map(|token| {
+                    let value = general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+                    (repository.to_string(), value)
+                })
+            });
+        Self {
+            proxy_env: git_network_env(),
+            github_auth,
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = background_command(crate::agents::executable::command_path("git"));
+        command
+            .envs(self.proxy_env.iter().map(|(name, value)| (name, value)))
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "Never");
+        if let Some((repository, encoded_auth)) = &self.github_auth {
+            configure_github_git_auth(&mut command, repository, encoded_auth);
+        }
+        command
+    }
+}
+
+pub(super) fn configure_github_git_auth(
+    command: &mut Command,
+    repository: &str,
+    encoded_auth: &str,
+) {
+    command
+        .args(["-c", "http.followRedirects=false"])
+        .arg(format!(
+            "--config-env=http.{repository}.extraHeader={SKILL_GITHUB_AUTH_HEADER}"
+        ))
+        .env(
+            SKILL_GITHUB_AUTH_HEADER,
+            format!("Authorization: Basic {encoded_auth}"),
+        )
+        .env("GIT_TRACE_REDACT", "1");
+}
+
+fn skill_checkout_origin(repo_dir: &Path) -> Option<String> {
+    let mut command = background_command(crate::agents::executable::command_path("git"));
+    command
+        .arg("-C")
+        .arg(repo_dir)
+        .args(["config", "--local", "--get", "remote.origin.url"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let output = command_output_with_timeout_named(
+        &mut command,
+        Duration::from_secs(5),
+        None,
+        "reading the Skill's Git remote",
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let origin = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!origin.is_empty()).then_some(origin)
 }
 
 fn github_clone_urls(repo_url: &str, github_token: Option<&str>) -> Vec<String> {
-    let mut urls = vec![authenticated_github_url(repo_url, github_token)];
-    if effective_github_token(github_token).is_some() {
+    let mut urls = vec![repo_url.to_string()];
+    if github_token.is_some() {
         return urls;
     }
     if repo_url.starts_with("https://github.com/") {
@@ -1481,8 +1824,9 @@ fn git_network_env() -> Vec<(String, String)> {
 }
 
 fn redact_token(value: &str, github_token: Option<&str>) -> String {
-    if let Some(token) = effective_github_token(github_token) {
-        value.replace(&token, "***")
+    if let Some(token) = github_token {
+        let basic = general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+        value.replace(&basic, "***").replace(token, "***")
     } else {
         value.to_string()
     }
@@ -1951,6 +2295,7 @@ pub fn copy_recursive_pub(src: &Path, dest: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_test_dir(name: &str) -> PathBuf {
         let millis = SystemTime::now()
@@ -1958,6 +2303,272 @@ mod tests {
             .unwrap()
             .as_millis();
         std::env::temp_dir().join(format!("agentbro-{name}-{millis}"))
+    }
+
+    #[test]
+    fn source_update_checks_the_skill_tree_in_a_shallow_checkout() {
+        let temp = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let remote = temp.path().join("source");
+        let skill_path = "skills/fixture with spaces";
+        let skill = remote.join(skill_path);
+        fs::create_dir_all(&skill).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let output = background_command(crate::agents::executable::command_path("git"))
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&remote, &["init", "--quiet"]);
+        let commit = || {
+            git(&remote, &["add", "--all"]);
+            git(
+                &remote,
+                &[
+                    "-c",
+                    "user.name=AgentBro Test",
+                    "-c",
+                    "user.email=fixture@example.test",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "Fixture",
+                ],
+            );
+        };
+        fs::write(skill.join("SKILL.md"), "# Installed").unwrap();
+        commit();
+        let installed = read_checkout_commit(&remote).unwrap();
+        fs::write(remote.join("README.md"), "Unrelated change").unwrap();
+        commit();
+
+        let check = || {
+            let source_url = Url::from_file_path(&remote).unwrap();
+            let checkout_root = TempInstallDir::create_in(temp.path()).unwrap();
+            git(
+                checkout_root.path(),
+                &["clone", "--quiet", "--depth=1", source_url.as_str(), "repo"],
+            );
+            let checkout_path = checkout_root.path().join("repo");
+            let checkout =
+                GitSkillCheckout::from_resolved(checkout_path.join(skill_path), checkout_root)
+                    .unwrap();
+            assert_eq!(checkout.relative_path, skill_path);
+            assert_ne!(checkout.commit, installed);
+            assert!(
+                read_git_object_id(&checkout_path, &format!("{installed}^{{commit}}")).is_none()
+            );
+            checkout.has_changed_since(&installed, None).unwrap()
+        };
+        assert!(!check());
+        fs::write(skill.join("SKILL.md"), "# Updated").unwrap();
+        commit();
+        assert!(check());
+    }
+
+    #[test]
+    fn private_git_transport_scopes_credentials_to_the_checkout_origin() {
+        let repository = "https://github.com/example/private-skills.git";
+        let token = "synthetic-token";
+        let network = GitNetwork::new(Some(repository), Some(token));
+        let command = network.command();
+        let basic = general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+        assert!(command.get_args().all(|argument| {
+            let argument = argument.to_string_lossy();
+            !argument.contains(token) && !argument.contains(&basic)
+        }));
+        let configured_header = |url: &str| {
+            network
+                .command()
+                .args(["config", "--get-urlmatch", "http.extraHeader", url])
+                .output()
+                .unwrap()
+        };
+        let output = configured_header(&format!("{repository}/info/refs"));
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            format!("Authorization: Basic {basic}")
+        );
+        for url in [
+            "https://github.com/example/other.git",
+            "https://github.com:8443/example/private-skills.git",
+            "https://example.test/example/private-skills.git",
+        ] {
+            assert!(!String::from_utf8_lossy(&configured_header(url).stdout).contains(&basic));
+            if !url.starts_with("https://github.com/example/") {
+                assert!(GitNetwork::new(Some(url), Some(token))
+                    .github_auth
+                    .is_none());
+            }
+        }
+        assert_eq!(
+            redact_token(&format!("{token} / {basic}"), Some(token)),
+            "*** / ***"
+        );
+
+        let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let checkout = temporary.path().join("checkout");
+        let fixture = temporary.path().join("fixture.git");
+        let mut command = network.command();
+        assert!(command
+            .args(["init", "--bare"])
+            .arg(&fixture)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let fixture = Url::from_file_path(fixture).unwrap();
+        let replacement = format!("url.{fixture}.insteadOf={repository}");
+        assert!(network
+            .command()
+            .args(["-c", &replacement, "clone", "--", repository])
+            .arg(&checkout)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let origin = skill_checkout_origin(&checkout).unwrap();
+        assert_eq!(origin, repository);
+        let config = fs::read_to_string(checkout.join(".git/config")).unwrap();
+        assert!(!config.contains(token) && !config.contains(&basic));
+        let output_path = temporary.path().join("fetch-command-config");
+        let matched_url = format!("{repository}/git-upload-pack");
+        let follow_on = GitNetwork::new(Some(&origin), Some(token));
+        let output = run_git_with_cancel(
+            &checkout,
+            &["config", "--get-urlmatch", "http.extraHeader", &matched_url],
+            Duration::from_secs(5),
+            &AtomicBool::new(false),
+            &follow_on,
+            Some(&output_path),
+            "reading authentication for the follow-on Git command",
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            fs::read_to_string(output_path).unwrap().trim(),
+            format!("Authorization: Basic {basic}")
+        );
+    }
+
+    #[test]
+    fn curl_places_github_credentials_in_header_input_only() {
+        let token = Some("synthetic-test-token");
+        for host in [
+            "api.github.com",
+            "github.com",
+            "raw.githubusercontent.com",
+            "codeload.github.com",
+        ] {
+            let url = Url::parse(&format!("https://{host}/test")).unwrap();
+            let (command, input) = curl_request(&url, token).unwrap();
+            assert_eq!(input.as_deref(), Some("synthetic-test-token"));
+            let args = command.get_args().collect::<Vec<_>>();
+            assert!(args
+                .iter()
+                .all(|arg| !arg.to_string_lossy().contains("synthetic-test-token")));
+            assert!(args.iter().any(|arg| *arg == "--no-location-trusted"));
+            assert!(args.windows(2).any(|pair| pair == ["--header", "@-"]));
+            assert!(args
+                .windows(2)
+                .any(|pair| pair == ["--proto-redir", "=https"]));
+        }
+        for source in [
+            "https://example.test/skill.zip",
+            "https://raw.githubusercontent.com.example.test/skill.md",
+            "http://github.com/example/skills.git",
+            "https://api.github.com:8443/test",
+        ] {
+            let (_, input) = curl_request(&Url::parse(source).unwrap(), token).unwrap();
+            assert!(input.is_none());
+        }
+        assert!(curl_request(
+            &Url::parse("https://api.github.com/test").unwrap(),
+            Some("synthetic\r\ninvalid"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn curl_reads_header_input_and_drops_credentials_on_host_redirect() {
+        use std::io::{BufRead, BufReader};
+        use std::net::{Ipv4Addr, TcpListener, TcpStream};
+
+        fn has_authorization(stream: &mut TcpStream) -> bool {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(4)))
+                .unwrap();
+            let lines = BufReader::new(stream)
+                .lines()
+                .map_while(Result::ok)
+                .take_while(|line| !line.is_empty());
+            let mut authorized = false;
+            for line in lines {
+                authorized |= line == "Authorization: Bearer synthetic-token";
+            }
+            authorized
+        }
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut initial, _) = listener.accept().unwrap();
+            let initial_authorized = has_authorization(&mut initial);
+            write!(
+                initial,
+                "HTTP/1.1 302 Found\r\nLocation: http://localhost:{}/redirect\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                address.port()
+            ).unwrap();
+            drop(initial);
+
+            let (mut redirected, _) = listener.accept().unwrap();
+            let redirect_authorized = has_authorization(&mut redirected);
+            redirected
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+            (initial_authorized, redirect_authorized)
+        });
+
+        let url = Url::parse(&format!("http://{address}/skill")).unwrap();
+        let (mut command, token) = curl_request(&url, None).unwrap();
+        assert!(token.is_none());
+        command
+            .args(["--noproxy", "*", "--max-time", "5", "--header", "@-"])
+            .arg(url.as_str());
+        let output = curl_output(&mut command, Some("synthetic-token")).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"ok");
+        assert_eq!(server.join().unwrap(), (true, false));
+    }
+
+    #[test]
+    fn temporary_import_directories_have_independent_lifetimes() {
+        let parent = std::env::temp_dir();
+        let first = TempInstallDir::create_in(&parent).unwrap();
+        let second = TempInstallDir::create_in(&parent).unwrap();
+        let first_path = first.path().to_path_buf();
+        let second_path = second.path().to_path_buf();
+        fs::write(first_path.join("SKILL.md"), "first").unwrap();
+        fs::write(second_path.join("SKILL.md"), "second").unwrap();
+
+        assert_ne!(first_path, second_path);
+        drop(first);
+        assert!(!first_path.exists());
+        assert_eq!(
+            fs::read_to_string(second_path.join("SKILL.md")).unwrap(),
+            "second"
+        );
+
+        drop(second);
+        assert!(!second_path.exists());
     }
 
     #[test]
@@ -2101,8 +2712,7 @@ mod tests {
             "https://github.com/owner/private-repo.git",
             Some("test-token"),
         );
-        assert_eq!(urls.len(), 1);
-        assert!(urls[0].contains("x-access-token:test-token@github.com"));
+        assert_eq!(urls, ["https://github.com/owner/private-repo.git"]);
         assert_eq!(
             redact_token("clone failed for test-token", Some("test-token")),
             "clone failed for ***",
@@ -2204,11 +2814,17 @@ mod tests {
     #[test]
     #[ignore]
     fn live_resolves_skills_sh_find_skills() {
-        let (dir, temp_root) =
-            resolve_install_source("skillssh:vercel-labs/skills/find-skills").unwrap();
-        assert!(dir.join("SKILL.md").is_file());
-        if let Some(root) = temp_root {
-            let _ = fs::remove_dir_all(root);
+        for source in [
+            "skillssh:vercel-labs/skills/find-skills",
+            "github:vercel-labs/skills/skills/find-skills",
+        ] {
+            let checkout = checkout_git_skill(source, None).unwrap();
+            assert_eq!(checkout.relative_path, "skills/find-skills");
+            assert!(checkout.skill_dir.join("SKILL.md").is_file());
+            assert!(!checkout.has_changed_since(&checkout.commit, None).unwrap());
+            let temp_path = checkout._temporary.path().to_path_buf();
+            drop(checkout);
+            assert!(!temp_path.exists());
         }
     }
 }

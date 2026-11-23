@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CollapsedBar } from '../components/notch/CollapsedBar'
 import type { SessionState } from '../types/agent'
@@ -68,6 +68,30 @@ describe('collapsed bar settings button', () => {
 
     expect(onCollapse).toHaveBeenCalledOnce()
     await waitFor(() => expect(tauriMocks.openSettingsWindow).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps the last tool briefly and cancels the linger timer on unmount', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const onCollapse = vi.fn()
+      const current = session()
+      const { rerender, unmount } = render(
+        <CollapsedBar
+          sessions={[{ ...current, lastToolName: 'Write', lastToolTarget: 'notes.md' }]}
+          panelState="collapsed"
+          onCollapse={onCollapse}
+        />,
+      )
+      act(() => { vi.advanceTimersByTime(0) })
+      rerender(<CollapsedBar sessions={[current]} panelState="collapsed" onCollapse={onCollapse} />)
+      act(() => { vi.advanceTimersByTime(1_999) })
+      expect(screen.getByText('notes.md')).toBeInTheDocument()
+
+      unmount()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('shows which session is waiting for approval in the collapsed island', () => {

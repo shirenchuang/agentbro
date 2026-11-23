@@ -59,6 +59,7 @@ const MASCOT_ASSETS: Record<string, MascotAsset> = {
   'stepfun': { src: stepfunIcon, inset: 3 },
   'antigravity': { src: antigravityIcon, inset: 3 },
   'workbuddy': { src: workbuddyIcon, inset: 3 },
+  'workbuddy-ai': { src: workbuddyIcon, inset: 3 },
   'hermes': { src: hermesIcon, inset: 3 },
   'pi': { src: piIcon, inset: 3 },
   'kiro': { src: kiroIcon, inset: 3 },

@@ -4,24 +4,63 @@ use super::profiles;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::PathBuf;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkBuddyEdition {
+    China,
+    Global,
+}
+
+impl WorkBuddyEdition {
+    pub(crate) fn from_agent_id(id: &str) -> Option<Self> {
+        match id {
+            "workbuddy" => Some(Self::China),
+            "workbuddy-ai" => Some(Self::Global),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::China => "workbuddy",
+            Self::Global => "workbuddy-ai",
+        }
+    }
+
+    pub(crate) fn display_name(self) -> &'static str {
+        match self {
+            Self::China => "WorkBuddy",
+            Self::Global => "WorkBuddy AI",
+        }
+    }
+
+    pub(crate) fn profile_dir(self) -> &'static str {
+        match self {
+            Self::China => ".workbuddy",
+            Self::Global => ".workbuddy-ai",
+        }
+    }
+}
+
 pub struct WorkBuddyAdapter {
+    edition: WorkBuddyEdition,
     config_root: PathBuf,
     status: AdapterStatus,
 }
 
 impl WorkBuddyAdapter {
     pub fn new() -> Self {
+        Self::for_edition(WorkBuddyEdition::China)
+    }
+
+    pub(crate) fn for_edition(edition: WorkBuddyEdition) -> Self {
         let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        let config_root = home.join(".workbuddy");
-        let status = Self::detect_status();
+        let config_root = home.join(edition.profile_dir());
+        let status = super::programs::detected_status_for_agent_program(edition.id());
         Self {
+            edition,
             config_root,
             status,
         }
-    }
-
-    fn detect_status() -> AdapterStatus {
-        super::programs::detected_status_for_agent_program("workbuddy")
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -31,24 +70,30 @@ impl WorkBuddyAdapter {
 
 impl AgentAdapter for WorkBuddyAdapter {
     fn name(&self) -> &str {
-        "workbuddy"
+        self.edition.id()
     }
     fn display_name(&self) -> &str {
-        "WorkBuddy"
+        self.edition.display_name()
     }
     fn icon(&self) -> &str {
         "workbuddy"
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        profiles::install_at(&profiles::workbuddy_profile(), &self.settings_path())?;
-        log::info!("WorkBuddy hooks installed");
+        profiles::install_at(
+            &profiles::workbuddy_profile(self.edition),
+            &self.settings_path(),
+        )?;
+        log::info!("{} hooks installed", self.display_name());
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        profiles::uninstall_at(&profiles::workbuddy_profile(), &self.settings_path())?;
-        log::info!("WorkBuddy hooks removed");
+        profiles::uninstall_at(
+            &profiles::workbuddy_profile(self.edition),
+            &self.settings_path(),
+        )?;
+        log::info!("{} hooks removed", self.display_name());
         Ok(())
     }
 
@@ -57,7 +102,7 @@ impl AgentAdapter for WorkBuddyAdapter {
     }
 
     fn detect_status_now(&self) -> AdapterStatus {
-        Self::detect_status()
+        super::programs::detected_status_for_agent_program(self.name())
     }
 
     fn parse_event(
@@ -86,6 +131,13 @@ impl AgentAdapter for WorkBuddyAdapter {
         let tool_input = tool_input_json(raw).unwrap_or_default();
 
         if is_permission_request(raw, event) {
+            if self.edition == WorkBuddyEdition::Global {
+                return Ok(AgentEvent::Notification {
+                    session_id,
+                    message: "Confirm this action in WorkBuddy AI".to_string(),
+                    status: Some("waiting_for_approval".to_string()),
+                });
+            }
             return Ok(AgentEvent::PermissionRequest {
                 session_id,
                 tool_name,
@@ -99,8 +151,10 @@ impl AgentAdapter for WorkBuddyAdapter {
                 session_id,
                 project: super::project_name_from_path(&cwd),
                 cwd,
-                terminal: string_field(raw, &["tty"]).unwrap_or("").to_string(),
-                agent_type: "workbuddy".to_string(),
+                terminal: string_field(raw, &["tty"])
+                    .unwrap_or(self.display_name())
+                    .to_string(),
+                agent_type: self.name().to_string(),
             }),
             "session_end" | "SessionEnd" => Ok(AgentEvent::SessionEnd { session_id }),
             "user_prompt_submit" | "UserPromptSubmit" => Ok(AgentEvent::Processing {
@@ -148,6 +202,13 @@ impl AgentAdapter for WorkBuddyAdapter {
                 text: string_field(raw, &["summary", "last_assistant_message", "message"])
                     .filter(|v| !v.trim().is_empty())
                     .unwrap_or("Task completed")
+                    .to_string(),
+            }),
+            "stop_failure" | "StopFailure" => Ok(AgentEvent::Error {
+                session_id,
+                message: string_field(raw, &["error_message", "stop_error", "message", "error"])
+                    .filter(|message| !message.trim().is_empty())
+                    .unwrap_or("Task failed")
                     .to_string(),
             }),
             "PreCompact" | "PostCompact" | "pre_compact" | "post_compact" => {
@@ -233,7 +294,7 @@ fn is_permission_request(raw: &serde_json::Value, event: &str) -> bool {
     }
 
     matches!(
-        string_field(raw, &["status", "notification_type", "notificationType"]),
+        string_field(raw, &["notification_type", "notificationType", "status"]),
         Some("permission_prompt" | "waiting_for_approval")
     )
 }
@@ -329,6 +390,7 @@ mod tests {
 
     fn adapter() -> WorkBuddyAdapter {
         WorkBuddyAdapter {
+            edition: WorkBuddyEdition::China,
             config_root: PathBuf::from("/tmp/workbuddy-test"),
             status: AdapterStatus::Available,
         }

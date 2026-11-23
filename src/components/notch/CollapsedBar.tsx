@@ -260,24 +260,15 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   // Linger: keep showing tool name for 2s after it clears
   const [lingeredToolName, setLingeredToolName] = useState<string | undefined>(undefined)
   const [lingeredToolTarget, setLingeredToolTarget] = useState<string | undefined>(undefined)
-  const lingerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const liveTool = lead?.lastToolName
+  const liveTarget = lead?.lastToolTarget
   useEffect(() => {
-    if (liveTool) {
-      if (lingerTimerRef.current) { clearTimeout(lingerTimerRef.current); lingerTimerRef.current = null }
-      const id = window.setTimeout(() => {
-        setLingeredToolName(liveTool)
-        setLingeredToolTarget(lead?.lastToolTarget)
-      }, 0)
-      return () => window.clearTimeout(id)
-    } else {
-      lingerTimerRef.current = setTimeout(() => {
-        setLingeredToolName(undefined)
-        setLingeredToolTarget(undefined)
-        lingerTimerRef.current = null
-      }, 2000)
-    }
-  }, [liveTool, lead?.lastToolTarget])
+    const id = window.setTimeout(() => {
+      setLingeredToolName(liveTool)
+      setLingeredToolTarget(liveTool ? liveTarget : undefined)
+    }, liveTool ? 0 : 2000)
+    return () => window.clearTimeout(id)
+  }, [liveTool, liveTarget])
 
   const effectiveToolName = lingeredToolName
   const effectiveToolTarget = lingeredToolTarget

@@ -1,9 +1,13 @@
 // SessionStore — Thread-safe session state management
 // Central source of truth for all agent sessions
 
+use crate::terminal::process_tree::{build_tree, ProcessInfo};
 use chrono::Utc;
-use dashmap::DashMap;
+use dashmap::{mapref::entry::Entry, DashMap};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
@@ -186,11 +190,21 @@ pub struct PendingQuestion {
     pub multi_select: bool,
     #[serde(default)]
     pub questions: Vec<QuestionItem>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "toolUseId",
+        alias = "tool_use_id",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub tool_use_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "responseMode",
+        alias = "response_mode",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub response_mode: Option<String>,
 }
 
@@ -218,6 +232,8 @@ pub struct QuestionOption {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     pub title: String,
     pub content: String,
     pub permissions: Vec<String>,
@@ -309,6 +325,7 @@ pub struct SessionState {
     pub session_title: Option<String>,
     pub remote_host_id: Option<String>,
     pub remote_host_name: Option<String>,
+    pub wsl_distribution: Option<String>,
     pub pid: Option<u32>,
     pub tty: Option<String>,
     pub term_program: Option<String>,
@@ -365,6 +382,7 @@ impl SessionState {
             session_title: None,
             remote_host_id: None,
             remote_host_name: None,
+            wsl_distribution: None,
             pid: None,
             tty: None,
             term_program: None,
@@ -433,6 +451,8 @@ pub struct SessionUpdatePayload {
 pub struct SessionStore {
     sessions: Arc<DashMap<String, SessionState>>,
     app_handle: Option<AppHandle>,
+    #[cfg(test)]
+    update_requests: Arc<AtomicUsize>,
 }
 
 impl SessionStore {
@@ -440,7 +460,14 @@ impl SessionStore {
         Self {
             sessions: Arc::new(DashMap::new()),
             app_handle: None,
+            #[cfg(test)]
+            update_requests: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn update_request_count(&self) -> usize {
+        self.update_requests.load(Ordering::Relaxed)
     }
 
     /// Set the app handle for emitting Tauri events
@@ -505,12 +532,59 @@ impl SessionStore {
         self.emit_update();
     }
 
+    pub(super) fn apply_observed_sessions<'a>(
+        &self,
+        updates: Vec<SessionState>,
+        removed_ids: impl Iterator<Item = &'a str>,
+    ) {
+        let mut changed = !updates.is_empty();
+        for observed in updates {
+            match self.sessions.entry(observed.id.clone()) {
+                Entry::Occupied(mut entry) => {
+                    let current = entry.get_mut();
+                    current.phase = observed.phase;
+                    current.description = observed.description;
+                    current.session_title = observed.session_title;
+                    current.term_bundle_id = observed.term_bundle_id;
+                    reconcile_pending_for_phase(current);
+                    current.update_duration();
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(observed);
+                }
+            }
+        }
+        for id in removed_ids {
+            changed |= self.sessions.remove(id).is_some();
+        }
+        if changed {
+            self.emit_update();
+        }
+    }
+
     /// Set pending permission on a session
     pub fn set_pending_permission(&self, session_id: &str, permission: Option<PendingPermission>) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
             session.pending_permission = permission;
             if session.pending_permission.is_some() {
                 session.phase = SessionPhase::WaitingApproval;
+            }
+            session.update_duration();
+        }
+        self.emit_update();
+    }
+
+    pub fn clear_matching_permission(&self, session_id: &str, tool_use_id: Option<&str>) {
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            let Some(permission) = session.pending_permission.as_ref() else {
+                return;
+            };
+            if permission.tool_use_id.as_deref() != tool_use_id {
+                return;
+            }
+            session.pending_permission = None;
+            if session.phase == SessionPhase::WaitingApproval && session.pending_plan.is_none() {
+                session.phase = SessionPhase::Processing;
             }
             session.update_duration();
         }
@@ -529,6 +603,28 @@ impl SessionStore {
         self.emit_update();
     }
 
+    pub fn clear_matching_question(&self, session_id: &str, tool_use_id: Option<&str>) {
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            let Some(question) = session.pending_question.as_ref() else {
+                return;
+            };
+            if question.tool_use_id.as_deref() != tool_use_id {
+                return;
+            }
+            session.pending_question = None;
+            if session.phase == SessionPhase::WaitingInput {
+                session.phase =
+                    if session.pending_permission.is_some() || session.pending_plan.is_some() {
+                        SessionPhase::WaitingApproval
+                    } else {
+                        SessionPhase::Processing
+                    };
+            }
+            session.update_duration();
+        }
+        self.emit_update();
+    }
+
     /// Set pending plan approval on a session
     pub fn set_pending_plan(&self, session_id: &str, plan: Option<PendingPlan>) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
@@ -538,6 +634,31 @@ impl SessionStore {
             }
             session.update_duration();
         }
+        self.emit_update();
+    }
+
+    pub fn clear_matching_plan(&self, session_id: &str, request_id: &str) {
+        let Some(mut session) = self.sessions.get_mut(session_id) else {
+            return;
+        };
+        if session
+            .pending_plan
+            .as_ref()
+            .and_then(|plan| plan.request_id.as_deref())
+            != Some(request_id)
+        {
+            return;
+        }
+        session.pending_plan = None;
+        if session.phase == SessionPhase::WaitingApproval && session.pending_permission.is_none() {
+            session.phase = if session.pending_question.is_some() {
+                SessionPhase::WaitingInput
+            } else {
+                SessionPhase::Processing
+            };
+        }
+        session.update_duration();
+        drop(session);
         self.emit_update();
     }
 
@@ -801,7 +922,7 @@ impl SessionStore {
 
     /// Get all sessions as a vector
     pub fn get_all_sessions(&self) -> Vec<SessionState> {
-        self.prune_dead_process_sessions();
+        self.prune_dead_process_sessions(&build_tree());
         self.sessions
             .iter()
             .map(|entry| {
@@ -812,8 +933,11 @@ impl SessionStore {
             .collect()
     }
 
-    fn prune_dead_process_sessions(&self) {
-        let tree = crate::terminal::process_tree::build_tree();
+    fn prune_dead_process_sessions(&self, tree: &HashMap<u32, ProcessInfo>) {
+        // A usable system snapshot always includes the AgentBro process.
+        if !tree.contains_key(&std::process::id()) {
+            return;
+        }
         let mut ended_ids = Vec::new();
         let mut stale_ids = Vec::new();
 
@@ -883,6 +1007,8 @@ impl SessionStore {
     }
 
     fn emit_update_with_suppression(&self, suppressed: bool) {
+        #[cfg(test)]
+        self.update_requests.fetch_add(1, Ordering::Relaxed);
         if let Some(ref handle) = self.app_handle {
             let sessions = self.get_all_sessions();
             let payload = SessionUpdatePayload {
@@ -910,6 +1036,24 @@ mod tests {
         let store = SessionStore::new();
         store.get_or_create_session("s1", "claude-code", "agentbro", "/tmp/agentbro", "iTerm");
         store
+    }
+
+    #[test]
+    fn pending_question_accepts_legacy_ids_and_serializes_for_the_frontend() {
+        let question: PendingQuestion = serde_json::from_value(serde_json::json!({
+            "question": "Continue?",
+            "options": ["Yes", "No"],
+            "descriptions": [],
+            "multiSelect": false,
+            "tool_use_id": "request-2",
+            "response_mode": "app_server",
+        }))
+        .unwrap();
+        let value = serde_json::to_value(question).unwrap();
+        assert_eq!(value["toolUseId"], "request-2");
+        assert_eq!(value["responseMode"], "app_server");
+        assert!(value.get("tool_use_id").is_none());
+        assert!(value.get("response_mode").is_none());
     }
 
     #[test]
@@ -1019,6 +1163,42 @@ mod tests {
 
         session.tasks[0].status = "completed".to_string();
         assert!(!session.has_unfinished_tasks());
+    }
+
+    #[test]
+    fn preserves_running_and_finished_sessions_when_process_snapshot_is_unavailable() {
+        let store = seeded_store();
+        let pid = std::process::id();
+        store.update_session("s1", |session| {
+            session.pid = Some(pid);
+            session.phase = SessionPhase::Processing;
+        });
+        store.get_or_create_session("finished", "claude-code", "agentbro", "/tmp/agentbro", "");
+        store.update_session("finished", |session| {
+            session.pid = Some(pid);
+            session.phase = SessionPhase::Done;
+        });
+
+        let incomplete = HashMap::from([(
+            u32::MAX,
+            ProcessInfo {
+                pid: u32::MAX,
+                ppid: 0,
+                command: "other".into(),
+                tty: None,
+            },
+        )]);
+        for snapshot in [HashMap::new(), incomplete] {
+            store.prune_dead_process_sessions(&snapshot);
+            assert_eq!(
+                store.get_session("s1").unwrap().phase,
+                SessionPhase::Processing
+            );
+            assert_eq!(
+                store.get_session("finished").unwrap().phase,
+                SessionPhase::Done
+            );
+        }
     }
 
     #[test]

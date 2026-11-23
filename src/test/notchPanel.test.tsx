@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NotchPanel } from '../components/notch/NotchPanel'
+import { OverlayCard } from '../components/overlay/OverlayCard'
 import { useConfigStore } from '../stores/configStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useThemeStore } from '../stores/themeStore'
@@ -9,6 +11,7 @@ import { MATCH_NOTCH_HEIGHT } from '../utils/islandLayout'
 import { isApplePlatform } from '../utils/platform'
 
 const tauriMocks = vi.hoisted(() => ({
+  listen: vi.fn<typeof import('@tauri-apps/api/event').listen>(() => Promise.resolve(() => {})),
   getChatHistory: vi.fn(() => Promise.resolve([])),
   getChatHistoryTail: vi.fn(() => Promise.resolve({ messages: [], hasMore: false, firstMessageId: null, totalCount: 0, transcriptPath: null })),
   isTerminalFocused: vi.fn((sessionId?: string) => Promise.resolve(Boolean(sessionId && false))),
@@ -24,9 +27,9 @@ const tauriMocks = vi.hoisted(() => ({
   }),
   isCursorOverNotch: vi.fn(() => Promise.resolve(false)),
   isTauri: vi.fn(() => false),
-  resizeNotch: vi.fn(() => Promise.resolve({ anchorOffsetX: 0 })),
-  startNotchDrag: vi.fn(() => Promise.resolve(true)),
-  endNotchDrag: vi.fn(() => Promise.resolve(null)),
+  resizeNotch: vi.fn<typeof import('../services/tauriApi').resizeNotch>(() => Promise.resolve({ anchorOffsetX: 0 })),
+  startNotchDrag: vi.fn<typeof import('../services/tauriApi').startNotchDrag>(() => Promise.resolve(0)),
+  endNotchDrag: vi.fn<typeof import('../services/tauriApi').endNotchDrag>(() => Promise.resolve(null)),
 }))
 
 function primaryModifierKeyEvent() {
@@ -34,7 +37,7 @@ function primaryModifierKeyEvent() {
 }
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(() => Promise.resolve(() => {})),
+  listen: tauriMocks.listen,
 }))
 
 vi.mock('../services/tauriApi', async (importOriginal) => {
@@ -97,6 +100,8 @@ function mountIsland(activeOverlay: OverlayItem | null = null, sessionOverrides:
     panelState: 'hover',
     activeOverlay,
     overlayQueue: activeOverlay ? [activeOverlay] : [],
+    questionReplies: new Map(),
+    planReplies: new Map(),
     rateLimits: undefined,
     hookNotification: null,
     wakeSilencedUntil: 0,
@@ -124,6 +129,23 @@ function deferred<T = void>() {
   return { promise, resolve, reject }
 }
 
+it('opens the notification session list once per keyboard or pointer activation', async () => {
+  const onShowSessions = vi.fn()
+  render(
+    <OverlayCard session={session()} onShowSessions={onShowSessions} sessionCount={1}>
+      <span>Approval details</span>
+    </OverlayCard>,
+  )
+  const sessions = screen.getByRole('button', { name: 'notch.showAllSessions' })
+  sessions.focus()
+  await userEvent.keyboard('{Enter}')
+  expect(onShowSessions).toHaveBeenCalledTimes(1)
+
+  fireEvent.mouseDown(sessions)
+  fireEvent.click(sessions, { detail: 1 })
+  expect(onShowSessions).toHaveBeenCalledTimes(2)
+})
+
 describe('NotchPanel island shell', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -139,7 +161,7 @@ describe('NotchPanel island shell', () => {
     tauriMocks.isCursorOverNotch.mockResolvedValue(false)
     tauriMocks.isTauri.mockReturnValue(false)
     tauriMocks.resizeNotch.mockResolvedValue({ anchorOffsetX: 0 })
-    tauriMocks.startNotchDrag.mockResolvedValue(true)
+    tauriMocks.startNotchDrag.mockResolvedValue(0)
     tauriMocks.endNotchDrag.mockResolvedValue(null)
     useThemeStore.getState().loadThemes([])
     useThemeStore.getState().setActiveTheme('default')
@@ -158,7 +180,12 @@ describe('NotchPanel island shell', () => {
       islandAnimationScale: 1,
       islandSurfaceMode: 'island',
       maxPanelHeight: 600,
+      collapsedWidthScale: 100,
+      compactPillWidth: useConfigStore.getInitialState().compactPillWidth,
+      customNotchHeight: useConfigStore.getInitialState().customNotchHeight,
+      displayMonitor: 'auto',
       microPillWidth: 112,
+      notchHeightMode: 'matchNotch',
       notchStyle: 'compact',
       panelMaxWidth: 630,
       panelHorizontalOffset: 0,
@@ -176,6 +203,40 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'hover')
     expect(screen.getByText('agentbro · Port dynamic island')).toBeInTheDocument()
     expect(screen.getByText('Claude')).toBeInTheDocument()
+  })
+
+  it('previews island dimensions without persisting uncommitted settings', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    const configuredDimensions = {
+      notchHeightMode: 'custom' as const,
+      customNotchHeight: 37,
+      compactPillWidth: 360,
+      collapsedWidthScale: 100,
+    }
+    useConfigStore.setState(configuredDimensions)
+    mountIsland()
+    const originalWidth = hitboxWidthVar()
+
+    await waitFor(() => {
+      expect(tauriMocks.listen).toHaveBeenCalledWith('island-layout-preview', expect.any(Function))
+      expect(tauriMocks.listen).toHaveBeenCalledWith('island-layout-preview-clear', expect.any(Function))
+    })
+    const listeners = tauriMocks.listen.mock.calls
+    const preview = listeners.find(([event]) => event === 'island-layout-preview')![1]
+    const clear = listeners.find(([event]) => event === 'island-layout-preview-clear')![1]
+    act(() => preview({
+      event: 'island-layout-preview',
+      id: 1,
+      payload: { mode: 'compact', notchHeightMode: 'custom', customNotchHeight: 55, compactPillWidth: 500 },
+    }))
+
+    expect(hitboxWidthVar()).not.toBe(originalWidth)
+    expect(useConfigStore.getState()).toMatchObject(configuredDimensions)
+
+    act(() => clear({ event: 'island-layout-preview-clear', id: 2, payload: null }))
+
+    expect(hitboxWidthVar()).toBe(originalWidth)
+    expect(useConfigStore.getState()).toMatchObject(configuredDimensions)
   })
 
   it('collapses the island before opening settings so the transparent host cannot block it', () => {
@@ -248,6 +309,40 @@ describe('NotchPanel island shell', () => {
       expect(useSessionStore.getState().panelState).toBe('hover')
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it.each(['auto', 'fixed'])('handles queued cursor display changes after a pending resize in %s mode', async (mode) => {
+    const firstResize = deferred<{ anchorOffsetX: number }>()
+    tauriMocks.isTauri.mockReturnValue(true)
+    let cursorMonitor = 'monitor-a'
+    const positionedMonitors: string[] = []
+    tauriMocks.resizeNotch.mockImplementation((_width, _height, _offset, displayId) => {
+      if (displayId !== 'auto') return Promise.resolve({ anchorOffsetX: 0 })
+      positionedMonitors.push(cursorMonitor)
+      return positionedMonitors.length === 1 ? firstResize.promise : Promise.resolve({ anchorOffsetX: 0 })
+    })
+    mountIsland()
+    await waitFor(() => expect(tauriMocks.listen).toHaveBeenCalledWith('cursor-monitor-changed', expect.any(Function)))
+    const onMonitorChange = tauriMocks.listen.mock.calls.find(([event]) => event === 'cursor-monitor-changed')![1]
+
+    act(() => {
+      for (const monitorId of ['monitor-b', 'monitor-c']) {
+        cursorMonitor = monitorId
+        onMonitorChange({ event: 'cursor-monitor-changed', id: 1, payload: { monitorId } })
+      }
+    })
+    expect(positionedMonitors).toEqual(['monitor-a'])
+
+    if (mode === 'fixed') {
+      act(() => useConfigStore.setState({ displayMonitor: 'monitor-fixed' }))
+    }
+    await act(async () => { firstResize.resolve({ anchorOffsetX: 0 }) })
+    expect(positionedMonitors).toEqual(mode === 'auto' ? ['monitor-a', 'monitor-c'] : ['monitor-a'])
+    if (mode === 'fixed') {
+      expect(tauriMocks.resizeNotch).toHaveBeenLastCalledWith(
+        expect.any(Number), expect.any(Number), 0, 'monitor-fixed',
+      )
     }
   })
 
@@ -333,6 +428,121 @@ describe('NotchPanel island shell', () => {
       expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it('restores the detail height when the earlier native list resize completes last', async () => {
+    const pending: Array<{ height: number; apply: () => void }> = []
+    let nativeHeight = 0
+    let immediate = false
+    tauriMocks.resizeNotch.mockImplementation((_width, height) => new Promise((resolve) => {
+      const apply = () => {
+        nativeHeight = height
+        resolve({ anchorOffsetX: 0 })
+      }
+      if (immediate) apply()
+      else pending.push({ height, apply })
+    }))
+    const waiting = session({
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: 'echo fixture' },
+    })
+    useSessionStore.setState({
+      sessions: { [waiting.id]: waiting },
+      sessionList: [waiting],
+      activeSessionId: waiting.id,
+      panelState: 'hover',
+      activeOverlay: null,
+      overlayQueue: [],
+    })
+
+    render(<NotchPanel />)
+    act(() => { useSessionStore.getState().setPanelState('expanded') })
+
+    const [listResize, detailResize] = pending
+    expect(detailResize.height).toBeGreaterThan(listResize.height)
+    await act(async () => { detailResize.apply() })
+    expect(nativeHeight).toBe(detailResize.height)
+    immediate = true
+    await act(async () => { listResize.apply() })
+    expect(nativeHeight).toBe(detailResize.height)
+  })
+
+  it('removes a closing session list from the accessibility tree during its exit animation', () => {
+    mountIsland()
+    const list = screen.getByTestId('notch-hover-content')
+    expect(list).not.toHaveAttribute('inert')
+    expect(list).not.toHaveAttribute('aria-hidden')
+
+    act(() => { useSessionStore.getState().setPanelState('expanded') })
+
+    expect(list).toBeInTheDocument()
+    expect(list).toHaveAttribute('inert')
+    expect(list).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('keeps the Windows viewport steady when opening and resolving a permission', async () => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    try {
+      tauriMocks.isTauri.mockReturnValue(true)
+      tauriMocks.isCursorOverNotch.mockResolvedValue(false)
+      useConfigStore.setState({ islandAnimationScale: 0.1 })
+      mountIsland()
+      const container = document.querySelector<HTMLElement>('.notch-container')!
+      const panel = screen.getByRole('region', { name: 'AgentBro' })
+      const hostHeight = () => parseFloat(container.style.getPropertyValue('--notch-host-height'))
+      const hitboxHeight = () => parseFloat(container.style.getPropertyValue('--notch-hitbox-height'))
+      const viewportHeight = hostHeight()
+      const viewportWidth = hostWidthVar()
+      const waiting = session({
+        phase: 'waiting_approval',
+        pendingPermission: { toolName: 'Bash', toolInput: 'echo fixture' },
+      })
+      const overlay: OverlayItem = {
+        id: 'permission-s1',
+        sessionId: waiting.id,
+        type: 'permission',
+        data: { toolName: 'Bash', toolInput: 'echo fixture' },
+        createdAt: Date.now(),
+      }
+      act(() => useSessionStore.setState({
+        sessions: { [waiting.id]: waiting },
+        sessionList: [waiting],
+        activeOverlay: overlay,
+        overlayQueue: [overlay],
+      }))
+      expect(hitboxWidthVar()).toBe('656px')
+      expect(hostWidthVar()).toBe(viewportWidth)
+      expect(hostHeight()).toBe(viewportHeight)
+      await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true))
+
+      tauriMocks.isCursorOverNotch.mockResolvedValue(true)
+      await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenLastCalledWith(false))
+      fireEvent.mouseDown(await screen.findByRole('button', { name: 'notch.showAllSessions' }))
+      const waitingSession = await screen.findByText('agentbro · Port dynamic island')
+      const listHeight = hitboxHeight()
+      expect(hitboxWidthVar()).toBe('686px')
+      const listPanelHeight = parseFloat(panel.style.height)
+      fireEvent.mouseDown(waitingSession, { button: 0 })
+      await waitFor(() => expect(useSessionStore.getState().panelState).toBe('expanded'))
+
+      expect(hitboxHeight()).toBeGreaterThan(listHeight)
+      expect(parseFloat(panel.style.height)).toBeGreaterThan(listPanelHeight)
+      expect(panel).toHaveStyle({ width: '658px', height: '500px' })
+      expect(hostHeight()).toBe(viewportHeight)
+      expect(viewportHeight).toBeGreaterThanOrEqual(hitboxHeight())
+      const deny = await screen.findByRole('button', { name: 'notch.deny' })
+      deny.focus()
+      await userEvent.keyboard(' ')
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'notch.deny' })).toBeNull())
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)) })
+      expect(useSessionStore.getState().panelState).toBe('expanded')
+      expect(hostHeight()).toBe(viewportHeight)
+      expect(tauriMocks.resizeNotch.mock.calls.every(([width, height]) =>
+        `${width}px` === viewportWidth && height === viewportHeight
+      )).toBe(true)
+    } finally {
+      platform.mockRestore()
     }
   })
 
@@ -431,7 +641,54 @@ describe('NotchPanel island shell', () => {
     })
   })
 
-  it('serializes native cursor passthrough so a stale hidden request cannot disable hover', async () => {
+  it('does not immediately resubmit a failed native passthrough change', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    const firstRequest = deferred()
+    const nextHoverProbe = deferred<boolean>()
+    const error = new Error('native passthrough unavailable')
+    tauriMocks.isCursorOverNotch
+      .mockResolvedValueOnce(false)
+      .mockImplementation(() => nextHoverProbe.promise)
+    tauriMocks.setNotchIgnoreCursorEvents
+      .mockImplementationOnce(() => firstRequest.promise)
+      .mockRejectedValueOnce(error)
+
+    try {
+      await act(async () => {
+        mountIsland()
+        useSessionStore.getState().setPanelState('collapsed')
+      })
+      await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true))
+      await act(async () => {
+        firstRequest.reject(error)
+        await firstRequest.promise.catch(() => {})
+      })
+
+      expect(tauriMocks.setNotchIgnoreCursorEvents.mock.calls).toEqual([[true]])
+    } finally {
+      tauriMocks.setNotchIgnoreCursorEvents.mockReset().mockResolvedValue(undefined)
+    }
+  })
+
+  it('waits until the next hover poll to retry failed native cursor passthrough', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    const nextHoverProbe = deferred<boolean>()
+    tauriMocks.isCursorOverNotch
+      .mockResolvedValueOnce(false)
+      .mockImplementation(() => nextHoverProbe.promise)
+    tauriMocks.setNotchIgnoreCursorEvents.mockRejectedValueOnce(new Error('native passthrough unavailable'))
+
+    await act(async () => { mountIsland() })
+    await waitFor(() => expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledTimes(2))
+
+    expect(tauriMocks.setNotchIgnoreCursorEvents.mock.calls).toEqual([[false]])
+
+    await act(async () => { nextHoverProbe.resolve(false) })
+
+    expect(tauriMocks.setNotchIgnoreCursorEvents.mock.calls).toEqual([[false], [false]])
+  })
+
+  it.each(['succeeds', 'fails'])('serializes native cursor passthrough when the stale hidden request %s', async (result) => {
     tauriMocks.isTauri.mockReturnValue(true)
     const pendingCollapsedPassthrough = deferred()
     tauriMocks.setNotchIgnoreCursorEvents
@@ -466,8 +723,9 @@ describe('NotchPanel island shell', () => {
     expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      pendingCollapsedPassthrough.resolve()
-      await pendingCollapsedPassthrough.promise
+      if (result === 'succeeds') pendingCollapsedPassthrough.resolve()
+      else pendingCollapsedPassthrough.reject(new Error('native passthrough unavailable'))
+      await pendingCollapsedPassthrough.promise.catch(() => {})
     })
 
     await waitFor(() => {
@@ -517,10 +775,10 @@ describe('NotchPanel island shell', () => {
 
     const dragHandle = screen.getByTestId('notch-drag-handle')
     fireEvent.pointerDown(dragHandle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
-    fireEvent.pointerMove(dragHandle, { pointerId: 7, clientX: 118, clientY: 2 })
+    fireEvent.pointerMove(dragHandle, { pointerId: 7, pointerType: 'mouse', clientX: 118, clientY: 2 })
 
     await waitFor(() => {
-      expect(tauriMocks.startNotchDrag).toHaveBeenCalledWith(0, 686, 192, 'auto')
+      expect(tauriMocks.startNotchDrag).toHaveBeenCalledWith(0, 686, 192, 'auto', true)
     })
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-dragging', 'true')
     expect(screen.getByText('agentbro · Port dynamic island')).toBeInTheDocument()
@@ -528,8 +786,206 @@ describe('NotchPanel island shell', () => {
     fireEvent.pointerUp(dragHandle, { pointerId: 7 })
 
     await waitFor(() => {
-      expect(tauriMocks.endNotchDrag).toHaveBeenCalled()
+      expect(tauriMocks.endNotchDrag).toHaveBeenCalledWith(0)
     })
+  })
+
+  it('waits for native drag startup before ending a released gesture', async () => {
+    const start = deferred<number | null>()
+    tauriMocks.startNotchDrag.mockReturnValueOnce(start.promise)
+    useConfigStore.setState({ allowHorizontalDrag: true })
+    mountIsland(null, { phase: 'idle' })
+
+    const handle = screen.getByTestId('notch-drag-handle')
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 118, clientY: 2 })
+    await waitFor(() => expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1))
+    fireEvent.pointerUp(handle, { pointerId: 7 })
+    fireEvent.mouseUp(window)
+    expect(tauriMocks.endNotchDrag).not.toHaveBeenCalled()
+    const panel = screen.getByRole('region', { name: 'AgentBro' })
+    expect(panel).toHaveAttribute('data-dragging', 'true')
+
+    await act(async () => { start.resolve(4) })
+    expect(tauriMocks.endNotchDrag).toHaveBeenCalledExactlyOnceWith(4)
+    expect(panel).toHaveAttribute('data-dragging', 'false')
+  })
+
+  it('lets pending Windows frame writes finish before native dragging without replaying the old position', async () => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    try {
+      const earlierResize = deferred<{ anchorOffsetX: number }>()
+      tauriMocks.isTauri.mockReturnValue(true)
+      tauriMocks.resizeNotch.mockReturnValueOnce(earlierResize.promise)
+      useConfigStore.setState({ allowHorizontalDrag: true, displayMonitor: 'primary', panelHorizontalOffset: 0 })
+      mountIsland(null, { phase: 'idle' })
+      await waitFor(() => expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1))
+
+      await act(async () => { useConfigStore.getState().updateConfig('panelHorizontalOffset', 24) })
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
+
+      const handle = screen.getByTestId('notch-drag-handle')
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+      await act(async () => {
+        fireEvent.pointerMove(handle, { pointerId: 7, pointerType: 'mouse', clientX: 118, clientY: 2 })
+      })
+      expect(tauriMocks.startNotchDrag).not.toHaveBeenCalled()
+
+      await act(async () => { earlierResize.resolve({ anchorOffsetX: 0 }) })
+      expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1)
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
+
+      fireEvent.pointerUp(handle, { pointerId: 7 })
+      await waitFor(() => expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(1))
+    } finally {
+      platform.mockRestore()
+    }
+  })
+
+  it('cancels a Windows drag released before the pending frame write finishes', async () => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    try {
+      const resize = deferred<{ anchorOffsetX: number }>()
+      tauriMocks.isTauri.mockReturnValue(true)
+      tauriMocks.resizeNotch.mockReturnValueOnce(resize.promise)
+      useConfigStore.setState({ allowHorizontalDrag: true, displayMonitor: 'primary' })
+      mountIsland(null, { phase: 'idle' })
+      await waitFor(() => expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1))
+
+      const handle = screen.getByTestId('notch-drag-handle')
+      const panel = screen.getByRole('region', { name: 'AgentBro' })
+      const beginDrag = () => {
+        fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+        fireEvent.pointerMove(handle, { pointerId: 7, pointerType: 'mouse', clientX: 118, clientY: 2 })
+      }
+      beginDrag()
+      fireEvent.pointerUp(handle, { pointerId: 7 })
+      await act(async () => { resize.resolve({ anchorOffsetX: 0 }) })
+
+      expect(tauriMocks.startNotchDrag).not.toHaveBeenCalled()
+      expect(tauriMocks.endNotchDrag).not.toHaveBeenCalled()
+      expect(panel).toHaveAttribute('data-dragging', 'false')
+
+      beginDrag()
+      await waitFor(() => expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1))
+      fireEvent.pointerUp(handle, { pointerId: 7 })
+      await waitFor(() => expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(1))
+    } finally {
+      platform.mockRestore()
+    }
+  })
+
+  it('waits for the final drag offset before resizing the Island after release', async () => {
+    const finish = deferred<number | null>()
+    tauriMocks.isTauri.mockReturnValue(true)
+    tauriMocks.endNotchDrag.mockReturnValueOnce(finish.promise)
+    useConfigStore.setState({ allowHorizontalDrag: true })
+    mountIsland(null, { phase: 'idle' })
+    await waitFor(() => expect(tauriMocks.resizeNotch).toHaveBeenCalled())
+
+    const handle = screen.getByTestId('notch-drag-handle')
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 118, clientY: 2 })
+    await waitFor(() => expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1))
+
+    tauriMocks.resizeNotch.mockClear()
+    act(() => { useSessionStore.getState().setPanelState('expanded') })
+    fireEvent.pointerUp(handle, { pointerId: 7 })
+    await waitFor(() => expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(1))
+    expect(tauriMocks.resizeNotch).not.toHaveBeenCalled()
+
+    await act(async () => { finish.resolve(36) })
+    expect(tauriMocks.resizeNotch).toHaveBeenCalled()
+    expect(tauriMocks.resizeNotch.mock.calls.every(([, , offset]) => offset === 36)).toBe(true)
+  })
+
+  it('finishes the previous drag before starting another with the same pointer', async () => {
+    const finish = deferred<number | null>()
+    tauriMocks.endNotchDrag.mockReturnValueOnce(finish.promise)
+    useConfigStore.setState({ allowHorizontalDrag: true })
+    mountIsland(null, { phase: 'idle' })
+    const handle = screen.getByTestId('notch-drag-handle')
+
+    const beginDrag = () => {
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+      fireEvent.pointerMove(handle, { pointerId: 7, clientX: 118, clientY: 2 })
+    }
+    beginDrag()
+    await waitFor(() => expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1))
+    fireEvent.pointerUp(handle, { pointerId: 7 })
+    await waitFor(() => expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(1))
+    beginDrag()
+    expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1)
+
+    await act(async () => { finish.resolve(25) })
+    expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(2)
+    expect(tauriMocks.startNotchDrag).toHaveBeenLastCalledWith(25, 686, 192, 'auto', false)
+    fireEvent.pointerUp(handle, { pointerId: 7 })
+    await waitFor(() => expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(2))
+  })
+
+  it('releases pointer capture when native drag startup rejects', async () => {
+    const start = deferred<number | null>()
+    tauriMocks.startNotchDrag.mockReturnValueOnce(start.promise)
+    useConfigStore.setState({ allowHorizontalDrag: true })
+    mountIsland(null, { phase: 'idle' })
+
+    const island = screen.getByRole('region', { name: 'AgentBro' })
+    const capture = vi.fn()
+    const release = vi.fn()
+    Object.assign(island, {
+      setPointerCapture: capture,
+      hasPointerCapture: () => true,
+      releasePointerCapture: release,
+    })
+    const handle = screen.getByTestId('notch-drag-handle')
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 118, clientY: 2 })
+    expect(capture).toHaveBeenCalledWith(7)
+    await waitFor(() => expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1))
+
+    await act(async () => { start.reject(new Error('native drag failed')) })
+    expect(release).toHaveBeenCalledWith(7)
+    expect(island).toHaveAttribute('data-dragging', 'false')
+    expect(tauriMocks.endNotchDrag).not.toHaveBeenCalled()
+  })
+
+  it('finishes a matching native release without a DOM event and ignores an older release', async () => {
+    const start = deferred<number | null>()
+    tauriMocks.isTauri.mockReturnValue(true)
+    tauriMocks.startNotchDrag.mockReturnValueOnce(start.promise).mockResolvedValueOnce(11)
+    tauriMocks.endNotchDrag.mockResolvedValueOnce(36)
+    useConfigStore.setState({ allowHorizontalDrag: true })
+    mountIsland(null, { phase: 'idle' })
+
+    const panel = screen.getByRole('region', { name: 'AgentBro' })
+    const handle = screen.getByTestId('notch-drag-handle')
+    const beginDrag = () => {
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+      fireEvent.pointerMove(handle, { pointerId: 7, pointerType: 'mouse', clientX: 118, clientY: 2 })
+    }
+    const notifyStopped = tauriMocks.listen.mock.calls.find(([event]) => event === 'notch-drag-stopped')![1]
+    const stop = (payload: number) => act(async () => {
+      notifyStopped({ event: 'notch-drag-stopped', id: 1, payload })
+    })
+
+    beginDrag()
+    await waitFor(() => expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1))
+    await stop(10)
+    expect(tauriMocks.endNotchDrag).not.toHaveBeenCalled()
+    await act(async () => { start.resolve(10) })
+    expect(panel).toHaveAttribute('data-dragging', 'false')
+    expect(tauriMocks.endNotchDrag).toHaveBeenCalledExactlyOnceWith(10)
+    expect(useConfigStore.getState().panelHorizontalOffset).toBe(36)
+
+    beginDrag()
+    await waitFor(() => expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(2))
+    await stop(10)
+    expect(panel).toHaveAttribute('data-dragging', 'true')
+    expect(tauriMocks.endNotchDrag).toHaveBeenCalledExactlyOnceWith(10)
+    await stop(11)
+    expect(panel).toHaveAttribute('data-dragging', 'false')
+    expect(tauriMocks.endNotchDrag).toHaveBeenLastCalledWith(11)
   })
 
   it('keeps native interaction enabled when opening session detail', async () => {
@@ -859,10 +1315,11 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(tauriMocks.sendMessage).toHaveBeenCalledWith('s1', 'continue please'))
   })
 
-  it('routes detail question input through the hook question responder', async () => {
+  it('keeps a failed detail reply and its draft available for retry', async () => {
+    tauriMocks.respondQuestion.mockRejectedValueOnce(new Error('Hook disconnected'))
     mountIsland(null, {
       phase: 'waiting_input',
-      pendingQuestion: { question: 'Need confirmation', options: [] },
+      pendingQuestion: { toolUseId: 'detail-question', question: 'Need confirmation', options: [] },
     })
 
     fireEvent.click(screen.getByText('agentbro · Port dynamic island'))
@@ -872,9 +1329,14 @@ describe('NotchPanel island shell', () => {
     fireEvent.change(input, { target: { value: 'ok' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    await waitFor(() => expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'ok'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Hook disconnected')
+    expect(input).toHaveValue('ok')
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion?.toolUseId).toBe('detail-question')
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(tauriMocks.respondQuestion).toHaveBeenNthCalledWith(2, 's1', 'ok', 'detail-question')
     expect(tauriMocks.sendMessage).not.toHaveBeenCalledWith('s1', 'ok')
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('routes detail approval bar actions on mouse down', async () => {
@@ -892,7 +1354,7 @@ describe('NotchPanel island shell', () => {
     expect(allowButton).toBeInTheDocument()
     fireEvent.mouseDown(allowButton)
 
-    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, false)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, false, undefined)
     await waitFor(() => {
       expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
     })
@@ -914,10 +1376,50 @@ describe('NotchPanel island shell', () => {
     expect(allowButton).toBeInTheDocument()
     fireEvent.click(allowButton)
 
-    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, undefined)
     await waitFor(() => {
       expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
     })
+  })
+
+  it('keeps a second permission open when the first response arrives late', async () => {
+    const firstReply = deferred()
+    tauriMocks.respondPermission.mockReturnValueOnce(firstReply.promise)
+    const first = { toolUseId: 'first', toolName: 'Bash', toolInput: '{"command":"pnpm test"}' }
+    const second = { ...first, toolUseId: 'second', toolInput: '{"command":"pnpm build"}' }
+    mountIsland({
+      id: 'permission-s1-first',
+      sessionId: 's1',
+      type: 'permission',
+      data: first,
+      createdAt: Date.now(),
+    }, { agentType: 'deepseek-harness', phase: 'waiting_approval', pendingPermission: first })
+
+    fireEvent.click(document.querySelector('.perm-card__btn--allow') as HTMLElement)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, 'first')
+
+    await act(async () => {
+      const store = useSessionStore.getState()
+      store.replaceAllSessions([{ ...store.sessions.s1, pendingPermission: second }])
+      firstReply.resolve()
+      await firstReply.promise
+    })
+    const store = useSessionStore.getState()
+    expect(store.sessions.s1.pendingPermission).toEqual(second)
+    expect(store.sessions.s1.phase).toBe('waiting_approval')
+    expect(store.activeOverlay?.data).toEqual(second)
+
+    const previousCard = screen.queryByText('pnpm test')?.closest('.overlay-card')
+    const previousDeny = previousCard?.querySelector('.perm-card__btn--deny')
+    if (previousDeny) fireEvent.click(previousDeny)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(1)
+
+    const currentCard = (await screen.findByText('pnpm build')).closest('.overlay-card')
+    const deny = currentCard?.querySelector('.perm-card__btn--deny')
+    expect(deny).toBeInTheDocument()
+    fireEvent.click(deny as HTMLElement)
+    expect(tauriMocks.respondPermission).toHaveBeenLastCalledWith('s1', false, undefined, 'second')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined())
   })
 
   it('opens the island when backend snapshots introduce a permission request', async () => {
@@ -1004,7 +1506,7 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeDefined()
   })
 
-  it('routes numbered question shortcuts through respondQuestion', () => {
+  it('routes numbered question shortcuts through respondQuestion', async () => {
     mountIsland(null, {
       phase: 'waiting_input',
       pendingQuestion: { question: 'Pick one', options: ['Overlay', 'Detail', 'Compact'] },
@@ -1014,7 +1516,7 @@ describe('NotchPanel island shell', () => {
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Detail')
     expect(tauriMocks.sendMessage).not.toHaveBeenCalledWith('s1', 'Detail')
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('does not collapse multi-select questions through numbered shortcuts', () => {
@@ -1029,7 +1531,30 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeDefined()
   })
 
-  it('routes configured approval shortcuts to plan modes when a plan is pending', () => {
+  it('uses the visible question card for numbered shortcuts when another session is selected', async () => {
+    const visibleQuestion = { toolUseId: 'visible', question: 'Pick a view', options: ['Overlay', 'Detail'] }
+    const otherQuestion = { toolUseId: 'other', question: 'Pick a target', options: ['Local', 'Remote'] }
+    mountIsland({
+      id: 'visible-question',
+      sessionId: 's1',
+      type: 'question',
+      data: visibleQuestion,
+      createdAt: Date.now(),
+    }, { phase: 'waiting_input', pendingQuestion: visibleQuestion })
+    act(() => {
+      const s1 = useSessionStore.getState().sessions.s1
+      const s2 = session({ id: 's2', phase: 'waiting_input', pendingQuestion: otherQuestion })
+      useSessionStore.setState({ sessions: { s1, s2 }, sessionList: [s1, s2], activeSessionId: 's2' })
+    })
+
+    fireEvent.keyDown(window, { key: '2', ...primaryModifierKeyEvent() })
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Detail', 'visible')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+    expect(useSessionStore.getState().sessions.s2.pendingQuestion).toEqual(otherQuestion)
+  })
+
+  it('routes configured approval shortcuts to plan modes when a plan is pending', async () => {
     useConfigStore.setState({
       shortcuts: [
         { action: 'approve-action', label: 'Approve Action', keys: '⌘+a' },
@@ -1044,8 +1569,9 @@ describe('NotchPanel island shell', () => {
 
     fireEvent.keyDown(window, { key: 'a', metaKey: true })
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined, undefined)
     expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planTitle).toBeUndefined())
 
     cleanup()
     tauriMocks.respondPlan.mockClear()
@@ -1057,8 +1583,9 @@ describe('NotchPanel island shell', () => {
 
     fireEvent.keyDown(window, { key: 'd', metaKey: true })
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual', undefined, undefined)
     expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planTitle).toBeUndefined())
   })
 
   it('routes recorded symbol shortcuts to permission actions', () => {
@@ -1081,7 +1608,7 @@ describe('NotchPanel island shell', () => {
 
     fireEvent.keyDown(window, { key: 'a', metaKey: true, shiftKey: true })
 
-    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, undefined)
   })
 
   it('routes configured panel and session navigation shortcuts', () => {
@@ -1301,7 +1828,7 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByRole('button', { name: 'Accept Edits' })).toBeInTheDocument()
   })
 
-  it('routes question overlay answers to respondQuestion and clears the pending question', () => {
+  it('routes question overlay answers to respondQuestion and clears the pending question', async () => {
     mountIsland({
       id: 'question-s1',
       sessionId: 's1',
@@ -1313,11 +1840,44 @@ describe('NotchPanel island shell', () => {
       pendingQuestion: { question: 'Pick one', options: ['Ship it', 'Revise'] },
     })
 
-    expect(screen.getByText('让 Agent 更好用')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'notch.showAllSessions' })).toBeInTheDocument()
     fireEvent.mouseDown(screen.getByText('Ship it').closest('.question-card__option-row')!)
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Ship it')
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+  })
+
+  it('keeps a replacement question visible after the earlier reply finishes', async () => {
+    const sent = deferred()
+    tauriMocks.respondQuestion.mockReturnValueOnce(sent.promise)
+    const first = { toolUseId: 'first', question: 'Pick one', options: ['Ship it', 'Revise'] }
+    mountIsland({
+      id: 'question-first',
+      sessionId: 's1',
+      type: 'question',
+      data: first,
+      createdAt: Date.now(),
+    }, { phase: 'waiting_input', pendingQuestion: first })
+
+    const option = screen.getByText('Ship it').closest('.question-card__option-row')!
+    fireEvent.mouseDown(option)
+    fireEvent.mouseDown(option)
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Ship it', 'first')
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toEqual(first)
+
+    const second = { ...first, toolUseId: 'second', options: ['Ship it', 'Pause here'] }
+    act(() => {
+      const state = useSessionStore.getState()
+      state.replaceAllSessions([{ ...state.sessions.s1, pendingQuestion: second }])
+    })
+    await act(async () => sent.resolve())
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toEqual(second)
+    expect(useSessionStore.getState().activeOverlay?.data).toEqual(second)
+
+    const replaceOption = await screen.findByText('Pause here')
+    fireEvent.mouseDown(replaceOption.closest('.question-card__option-row')!)
+    expect(tauriMocks.respondQuestion).toHaveBeenNthCalledWith(2, 's1', 'Pause here', 'second')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('opens custom input from the question chat action', () => {
@@ -1339,7 +1899,7 @@ describe('NotchPanel island shell', () => {
     expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
   })
 
-  it('routes skip interview as a free-form question answer', () => {
+  it('routes skip interview as a free-form question answer', async () => {
     mountIsland({
       id: 'question-skip-s1',
       sessionId: 's1',
@@ -1354,10 +1914,10 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Skip interview' }))
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Skip interview and plan immediately')
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes multi-select question answers as a joined answer string', () => {
+  it('routes multi-select question answers as a joined answer string', async () => {
     mountIsland({
       id: 'question-multi-s1',
       sessionId: 's1',
@@ -1374,10 +1934,10 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Confirm (2)' }))
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Preview, Docs')
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes multi-question answers as JSON for the AskUserQuestion hook bridge', () => {
+  it('routes multi-question answers as JSON for the AskUserQuestion hook bridge', async () => {
     mountIsland({
       id: 'question-batch-s1',
       sessionId: 's1',
@@ -1437,10 +1997,10 @@ describe('NotchPanel island shell', () => {
         'Notify channel?': 'No',
       }),
     )
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes plan overlay decisions to respondPlan and dismisses the overlay', () => {
+  it('routes plan overlay decisions to respondPlan and dismisses the overlay', async () => {
     mountIsland({
       id: 'plan-s1',
       sessionId: 's1',
@@ -1476,21 +2036,24 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByText('请求的权限:')).toHaveClass('plan-approval__perms-label')
     expect(screen.getByText('Bash')).toHaveClass('plan-approval__perm-tool')
     expect(screen.getByText('Edit')).toHaveClass('plan-approval__perm-tool')
-    expect(screen.getByText('让 Agent 更好用')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'notch.showAllSessions' })).toBeInTheDocument()
 
     fireEvent.click(document.querySelector('.plan-approval__content')!)
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
 
-    fireEvent.click(screen.getByText('Accept Edits'))
+    const accept = screen.getByRole('button', { name: 'Accept Edits' })
+    expect(accept.closest('.overlay-card__body')).toBeNull()
+    fireEvent.mouseDown(accept)
+    fireEvent.click(accept, { detail: 1 })
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'acceptEdits', undefined, undefined)
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledTimes(1)
-    expect(useSessionStore.getState().activeOverlay).toBeNull()
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
     expect(useSessionStore.getState().sessions.s1.planContent).toBeUndefined()
     expect(useSessionStore.getState().sessions.s1.phase).toBe('processing')
   })
 
-  it('routes plan overlay manual review and auto approval actions', () => {
+  it('routes plan overlay manual review and auto approval actions', async () => {
     mountIsland({
       id: 'plan-s1-manual',
       sessionId: 's1',
@@ -1503,7 +2066,8 @@ describe('NotchPanel island shell', () => {
     })
 
     fireEvent.click(screen.getByText('Manual Review'))
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual', undefined, undefined)
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
 
     cleanup()
     mountIsland({
@@ -1518,32 +2082,70 @@ describe('NotchPanel island shell', () => {
     })
 
     fireEvent.click(screen.getByText('Auto'))
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'bypassPermissions')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'bypassPermissions', undefined, undefined)
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
   })
 
-  it('routes plan overlay feedback through feedback mode', () => {
+  it('keeps failed plan feedback visible and retries it for the displayed plan', async () => {
+    tauriMocks.respondPlan.mockRejectedValueOnce(new Error('Plan Hook disconnected'))
+    const plan = { planRequestId: 'plan-feedback', planTitle: 'Implementation plan', planContent: '1. Fix jump' }
     mountIsland({
       id: 'plan-s1-feedback',
       sessionId: 's1',
       type: 'plan',
-      data: { planTitle: 'Implementation plan', planContent: '1. Fix jump' },
+      data: plan,
       createdAt: Date.now(),
-    }, {
-      planTitle: 'Implementation plan',
-      planContent: '1. Fix jump',
-    })
+    }, { ...plan, phase: 'waiting_approval' })
 
-    fireEvent.change(screen.getByPlaceholderText('Tell Claude what to change...'), {
+    const input = screen.getByPlaceholderText('Tell Claude what to change...')
+    fireEvent.change(input, {
       target: { value: 'Revise the migration order' },
     })
     fireEvent.click(screen.getByText('Send Feedback'))
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith(
+    expect(await screen.findByRole('alert')).toHaveTextContent('Plan Hook disconnected')
+    expect(input).toHaveValue('Revise the migration order')
+    fireEvent.click(screen.getByText('Send Feedback'))
+    expect(tauriMocks.respondPlan).toHaveBeenNthCalledWith(
+      2,
       's1',
       'feedback',
       'Revise the migration order',
+      'plan-feedback',
     )
-    expect(useSessionStore.getState().activeOverlay).toBeNull()
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
+  })
+
+  it('keeps a replacement plan with identical text awaiting a decision', async () => {
+    const sending = deferred()
+    tauriMocks.respondPlan.mockReturnValueOnce(sending.promise)
+    const first = { planRequestId: 'first-plan', planTitle: 'Implementation plan', planContent: 'Review changes' }
+    mountIsland({
+      id: 'plan-first',
+      sessionId: 's1',
+      type: 'plan',
+      data: first,
+      createdAt: Date.now(),
+    }, { ...first, phase: 'waiting_approval' })
+
+    const option = screen.getByRole('button', { name: 'Accept Edits' })
+    fireEvent.click(option)
+    fireEvent.click(option)
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'acceptEdits', undefined, 'first-plan')
+
+    const replacement = { ...first, planRequestId: 'replacement-plan' }
+    act(() => {
+      const state = useSessionStore.getState()
+      state.replaceAllSessions([{ ...state.sessions.s1, ...replacement }])
+    })
+    await act(async () => sending.resolve())
+
+    expect(useSessionStore.getState().sessions.s1.planRequestId).toBe('replacement-plan')
+    expect(useSessionStore.getState().activeOverlay?.data).toMatchObject(replacement)
+    await waitFor(() => expect(option).not.toBeInTheDocument())
+    fireEvent.click(await screen.findByRole('button', { name: 'Manual Review' }))
+    expect(tauriMocks.respondPlan).toHaveBeenNthCalledWith(2, 's1', 'manual', undefined, 'replacement-plan')
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
   })
 
   it('focuses plan feedback inputs through the island hitbox capture path', () => {
@@ -1947,8 +2549,11 @@ describe('NotchPanel island shell', () => {
   })
 
   it('filters the session list to focused terminal sessions when follow focus is enabled', async () => {
-    useConfigStore.setState({ followFocus: true })
-    tauriMocks.isTerminalFocused.mockImplementation((sessionId?: string) => Promise.resolve(sessionId === 's2'))
+    useConfigStore.setState({ followFocus: true, islandAnimationScale: 0.1 })
+    const focusedResult = deferred<boolean>()
+    tauriMocks.isTerminalFocused.mockImplementation((sessionId?: string) =>
+      sessionId === 's2' ? focusedResult.promise : Promise.resolve(false),
+    )
     const focused = session({ id: 's2', sessionTitle: 'Focused terminal', project: 'focused', pid: 2222, terminal: 'iTerm' })
     const background = session({ id: 's1', sessionTitle: 'Background terminal', project: 'background', pid: 1111, terminal: 'Terminal' })
     useSessionStore.setState({
@@ -1966,7 +2571,13 @@ describe('NotchPanel island shell', () => {
 
     render(<NotchPanel />)
 
-    await waitFor(() => expect(screen.queryByText('background · Background terminal')).not.toBeInTheDocument())
-    expect(screen.getByText('focused · Focused terminal')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /background · Background terminal/ })).toBeInTheDocument()
+    await act(async () => { focusedResult.resolve(true) })
+    await waitFor(() => expect(screen.queryByRole('button', { name: /background · Background terminal/ })).not.toBeInTheDocument())
+    const departingTitle = screen.queryByText('background · Background terminal')
+    if (departingTitle) {
+      expect(departingTitle.closest('[inert]')).toBeInTheDocument()
+    }
+    expect(screen.getByRole('button', { name: /focused · Focused terminal/ })).toBeInTheDocument()
   })
 })

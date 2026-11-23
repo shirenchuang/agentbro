@@ -1,13 +1,13 @@
 /* AgentBro — Session State Management (Zustand) */
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { useConfigStore } from './configStore'
-import type { AgentEvent, BaseLayer, ChatHistoryMeta, ChatMessage, OverlayItem, PanelState, RateLimitInfo, SessionState } from '../types/agent'
+import type { AgentEvent, AskQuestion, BaseLayer, ChatHistoryMeta, ChatMessage, OverlayItem, PanelState, PermissionRequest, RateLimitInfo, SessionState } from '../types/agent'
 import { OVERLAY_PRIORITY } from '../types/agent'
 import { isQuietHours } from '../utils/quietHours'
 import { isSessionPastDisplayTimeout, timestampToMs } from '../utils/sessionDisplay'
 import { sessionMatchesLegacyCwdExclusion, sessionMatchesSilenceRule } from '../utils/sessionSilence'
 import { isCodexTitleMetadata } from '../utils/codexMetadata'
-import { respondPermission, saveSessions as saveSessionsToBackend } from '../services/tauriApi'
+import { respondAutoApprove, respondPermission, respondPlan, respondQuestion, saveSessions as saveSessionsToBackend } from '../services/tauriApi'
 
 // Debounce helper
 function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number): T {
@@ -24,8 +24,20 @@ const saveSessionsDebounced = debounce(() => {
   saveSessionsToBackend(sessions).catch((err) => console.warn('Failed to persist sessions:', err))
 }, 1000)
 
+type PermissionIdentity = Pick<PermissionRequest, 'toolUseId' | 'toolName'> & { toolInput?: unknown }
+export type QuestionIdentity = Pick<AskQuestion, 'question' | 'toolUseId' | 'multiSelect' | 'questions'> & {
+  options: Array<string | { label: string }>
+}
+type QuestionReply = { question: QuestionIdentity; error?: string }
+export type PlanIdentity = Pick<SessionState, 'planRequestId' | 'planTitle' | 'planContent'>
+type PlanReply = { plan: PlanIdentity; error?: string }
+const MAX_ACKNOWLEDGED_PERMISSIONS_PER_SESSION = 16
+
 interface SessionStore {
   sessions: Record<string, SessionState>
+  acknowledgedPermissionIds: ReadonlyMap<string, readonly string[]>
+  questionReplies: ReadonlyMap<string, QuestionReply>
+  planReplies: ReadonlyMap<string, PlanReply>
   sessionList: SessionState[]
   activeSessionId: string | null
   panelState: PanelState
@@ -53,9 +65,9 @@ interface SessionStore {
   replaceAllSessions: (sessions: SessionState[], options?: { suppressed?: boolean }) => void
   setChatHistory: (sessionId: string, messages: ChatMessage[], meta?: ChatHistoryMeta) => void
   prependChatHistory: (sessionId: string, messages: ChatMessage[], meta?: ChatHistoryMeta) => void
-  clearPermission: (sessionId: string) => void
-  clearQuestion: (sessionId: string) => void
-  clearPlan: (sessionId: string) => void
+  clearPermission: (sessionId: string, permission?: PermissionIdentity) => void
+  clearQuestion: (sessionId: string, question: QuestionIdentity) => void
+  clearPlan: (sessionId: string, plan: PlanIdentity) => void
   setRateLimits: (limits: RateLimitInfo) => void
   setUsageSnapshots: (limits: RateLimitInfo[]) => void
   setHookNotification: (notification: 'restored' | 'rate_limited' | null) => void
@@ -75,6 +87,133 @@ function toList(sessions: Record<string, SessionState>, now = Date.now()): Sessi
   return Object.values(sessions).filter((session) => isDisplayableSession(session, now))
 }
 
+function samePermission(first: PermissionIdentity | undefined, second: PermissionIdentity | undefined): boolean {
+  if (!first || !second) return first === second
+  if (first.toolUseId || second.toolUseId) return first.toolUseId === second.toolUseId
+  return first.toolName === second.toolName && first.toolInput === second.toolInput
+}
+
+export function answerDisplayedPermission(
+  sessionId: string,
+  permission: PermissionIdentity | undefined,
+  allowed: boolean | 'auto',
+  always?: boolean,
+): boolean {
+  const pending = useSessionStore.getState().sessions[sessionId]?.pendingPermission
+  if ((permission?.toolUseId || pending?.toolUseId) && !samePermission(permission, pending)) return false
+  const reply = allowed === 'auto'
+    ? respondAutoApprove(sessionId, permission?.toolUseId)
+    : respondPermission(sessionId, allowed, always, permission?.toolUseId)
+  void reply
+    .then(() => useSessionStore.getState().clearPermission(sessionId, permission))
+    .catch((error) => console.warn('[approval] response failed:', error))
+  return true
+}
+
+export function questionKey(question: QuestionIdentity): string {
+  return question.toolUseId || JSON.stringify([
+    question.question,
+    (question.options ?? []).map((option) => typeof option === 'string' ? option : option.label),
+    Boolean(question.multiSelect),
+    (question.questions ?? []).map((item) => [
+      item.id ?? null, item.question, item.options.map((option) => option.label), Boolean(item.multiSelect),
+    ]),
+  ])
+}
+
+function sameQuestion(first: QuestionIdentity | undefined, second: QuestionIdentity | undefined): boolean {
+  if (!first || !second) return first === second
+  if (first.toolUseId || second.toolUseId) return first.toolUseId === second.toolUseId
+  return questionKey(first) === questionKey(second)
+}
+
+export function questionReplyError(state: SessionStore, sessionId: string, question: QuestionIdentity | undefined) {
+  const reply = state.questionReplies.get(sessionId)
+  return reply && sameQuestion(reply.question, question) ? reply.error : undefined
+}
+
+export async function answerDisplayedQuestion(sessionId: string, question: QuestionIdentity | undefined, answer: string): Promise<boolean> {
+  const state = useSessionStore.getState()
+  if (!question || !sameQuestion(question, state.sessions[sessionId]?.pendingQuestion)) return false
+  const previous = state.questionReplies.get(sessionId)
+  if (previous && !previous.error && sameQuestion(previous.question, question)) return false
+  const reply: QuestionReply = { question }
+  useSessionStore.setState({ questionReplies: new Map(state.questionReplies).set(sessionId, reply) })
+  try {
+    if (question.toolUseId) await respondQuestion(sessionId, answer, question.toolUseId)
+    else await respondQuestion(sessionId, answer)
+    useSessionStore.getState().clearQuestion(sessionId, question)
+    return true
+  } catch (error) {
+    useSessionStore.setState((current) => {
+      if (current.questionReplies.get(sessionId) !== reply
+        || !sameQuestion(question, current.sessions[sessionId]?.pendingQuestion)) return current
+      return { questionReplies: new Map(current.questionReplies).set(sessionId, {
+        question,
+        error: (error instanceof Error ? error.message : String(error)) || 'The answer could not be sent.',
+      }) }
+    })
+    return false
+  } finally {
+    useSessionStore.setState((current) => {
+      if (current.questionReplies.get(sessionId) !== reply) return current
+      const questionReplies = new Map(current.questionReplies)
+      questionReplies.delete(sessionId)
+      return { questionReplies }
+    })
+  }
+}
+
+export function planKey(plan: PlanIdentity): string {
+  return plan.planRequestId || JSON.stringify([plan.planTitle ?? '', plan.planContent ?? ''])
+}
+
+function samePlan(first: PlanIdentity | undefined, second: PlanIdentity | undefined): boolean {
+  if (!first || !second || (!second.planTitle && !second.planContent && !second.planRequestId)) return false
+  if (first.planRequestId || second.planRequestId) return first.planRequestId === second.planRequestId
+  return planKey(first) === planKey(second)
+}
+
+export function planReplyError(state: SessionStore, sessionId: string, plan: PlanIdentity) {
+  const reply = state.planReplies.get(sessionId)
+  return reply && samePlan(reply.plan, plan) ? reply.error : undefined
+}
+
+export async function answerDisplayedPlan(
+  sessionId: string,
+  plan: PlanIdentity,
+  mode: Parameters<typeof respondPlan>[1],
+  message?: string,
+): Promise<boolean> {
+  const state = useSessionStore.getState()
+  if (!samePlan(plan, state.sessions[sessionId])) return false
+  const previous = state.planReplies.get(sessionId)
+  if (previous && !previous.error && samePlan(previous.plan, plan)) return false
+  const reply: PlanReply = { plan }
+  useSessionStore.setState({ planReplies: new Map(state.planReplies).set(sessionId, reply) })
+  try {
+    await respondPlan(sessionId, mode, message, plan.planRequestId)
+    useSessionStore.getState().clearPlan(sessionId, plan)
+    return true
+  } catch (error) {
+    useSessionStore.setState((current) => {
+      if (current.planReplies.get(sessionId) !== reply || !samePlan(plan, current.sessions[sessionId])) return current
+      return { planReplies: new Map(current.planReplies).set(sessionId, {
+        plan,
+        error: (error instanceof Error ? error.message : String(error)) || 'The plan decision could not be sent.',
+      }) }
+    })
+    return false
+  } finally {
+    useSessionStore.setState((current) => {
+      if (current.planReplies.get(sessionId) !== reply) return current
+      const planReplies = new Map(current.planReplies)
+      planReplies.delete(sessionId)
+      return { planReplies }
+    })
+  }
+}
+
 function hasPendingInteraction(session: SessionState): boolean {
   return Boolean(session.pendingPermission || session.pendingQuestion || session.planTitle || session.planContent)
 }
@@ -84,6 +223,7 @@ function clearPendingInteraction(session: SessionState): SessionState {
     ...session,
     pendingPermission: undefined,
     pendingQuestion: undefined,
+    planRequestId: undefined,
     planTitle: undefined,
     planContent: undefined,
     planPermissions: undefined,
@@ -379,6 +519,9 @@ export const selectOverlayQueue = (s: SessionStore) => s.overlayQueue
 
 export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<SessionStore>((set) => ({
   sessions: {},
+  acknowledgedPermissionIds: new Map(),
+  questionReplies: new Map(),
+  planReplies: new Map(),
   sessionList: [],
   activeSessionId: null,
   panelState: 'collapsed',
@@ -537,38 +680,35 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
               sessions[event.sessionId] = { ...session, phase: 'processing', lastActivityAt: Date.now() }
             }
             // Fire auto-approve response asynchronously
-            respondPermission(event.sessionId, true).catch(() => {})
+            respondPermission(event.sessionId, true, undefined, event.toolUseId).catch(() => {})
             break
           }
 
+          const permission: PermissionRequest = {
+            toolUseId: event.toolUseId,
+            toolName: event.toolName,
+            toolInput: event.toolInput || '',
+            diff: event.diff,
+            options: event.options,
+          }
           const session = sessions[event.sessionId]
           if (session) {
             const msg: ChatMessage = { role: 'permission', toolName: event.toolName, toolInput: event.toolInput, diff: event.diff, options: event.options, timestamp: Date.now() }
             sessions[event.sessionId] = {
               ...session,
               phase: 'waiting_approval',
-              pendingPermission: {
-                toolName: event.toolName,
-                toolInput: event.toolInput || '',
-                diff: event.diff,
-                options: event.options,
-              },
+              pendingPermission: permission,
               chatHistory: [...session.chatHistory, msg],
               unattendedSince: session.unattendedSince ?? Date.now(),
             }
           }
           // Push overlay instead of forcing panel state
-          const permOverlayId = `perm-${event.sessionId}-${Date.now()}`
+          const permOverlayId = `perm-${event.sessionId}-${permission.toolUseId ?? Date.now()}`
           const permOverlay: OverlayItem = {
             id: permOverlayId,
             sessionId: event.sessionId,
             type: 'permission',
-            data: {
-              toolName: event.toolName,
-              toolInput: event.toolInput || '',
-              diff: event.diff,
-              options: event.options,
-            },
+            data: permission,
             createdAt: Date.now(),
           }
           // Queue overlay after set() — use setTimeout(0) to run after state update
@@ -579,18 +719,19 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
 
         case 'ask_question': {
           const session = sessions[event.sessionId]
+          const question = {
+            question: event.question,
+            options: event.options,
+            descriptions: event.descriptions,
+            header: event.header,
+            multiSelect: event.multiSelect,
+            questions: event.questions,
+          }
           if (session) {
             sessions[event.sessionId] = {
               ...session,
               phase: 'waiting_input',
-              pendingQuestion: {
-                question: event.question,
-                options: event.options,
-                descriptions: event.descriptions,
-                header: event.header,
-                multiSelect: event.multiSelect,
-                questions: event.questions,
-              },
+              pendingQuestion: question,
               unattendedSince: session.unattendedSince ?? Date.now(),
             }
           }
@@ -598,17 +739,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
             id: `question-${event.sessionId}-${Date.now()}`,
             sessionId: event.sessionId,
             type: 'question',
-            data: {
-              question: event.question,
-              options: event.options.map((label, i) => ({
-                label,
-                description: event.descriptions?.[i],
-              })),
-              descriptions: event.descriptions,
-              header: event.header,
-              multiSelect: event.multiSelect,
-              questions: event.questions,
-            },
+            data: question,
             createdAt: Date.now(),
           }
           setTimeout(() => useSessionStore.getState().pushOverlay(qOverlay), 0)
@@ -628,6 +759,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
               responseText: summary,
               pendingPermission: undefined,
               pendingQuestion: undefined,
+              planRequestId: undefined,
               planTitle: undefined,
               planContent: undefined,
               planPermissions: undefined,
@@ -659,6 +791,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
             sessions[event.sessionId] = {
               ...session,
               phase: 'waiting_approval',
+              planRequestId: undefined,
               planTitle: event.planTitle,
               planContent: event.planContent,
               planPermissions: event.requestedPermissions,
@@ -790,12 +923,18 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     set((state) => {
       const sessions = { ...state.sessions }
       delete sessions[id]
+      const acknowledgedPermissionIds = new Map(state.acknowledgedPermissionIds)
+      acknowledgedPermissionIds.delete(id)
+      const questionReplies = new Map(state.questionReplies)
+      questionReplies.delete(id)
+      const planReplies = new Map(state.planReplies)
+      planReplies.delete(id)
       let activeSessionId = state.activeSessionId
       if (activeSessionId === id) {
         const ids = Object.keys(sessions)
         activeSessionId = ids[0] ?? null
       }
-      return { sessions, sessionList: toList(sessions), activeSessionId }
+      return { sessions, sessionList: toList(sessions), activeSessionId, acknowledgedPermissionIds, questionReplies, planReplies }
     })
     saveSessionsDebounced()
   },
@@ -812,6 +951,11 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
       for (const incoming of newSessions) {
         const prev = prevState.sessions[incoming.id]
         const existing = state.sessions[incoming.id]
+        const toolUseId = incoming.pendingPermission?.toolUseId
+        if (existing && toolUseId && state.acknowledgedPermissionIds.get(incoming.id)?.includes(toolUseId)) {
+          sessions[incoming.id] = existing
+          continue
+        }
         const enteredIdle = incoming.phase === 'idle' && existing?.phase !== 'idle'
         const enteredDone = incoming.phase === 'done' && existing?.phase !== 'done'
         const lastUserMessageChanged = Boolean(incoming.lastUserMessage)
@@ -875,31 +1019,19 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         }
 
         // Detect new pendingQuestion — create question overlay
-        if (s.pendingQuestion && !prev?.pendingQuestion) {
-          const existingOverlay = state.overlayQueue.find((o) => o.sessionId === s.id && o.type === 'question')
-          if (!existingOverlay) {
-            newOverlays.push({
-              id: `question-${s.id}-${Date.now()}`,
-              sessionId: s.id,
-              type: 'question',
-              data: {
-                question: s.pendingQuestion.question,
-                options: (s.pendingQuestion.options || []).map((label: string, i: number) => ({
-                  label,
-                  description: s.pendingQuestion?.descriptions?.[i],
-                })),
-                header: s.pendingQuestion.header,
-                multiSelect: s.pendingQuestion.multiSelect,
-                questions: s.pendingQuestion.questions,
-              },
-              createdAt: Date.now(),
-              suppressed,
-            })
-          }
+        if (s.pendingQuestion && !sameQuestion(s.pendingQuestion, prev?.pendingQuestion)) {
+          newOverlays.push({
+            id: `question-${s.id}-${s.pendingQuestion.toolUseId ?? Date.now()}`,
+            sessionId: s.id,
+            type: 'question',
+            data: s.pendingQuestion,
+            createdAt: Date.now(),
+            suppressed,
+          })
         }
 
         // Detect new pendingPermission — create permission overlay and chat message
-        if (s.pendingPermission && !prev?.pendingPermission) {
+        if (s.pendingPermission && !samePermission(s.pendingPermission, prev?.pendingPermission)) {
           // Add permission message to chat history so ChatView shows tool details
           const permMsg: ChatMessage = {
             role: 'permission',
@@ -911,41 +1043,31 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           }
           s.chatHistory = [...(s.chatHistory ?? []), permMsg]
 
-          const existingOverlay = state.overlayQueue.find((o) => o.sessionId === s.id && o.type === 'permission')
-          if (!existingOverlay) {
-            newOverlays.push({
-              id: `permission-${s.id}-${Date.now()}`,
-              sessionId: s.id,
-              type: 'permission',
-              data: {
-                toolName: s.pendingPermission.toolName,
-                toolInput: s.pendingPermission.toolInput,
-                diff: s.pendingPermission.diff,
-                options: s.pendingPermission.options,
-              },
-              createdAt: Date.now(),
-              suppressed,
-            })
-          }
+          newOverlays.push({
+            id: `permission-${s.id}-${s.pendingPermission.toolUseId ?? Date.now()}`,
+            sessionId: s.id,
+            type: 'permission',
+            data: s.pendingPermission,
+            createdAt: Date.now(),
+            suppressed,
+          })
         }
 
         // Detect new pending plan approval from backend hook flow.
-        if ((s.planTitle || s.planContent) && (s.planContent !== prev?.planContent || s.planTitle !== prev?.planTitle)) {
-          const existingOverlay = state.overlayQueue.find((o) => o.sessionId === s.id && o.type === 'plan')
-          if (!existingOverlay) {
-            newOverlays.push({
-              id: `plan-${s.id}-${Date.now()}`,
-              sessionId: s.id,
-              type: 'plan',
-              data: {
-                planTitle: s.planTitle,
-                planContent: s.planContent || '',
-                requestedPermissions: s.planPermissions || [],
-              },
-              createdAt: Date.now(),
-              suppressed,
-            })
-          }
+        if ((s.planTitle || s.planContent) && !samePlan(s, prev)) {
+          newOverlays.push({
+            id: `plan-${s.id}-${s.planRequestId ?? Date.now()}`,
+            sessionId: s.id,
+            type: 'plan',
+            data: {
+              planRequestId: s.planRequestId,
+              planTitle: s.planTitle,
+              planContent: s.planContent || '',
+              requestedPermissions: s.planPermissions || [],
+            },
+            createdAt: Date.now(),
+            suppressed,
+          })
         }
 
         const hideNonBlockingOverlays = !isDisplayableSession(s, now)
@@ -1022,13 +1144,26 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         if (remoteNewPromptSessionIds.has(overlay.sessionId) && isNonBlockingOverlayType(overlay.type)) return false
         const session = sessions[overlay.sessionId]
         if (!session) return false
-        if (overlay.type === 'permission') return Boolean(session.pendingPermission)
+        if (overlay.type === 'permission') {
+          return Boolean(session.pendingPermission)
+            && samePermission(overlay.data as PermissionRequest | undefined, session.pendingPermission)
+        }
         if (overlay.type === 'question') return Boolean(session.pendingQuestion)
-        if (overlay.type === 'plan') return Boolean(session.planTitle || session.planContent)
+          && sameQuestion(overlay.data as QuestionIdentity, session.pendingQuestion)
+        if (overlay.type === 'plan') return samePlan(overlay.data as PlanIdentity, session)
         if (overlay.type === 'compacting') return session.phase === 'compacting'
         return true
       })
-      return { sessions, sessionList, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null }
+      const acknowledgedPermissionIds = state.acknowledgedPermissionIds.size
+        ? new Map([...state.acknowledgedPermissionIds].filter(([sessionId]) => Object.hasOwn(sessions, sessionId)))
+        : state.acknowledgedPermissionIds
+      const questionReplies = state.questionReplies.size
+        ? new Map([...state.questionReplies].filter(([id, reply]) => sameQuestion(reply.question, sessions[id]?.pendingQuestion)))
+        : state.questionReplies
+      const planReplies = state.planReplies.size
+        ? new Map([...state.planReplies].filter(([id, reply]) => samePlan(reply.plan, sessions[id])))
+        : state.planReplies
+      return { sessions, sessionList, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedPermissionIds, questionReplies, planReplies }
     })
     // Push new overlays after state update
     if (newOverlays.length > 0) {
@@ -1076,45 +1211,65 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     })
   },
 
-  clearPermission: (sessionId) => {
+  clearPermission: (sessionId, permission) => {
     set((state) => {
       const session = state.sessions[sessionId]
       if (!session) return state
+      const toolUseId = permission?.toolUseId
+      const previousIds = state.acknowledgedPermissionIds.get(sessionId) ?? []
+      const acknowledgedPermissionIds = toolUseId && !previousIds.includes(toolUseId)
+        ? new Map(state.acknowledgedPermissionIds).set(
+            sessionId,
+            [...previousIds, toolUseId].slice(-MAX_ACKNOWLEDGED_PERMISSIONS_PER_SESSION),
+          )
+        : state.acknowledgedPermissionIds
+      if (!session.pendingPermission || !samePermission(session.pendingPermission, permission)) {
+        return acknowledgedPermissionIds === state.acknowledgedPermissionIds ? state : { acknowledgedPermissionIds }
+      }
       const sessions = {
         ...state.sessions,
         [sessionId]: { ...session, phase: 'processing' as const, pendingPermission: undefined, unattendedSince: undefined },
       }
       const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'permission'))
-      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }
+      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedPermissionIds }
     })
   },
 
-  clearQuestion: (sessionId) => {
+  clearQuestion: (sessionId, question) => {
     set((state) => {
       const session = state.sessions[sessionId]
-      if (!session) return state
+      if (!session || !sameQuestion(session.pendingQuestion, question)) return state
+      let phase = session.phase
+      if (phase === 'waiting_input') {
+        phase = session.pendingPermission || session.planTitle || session.planContent ? 'waiting_approval' : 'processing'
+      }
       const sessions = {
         ...state.sessions,
-        [sessionId]: { ...session, phase: 'processing' as const, pendingQuestion: undefined, unattendedSince: undefined },
+        [sessionId]: { ...session, phase, pendingQuestion: undefined, unattendedSince: phase === 'processing' ? undefined : session.unattendedSince },
       }
       const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'question'))
       return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }
     })
   },
 
-  clearPlan: (sessionId) => {
+  clearPlan: (sessionId, plan) => {
     set((state) => {
       const session = state.sessions[sessionId]
-      if (!session) return state
+      if (!session || !samePlan(plan, session)) return state
+      let phase = session.phase
+      if (phase === 'waiting_approval' && !session.pendingPermission) {
+        phase = session.pendingQuestion ? 'waiting_input' : 'processing'
+      }
       const sessions = {
         ...state.sessions,
         [sessionId]: {
           ...session,
-          phase: 'processing' as const,
+          phase,
+          planRequestId: undefined,
           planTitle: undefined,
           planContent: undefined,
           planPermissions: undefined,
-          unattendedSince: undefined,
+          unattendedSince: phase === 'processing' ? undefined : session.unattendedSince,
         },
       }
       const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'plan'))
@@ -1196,7 +1351,19 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     if (isNonBlocking && useSessionStore.getState().isWakeSilenced()) return
 
     set((state) => {
-      const queue = [...state.overlayQueue, item].sort(
+      if (item.type === 'permission') {
+        const permission = item.data as PermissionRequest | undefined
+        const pending = state.sessions[item.sessionId]?.pendingPermission
+        if ((pending || permission?.toolUseId) && !samePermission(permission, pending)) return state
+      }
+      if (item.type === 'question' && !sameQuestion(item.data as QuestionIdentity, state.sessions[item.sessionId]?.pendingQuestion)) {
+        return state
+      }
+      if (item.type === 'plan' && !samePlan(item.data as PlanIdentity, state.sessions[item.sessionId])) return state
+      const previous = item.type === 'permission' || item.type === 'question' || item.type === 'plan'
+        ? state.overlayQueue.filter((overlay) => overlay.sessionId !== item.sessionId || overlay.type !== item.type)
+        : state.overlayQueue
+      const queue = [...previous, item].sort(
         (a, b) => (OVERLAY_PRIORITY[b.type] ?? 0) - (OVERLAY_PRIORITY[a.type] ?? 0)
       )
       return { overlayQueue: queue, activeOverlay: queue[0] ?? null }

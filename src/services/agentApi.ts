@@ -6,18 +6,35 @@ import {
   useRuntimeEnvironmentStore,
 } from '../stores/runtimeEnvironmentStore'
 
-async function invoke<T = void>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const environmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId
+const remoteHookCommands = new Map([
+  ['install_agent_hook', 'install_remote_agent_hooks'],
+  ['uninstall_agent_hook', 'uninstall_remote_agent_hooks'],
+  ['get_remote_agent_hook_status', 'get_remote_agent_hook_status'],
+])
+
+export function isAgentPackageOperationBusy(error: unknown) {
+  return (error instanceof Error ? error.message : error) === 'agent_package_operation_in_progress'
+}
+
+export interface AgentPackageOutput {
+  agentId: string
+  revision: number
+  lines: Pick<AgentOutputEvent, 'stream' | 'line'>[]
+}
+
+async function invoke<T = void>(
+  command: string,
+  args?: Record<string, unknown>,
+  environmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId,
+): Promise<T> {
   if (environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID) {
     return tauriInvoke<T>(command, args)
   }
   if (command === 'agent_open_download') {
     return tauriInvoke<T>(command, args)
   }
-  if (command === 'install_agent_hook' || command === 'uninstall_agent_hook') {
-    const remoteCommand = command === 'install_agent_hook'
-      ? 'install_remote_agent_hooks'
-      : 'uninstall_remote_agent_hooks'
+  const remoteCommand = remoteHookCommands.get(command)
+  if (remoteCommand) {
     const agentId = args?.toolName === 'cursor' ? 'cursor-cli' : args?.toolName
     return tauriInvoke<T>(remoteCommand, {
       id: environmentId,
@@ -33,6 +50,7 @@ async function invoke<T = void>(command: string, args?: Record<string, unknown>)
 
 export type AgentProgramKind = 'cli' | 'app'
 export type AgentProgramStatus = 'installed' | 'notInstalled' | 'updateAvailable' | 'unavailable'
+export type RemoteAgentHookStatus = 'unsupported' | 'notInstalled' | 'installed' | 'needsReinstall' | 'settingsCorrupted'
 
 export interface AgentProgramInfo {
   id: string
@@ -222,7 +240,8 @@ const baseAgentPrograms: AgentProgramInfo[] = [
   { id: 'stepfun', displayName: 'StepFun', icon: 'stepfun', kind: 'app', status: 'notInstalled', packageManager: 'app', packageName: null, installedVersion: null, latestVersion: null, binaryPath: null, configDir: '~/.stepfun', appPath: macAppPath('/Applications/StepFun.app'), downloadUrl: 'https://platform.stepfun.com', installCommand: null, updateCommand: null, uninstallCommand: null, hooksInstalled: false, skillsDir: '~/.stepfun/skills', isCustom: false },
   { id: 'codebuddy', displayName: 'CodeBuddy', icon: 'codebuddy', kind: 'app', status: 'notInstalled', packageManager: 'app', packageName: null, installedVersion: null, latestVersion: null, binaryPath: null, configDir: '~/.codebuddy', appPath: macAppPath('/Applications/CodeBuddy.app'), downloadUrl: 'https://codebuddy.ai', installCommand: null, updateCommand: null, uninstallCommand: null, hooksInstalled: false, skillsDir: '~/.codebuddy/skills', isCustom: false },
   { id: 'codebuddycn', displayName: 'CodyBuddyCN', icon: 'codebuddy', kind: 'app', status: 'notInstalled', packageManager: 'app', packageName: null, installedVersion: null, latestVersion: null, binaryPath: null, configDir: '~/.codybuddycn', appPath: macAppPath('/Applications/CodyBuddyCN.app'), downloadUrl: 'https://www.codebuddy.ai', installCommand: null, updateCommand: null, uninstallCommand: null, hooksInstalled: false, skillsDir: '~/.codybuddycn/skills', isCustom: false },
-  { id: 'workbuddy', displayName: 'WorkBuddy', icon: 'workbuddy', kind: 'app', status: 'notInstalled', packageManager: 'app', packageName: null, installedVersion: null, latestVersion: null, binaryPath: null, configDir: '~/.workbuddy', appPath: macAppPath('/Applications/WorkBuddy.app'), downloadUrl: 'https://workbuddy.ai', installCommand: null, updateCommand: null, uninstallCommand: null, hooksInstalled: false, skillsDir: '~/.workbuddy/skills', isCustom: false },
+  { id: 'workbuddy', displayName: 'WorkBuddy', icon: 'workbuddy', kind: 'app', status: 'notInstalled', packageManager: 'app', packageName: null, installedVersion: null, latestVersion: null, binaryPath: null, configDir: '~/.workbuddy', appPath: macAppPath('/Applications/WorkBuddy.app'), downloadUrl: 'https://workbuddy.cn', installCommand: null, updateCommand: null, uninstallCommand: null, hooksInstalled: false, skillsDir: '~/.workbuddy/skills', isCustom: false },
+  { id: 'workbuddy-ai', displayName: 'WorkBuddy AI', icon: 'workbuddy', kind: 'app', status: 'notInstalled', packageManager: 'app', packageName: null, installedVersion: null, latestVersion: null, binaryPath: null, configDir: '~/.workbuddy-ai', appPath: macAppPath('/Applications/WorkBuddy AI.app'), downloadUrl: 'https://workbuddy.ai', installCommand: null, updateCommand: null, uninstallCommand: null, hooksInstalled: false, skillsDir: '~/.workbuddy-ai/skills', isCustom: false },
   { id: 'zcode', displayName: 'ZCode', icon: 'zcode', kind: 'app', status: 'notInstalled', packageManager: 'app', packageName: null, installedVersion: null, latestVersion: null, binaryPath: null, configDir: '~/.zcode', appPath: macAppPath('/Applications/ZCode.app'), downloadUrl: 'https://zcode.z.ai/cn', installCommand: null, updateCommand: null, uninstallCommand: null, hooksInstalled: false, skillsDir: '~/.zcode/skills', isCustom: false },
   { id: 'kiro', displayName: 'Kiro', icon: 'kiro', kind: 'app', status: 'notInstalled', packageManager: 'app', packageName: null, installedVersion: null, latestVersion: null, binaryPath: null, configDir: '~/.kiro', appPath: macAppPath('/Applications/Kiro.app'), downloadUrl: 'https://kiro.dev', installCommand: null, updateCommand: null, uninstallCommand: null, hooksInstalled: false, skillsDir: '~/.kiro/skills', isCustom: false },
   { id: 'pi', displayName: 'Pi', icon: 'pi', kind: 'app', status: 'notInstalled', packageManager: 'app', packageName: null, installedVersion: null, latestVersion: null, binaryPath: null, configDir: '~/.pi', appPath: macAppPath('/Applications/Pi.app'), downloadUrl: 'https://pi.ai', installCommand: null, updateCommand: null, uninstallCommand: null, hooksInstalled: false, skillsDir: '~/.pi/agent/skills', isCustom: false },
@@ -250,20 +269,20 @@ export const agentApi = {
     ? invoke<AgentProgramInfo[]>('agent_list')
     : Promise.resolve(seedAgentPrograms()),
 
-  refresh: () => isTauriRuntime()
-    ? invoke<AgentProgramInfo[]>('agent_refresh')
+  refresh: (environmentId?: string) => isTauriRuntime()
+    ? invoke<AgentProgramInfo[]>('agent_refresh', undefined, environmentId)
     : Promise.resolve(seedAgentPrograms()),
 
-  install: (agentId: string) => isTauriRuntime()
-    ? invoke('agent_install', { agentId })
+  install: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('agent_install', { agentId }, environmentId)
     : Promise.resolve(),
 
-  update: (agentId: string) => isTauriRuntime()
-    ? invoke('agent_update', { agentId })
+  update: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('agent_update', { agentId }, environmentId)
     : Promise.resolve(),
 
-  uninstall: (agentId: string) => isTauriRuntime()
-    ? invoke('agent_uninstall', { agentId })
+  uninstall: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('agent_uninstall', { agentId }, environmentId)
     : Promise.resolve(),
 
   openDownload: (agentId: string) => isTauriRuntime()
@@ -274,20 +293,24 @@ export const agentApi = {
     ? invoke('agent_open_app', { agentId })
     : Promise.resolve(),
 
-  installHook: (agentId: string) => isTauriRuntime()
-    ? invoke('install_agent_hook', { toolName: agentId })
+  remoteHookStatus: (agentId: string, environmentId: string): Promise<RemoteAgentHookStatus> => isTauriRuntime()
+    ? invoke('get_remote_agent_hook_status', { toolName: agentId }, environmentId)
+    : Promise.resolve('unsupported'),
+
+  installHook: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('install_agent_hook', { toolName: agentId }, environmentId)
     : Promise.resolve(),
 
-  uninstallHook: (agentId: string) => isTauriRuntime()
-    ? invoke('uninstall_agent_hook', { toolName: agentId })
+  uninstallHook: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('uninstall_agent_hook', { toolName: agentId }, environmentId)
     : Promise.resolve(),
 
   openPath: (path: string) => isTauriRuntime()
     ? invoke('open_system_path', { path })
     : Promise.resolve(),
 
-  addCustom: (config: CustomAgentConfig) => isTauriRuntime()
-    ? invoke<AgentProgramInfo>('add_custom_agent', { config })
+  addCustom: (config: CustomAgentConfig, environmentId?: string) => isTauriRuntime()
+    ? invoke<AgentProgramInfo>('add_custom_agent', { config }, environmentId)
     : Promise.resolve({
       id: config.id || `custom-${config.displayName.toLowerCase().replace(/\s+/g, '-')}`,
       displayName: config.displayName,
@@ -334,12 +357,21 @@ export const agentApi = {
       isCustom: true,
     }),
 
-  removeCustom: (agentId: string) => isTauriRuntime()
-    ? invoke('remove_custom_agent', { agentId })
+  removeCustom: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('remove_custom_agent', { agentId }, environmentId)
     : Promise.resolve(),
 
   onOutput: async (handler: (event: AgentOutputEvent) => void): Promise<UnlistenFn> => {
     if (!isTauriRuntime()) return () => {}
     return listen<AgentOutputEvent>('agent-output', (event) => handler(event.payload))
+  },
+
+  packageOutput: (agentId: string) => isTauriRuntime()
+    ? invoke<AgentPackageOutput | null>('agent_package_output', { agentId }, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    : Promise.resolve(null),
+
+  onPackageOutput: async (handler: (output: AgentPackageOutput) => void): Promise<UnlistenFn> => {
+    if (!isTauriRuntime()) return () => {}
+    return listen<AgentPackageOutput>('agent-package-output', (event) => handler(event.payload))
   },
 }

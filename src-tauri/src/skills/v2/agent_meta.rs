@@ -3,6 +3,7 @@
 //! Reuses the existing `agent_paths` resolver for on-disk locations and layers
 //! a stable display-name + icon-key mapping on top.
 
+use crate::agents::workbuddy::WorkBuddyEdition;
 use crate::skills::{agent_paths, registry};
 use std::path::{Path, PathBuf};
 
@@ -63,6 +64,7 @@ pub fn managed_agent_ids() -> Vec<String> {
         "deepseek",
         "deepseek-harness",
         "workbuddy",
+        "workbuddy-ai",
         "zcode",
         "windsurf",
         "augment",
@@ -197,6 +199,11 @@ fn table() -> &'static [AgentMeta] {
             icon_key: "workbuddy",
         },
         AgentMeta {
+            id: "workbuddy-ai",
+            display_name: "WorkBuddy AI",
+            icon_key: "workbuddy",
+        },
+        AgentMeta {
             id: "zcode",
             display_name: "ZCode",
             icon_key: "zcode",
@@ -279,7 +286,12 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "deepseek-harness" => {
             return Some(agent_paths::deepseek_harness_home_for(home).join("skills"))
         }
-        "workbuddy" => ".workbuddy/skills",
+        "workbuddy" | "workbuddy-ai" => {
+            return Some(
+                home.join(WorkBuddyEdition::from_agent_id(agent)?.profile_dir())
+                    .join("skills"),
+            )
+        }
         "zcode" => ".zcode/skills",
         "windsurf" => ".windsurf/skills",
         "augment" => ".augment/skills",
@@ -407,9 +419,10 @@ pub fn agent_installed(home: &std::path::Path, agent: &str) -> bool {
 
     #[cfg(target_os = "windows")]
     {
-        // Keep the Skill Manager list cheap on Windows. Program probing walks
-        // PATH and can block the settings window while every agent is listed.
-        false
+        // Check the desktop launcher directly without scanning PATH.
+        matches!(agent, "qwenwork-cn" | "workbuddy" | "workbuddy-ai")
+            && is_runtime_home(home)
+            && crate::agents::programs::installed_app_path_for_agent(agent).is_some()
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -448,7 +461,6 @@ fn agent_program_installed(agent: &str) -> bool {
     )
 }
 
-#[cfg(not(target_os = "windows"))]
 fn is_runtime_home(home: &Path) -> bool {
     same_path(home, &crate::skills::v2::fsutil::home())
 }
@@ -460,7 +472,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
     a == b
 }
 
-#[cfg(all(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn same_path(a: &Path, b: &Path) -> bool {
     let a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
     let b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
@@ -541,6 +553,12 @@ mod tests {
         assert_eq!(
             agent_skills_dir(home, "workbuddy"),
             Some(home.join(".workbuddy/skills"))
+        );
+        assert!(visible_agent_ids().iter().any(|id| id == "workbuddy-ai"));
+        assert_eq!(display_name("workbuddy-ai"), "WorkBuddy AI");
+        assert_eq!(
+            agent_skills_dir(home, "workbuddy-ai"),
+            Some(home.join(".workbuddy-ai/skills"))
         );
     }
 

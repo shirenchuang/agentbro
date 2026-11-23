@@ -39,6 +39,36 @@ pub fn find_codex_cli_binary() -> Option<PathBuf> {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn is_desktop_bundled_codex_cli(binary: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    let candidates = macos_application_dirs()
+        .filter_map(chatgpt_bundled_codex)
+        .map(|(_, cli)| cli);
+    #[cfg(target_os = "windows")]
+    let candidates = windows_codex_bundled_cli_candidates();
+
+    matches_bundled_codex_cli(binary, candidates)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn is_desktop_bundled_codex_cli(_binary: &Path) -> bool {
+    false
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn matches_bundled_codex_cli(binary: &Path, candidates: impl IntoIterator<Item = PathBuf>) -> bool {
+    let canonical = binary.canonicalize().ok();
+    candidates.into_iter().any(|candidate| {
+        candidate == binary
+            || canonical.as_ref().is_some_and(|selected| {
+                candidate
+                    .canonicalize()
+                    .is_ok_and(|resolved| &resolved == selected)
+            })
+    })
+}
+
 #[cfg(target_os = "macos")]
 pub fn codex_desktop_app_candidates() -> Vec<PathBuf> {
     find_chatgpt_bundled_codex(macos_application_dirs())
@@ -61,14 +91,17 @@ fn macos_application_dirs() -> impl Iterator<Item = PathBuf> {
 fn find_chatgpt_bundled_codex(
     application_dirs: impl IntoIterator<Item = PathBuf>,
 ) -> Option<(PathBuf, PathBuf)> {
+    application_dirs.into_iter().find_map(chatgpt_bundled_codex)
+}
+
+#[cfg(target_os = "macos")]
+fn chatgpt_bundled_codex(dir: PathBuf) -> Option<(PathBuf, PathBuf)> {
     use std::os::unix::fs::PermissionsExt;
 
-    application_dirs.into_iter().find_map(|dir| {
-        let app = dir.join("ChatGPT.app");
-        let cli = app.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
-        let metadata = cli.metadata().ok()?;
-        (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some((app, cli))
-    })
+    let app = dir.join("ChatGPT.app");
+    let cli = app.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+    let metadata = cli.metadata().ok()?;
+    (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some((app, cli))
 }
 
 #[cfg(target_os = "windows")]
@@ -124,13 +157,26 @@ pub fn codex_desktop_app_candidates() -> Vec<PathBuf> {
     Vec::new()
 }
 
+#[cfg(target_os = "windows")]
 fn find_binary_generic(binary: &str) -> Option<PathBuf> {
-    binary_candidates(binary)
-        .into_iter()
-        .find_map(|candidate| find_binary_exact(&candidate))
+    let path = Path::new(binary);
+    if path.components().count() > 1 || path.is_absolute() {
+        return path.is_file().then(|| path.to_path_buf());
+    }
+    let inherited = std::env::var_os("PATH");
+    let directories = std::iter::once(PathBuf::new())
+        .chain(
+            inherited
+                .as_deref()
+                .into_iter()
+                .flat_map(std::env::split_paths),
+        )
+        .chain(std::iter::once_with(|| candidate_dirs_with_path(None)).flatten());
+    find_windows_binary_in_dirs(directories, binary, &windows_binary_candidates(binary))
 }
 
-fn find_binary_exact(binary: &str) -> Option<PathBuf> {
+#[cfg(not(target_os = "windows"))]
+fn find_binary_generic(binary: &str) -> Option<PathBuf> {
     let path = Path::new(binary);
     if path.is_file() {
         return Some(path.to_path_buf());
@@ -144,16 +190,36 @@ fn find_binary_exact(binary: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn binary_candidates(binary: &str) -> Vec<String> {
-    #[cfg(target_os = "windows")]
-    {
-        windows_binary_candidates(binary)
+#[cfg(any(target_os = "windows", test))]
+fn find_windows_binary_in_dirs(
+    directories: impl IntoIterator<Item = PathBuf>,
+    binary: &str,
+    candidates: &[String],
+) -> Option<PathBuf> {
+    if candidates.len() == 1 {
+        return directories
+            .into_iter()
+            .map(|dir| dir.join(binary))
+            .find(|path| path.is_file());
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        vec![binary.to_string()]
+    let mut extensionless = None;
+    for directory in directories {
+        if let Some(path) = candidates
+            .iter()
+            .filter(|candidate| candidate.as_str() != binary)
+            .map(|candidate| directory.join(candidate))
+            .find(|path| path.is_file())
+        {
+            return Some(path);
+        }
+        // npm also installs extensionless shims for POSIX shells.
+        if extensionless.is_none() {
+            let path = directory.join(binary);
+            extensionless = path.is_file().then_some(path);
+        }
     }
+    extensionless
 }
 
 #[cfg(target_os = "windows")]
@@ -185,25 +251,40 @@ fn windows_binary_candidates(binary: &str) -> Vec<String> {
         ],
     };
     candidates.push(binary.to_string());
+    if let Ok(extensions) = std::env::var("PATHEXT") {
+        for extension in extensions
+            .split(';')
+            .filter_map(|extension| extension.trim().strip_prefix('.'))
+        {
+            if extension.is_empty() || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+                continue;
+            }
+            let candidate = format!("{binary}.{extension}");
+            if !candidates
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&candidate))
+            {
+                candidates.push(candidate);
+            }
+        }
+    }
     candidates
 }
 
 #[cfg(target_os = "windows")]
 fn find_windows_codex_cli_binary() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    candidates.extend(windows_codex_bundled_cli_candidates());
+    let mut candidates = windows_codex_bundled_cli_candidates();
+    let binaries = windows_binary_candidates("codex");
 
     for dir in candidate_dirs()
         .into_iter()
         .filter(|dir| !is_windows_app_execution_path(dir))
     {
-        for binary in windows_binary_candidates("codex") {
-            candidates.push(dir.join(binary));
-        }
+        candidates.extend(binaries.iter().map(|binary| dir.join(binary)));
     }
 
-    for binary in windows_binary_candidates("codex") {
-        candidates.extend(which_all(&binary));
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.extend(binaries.iter().map(|binary| current_dir.join(binary)));
     }
 
     dedupe_paths(candidates)
@@ -274,32 +355,20 @@ fn is_windows_app_execution_path(path: &Path) -> bool {
     normalized.contains("\\microsoft\\windowsapps\\") || normalized.contains("\\windowsapps\\")
 }
 
+#[cfg(not(target_os = "windows"))]
 fn which(binary: &str) -> Option<PathBuf> {
-    which_all(binary).into_iter().next()
-}
-
-fn which_all(binary: &str) -> Vec<PathBuf> {
-    #[cfg(target_os = "windows")]
-    let command = "where.exe";
-    #[cfg(not(target_os = "windows"))]
-    let command = "which";
-
-    crate::platform::process::background_command(command)
+    let output = crate::platform::process::background_command("which")
         .arg(binary)
         .output()
         .ok()
         .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|output| {
-            output
-                .lines()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.is_file())
-                .collect()
-        })
-        .unwrap_or_default()
+        .and_then(|output| String::from_utf8(output.stdout).ok())?;
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
 }
 
 fn user_shell() -> String {
@@ -397,11 +466,11 @@ fn login_shell_path() -> Option<Vec<PathBuf>> {
 }
 
 fn candidate_dirs() -> Vec<PathBuf> {
-    let mut dirs = BTreeSet::new();
+    candidate_dirs_with_path(std::env::var_os("PATH"))
+}
 
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
-    }
+fn candidate_dirs_with_path(inherited: Option<OsString>) -> Vec<PathBuf> {
+    let mut dirs = BTreeSet::new();
 
     if let Some(shell_paths) = login_shell_path() {
         dirs.extend(shell_paths);
@@ -476,7 +545,14 @@ fn candidate_dirs() -> Vec<PathBuf> {
         }
     }
 
-    dirs.into_iter().collect()
+    let mut seen = BTreeSet::new();
+    inherited
+        .as_deref()
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .chain(dirs)
+        .filter(|dir| seen.insert(dir.clone()))
+        .collect()
 }
 
 fn nvm_node_bins(home: &Path) -> Vec<PathBuf> {
@@ -548,6 +624,50 @@ fn dedupe_strings(values: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn agent_package_shell_respects_inherited_path_precedence() {
+        use std::{fs, process::Command};
+
+        let fixture =
+            std::env::temp_dir().join(format!("agentbro-package-path-{}", uuid::Uuid::new_v4()));
+        let preferred = fixture.join("z preferred tool");
+        let fallback = fixture.join("a system tool");
+        for (directory, marker) in [(&preferred, "preferred"), (&fallback, "fallback")] {
+            fs::create_dir_all(directory).unwrap();
+            #[cfg(target_os = "windows")]
+            fs::write(directory.join("npm.cmd"), format!("@echo {marker}\r\n")).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let command = directory.join("npm");
+                fs::write(&command, format!("#!/bin/sh\nprintf '%s\\n' {marker}\n")).unwrap();
+                fs::set_permissions(command, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let inherited = std::env::join_paths([&preferred, &fallback, &preferred]).unwrap();
+        let dirs = super::candidate_dirs_with_path(Some(inherited));
+        let path = std::env::join_paths(&dirs).unwrap();
+        #[cfg(target_os = "windows")]
+        let (program, arguments) = (super::command_path("cmd"), vec!["/D", "/C", "npm"]);
+        #[cfg(unix)]
+        let (program, arguments) = (std::path::PathBuf::from("/bin/sh"), vec!["-c", "npm"]);
+        let output = Command::new(program)
+            .args(arguments)
+            .current_dir(&fixture)
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        fs::remove_dir_all(&fixture).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "preferred");
+        assert_eq!(dirs.iter().filter(|dir| *dir == &preferred).count(), 1);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn finds_executable_codex_inside_chatgpt_app() {
@@ -566,11 +686,38 @@ mod tests {
         let app_dirs = [system_apps, user_apps];
         let non_executable = super::find_chatgpt_bundled_codex(app_dirs.clone());
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
-        let executable = super::find_chatgpt_bundled_codex(app_dirs);
+        let executable = super::find_chatgpt_bundled_codex(app_dirs.clone());
+        let standalone = temp.join("codex");
+        fs::write(&standalone, "").unwrap();
+        let alias = temp.join("desktop alias");
+        std::os::unix::fs::symlink(&cli, &alias).unwrap();
+        let candidates = || {
+            app_dirs
+                .clone()
+                .into_iter()
+                .filter_map(super::chatgpt_bundled_codex)
+                .map(|(_, cli)| cli)
+        };
+        assert!(super::matches_bundled_codex_cli(&cli, candidates()));
+        assert!(super::matches_bundled_codex_cli(&alias, candidates()));
+        assert!(!super::matches_bundled_codex_cli(&standalone, candidates()));
         fs::remove_dir_all(temp).unwrap();
 
         assert_eq!(non_executable, None);
         assert_eq!(executable, Some((app, cli)));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_bundled_codex_matches_only_the_selected_desktop_candidate() {
+        let home = std::path::PathBuf::from("test-user");
+        let desktop = home.join("OpenAI/Codex/bin/version/codex.exe");
+        let standalone = home.join("npm/codex.cmd");
+        assert!(super::matches_bundled_codex_cli(
+            &desktop,
+            [desktop.clone()]
+        ));
+        assert!(!super::matches_bundled_codex_cli(&standalone, [desktop]));
     }
 
     #[test]
@@ -598,6 +745,72 @@ mod tests {
         assert_eq!(npm[0], "npm.cmd");
         assert_eq!(npx[0], "npx.cmd");
         assert_eq!(node[0], "node.exe");
+    }
+
+    #[test]
+    fn windows_resolves_launchers_by_directory_before_extension() {
+        let root =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let first = root.path().join("z 优先");
+        let second = root.path().join("a later");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let shim = first.join("agentbro-fixture.cmd");
+        let fallback = second.join("agentbro-fixture.exe");
+        std::fs::write(&shim, "@echo preferred\r\n").unwrap();
+        let extensionless = first.join("agentbro-fixture");
+        std::fs::write(&extensionless, "#!/bin/sh\n").unwrap();
+        #[cfg(target_os = "windows")]
+        {
+            let system32 =
+                std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+            std::fs::copy(system32.join("whoami.exe"), &fallback).unwrap();
+            let shell = std::process::Command::new(system32.join("cmd.exe"))
+                .args(["/D", "/C", "agentbro-fixture"])
+                .current_dir(root.path())
+                .env("PATH", std::env::join_paths([&first, &second]).unwrap())
+                .env("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+                .output()
+                .unwrap();
+            assert!(shell.status.success());
+            assert_eq!(String::from_utf8_lossy(&shell.stdout).trim(), "preferred");
+            assert_eq!(
+                super::find_binary_generic(shim.to_str().unwrap()),
+                Some(shim.clone())
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        std::fs::write(&fallback, []).unwrap();
+
+        let directories = [first, second];
+        let binary = "agentbro-fixture";
+        #[cfg(target_os = "windows")]
+        let candidates = super::windows_binary_candidates(binary);
+        #[cfg(not(target_os = "windows"))]
+        let candidates = ["agentbro-fixture.exe", "agentbro-fixture.cmd", binary].map(String::from);
+        assert_eq!(
+            super::find_windows_binary_in_dirs(directories.clone(), binary, &candidates),
+            Some(shim.clone())
+        );
+        let explicit_name = "agentbro-fixture.exe";
+        assert_eq!(
+            super::find_windows_binary_in_dirs(
+                directories.clone(),
+                explicit_name,
+                &[explicit_name.to_string()]
+            ),
+            Some(fallback.clone())
+        );
+        std::fs::remove_file(shim).unwrap();
+        assert_eq!(
+            super::find_windows_binary_in_dirs(directories.clone(), binary, &candidates),
+            Some(fallback.clone())
+        );
+        std::fs::remove_file(fallback).unwrap();
+        assert_eq!(
+            super::find_windows_binary_in_dirs(directories, binary, &candidates),
+            Some(extensionless)
+        );
     }
 
     #[cfg(target_os = "windows")]

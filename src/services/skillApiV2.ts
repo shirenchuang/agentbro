@@ -6,8 +6,11 @@ import {
   useRuntimeEnvironmentStore,
 } from '../stores/runtimeEnvironmentStore'
 
-async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const environmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId
+async function invoke<T>(
+  command: string,
+  args?: Record<string, unknown>,
+  environmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId,
+): Promise<T> {
   const usesLocalDiscovery = command === 'search_marketplace_skills'
     || command === 'fetch_marketplace_skill_detail'
   if (environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID || usesLocalDiscovery) {
@@ -77,6 +80,15 @@ export interface SkillSourceDetail {
   installedVia: string
   createdAt: string
   updatedAt: string
+}
+
+export interface SkillSourceUpdateCheck {
+  sourceUri: string
+  installedRef: string | null
+  latestRef: string
+  currentHash: string
+  updateAvailable: boolean
+  fileChanges: { path: string; kind: 'added' | 'modified' | 'removed' }[]
 }
 
 export interface SkillTargetDetail {
@@ -187,6 +199,30 @@ export interface SkillPackDetail {
   failedSyncCount?: number
   createdAt: string
   updatedAt: string
+}
+
+export interface SkillPackManifest {
+  format: 'agentbro-skill-pack'
+  version: 1 | 2 | 3
+  name: string
+  description: string
+  tags: string[]
+  skillIds: string[]
+  skillFingerprints?: Record<string, string>
+  skillSources?: Record<string, SkillPackGitHubSource>
+}
+
+export interface SkillPackGitHubSource {
+  repository: string
+  commit: string
+  skillPath: string
+}
+
+export interface SkillPackFingerprint {
+  skillId: string
+  missing: boolean
+  fingerprint: string | null
+  source?: SkillPackGitHubSource
 }
 
 export interface McpServerStatus {
@@ -356,7 +392,7 @@ export interface PluginStatus {
   id: string
   name: string
   version: string | null
-  enabled: boolean
+  enabled: boolean | null
   source: string | null
 }
 
@@ -515,6 +551,26 @@ export interface ProjectDetail extends ProjectSummary {
   agents: ProjectAgentDetail[]
   instructions: ProjectInstructionFile[]
   health: ProjectHealthIssue[]
+  skillLock?: ProjectSkillLock | null
+}
+
+export interface ProjectSkillLock {
+  version: number | null
+  revision: string
+  skills: ProjectLockedSkill[]
+  error: string | null
+}
+
+export interface ProjectLockedSkill {
+  name: string
+  source: string
+  reference: string | null
+  status: 'existing' | 'ready' | 'legacy' | 'unsupported' | 'invalid' | 'verified' | 'modified' | 'unverified'
+}
+
+export interface ProjectSkillRestoreResult {
+  name: string
+  error: string | null
 }
 
 export interface ConflictBlocker {
@@ -524,6 +580,7 @@ export interface ConflictBlocker {
   existingPath: string | null
   existingPathKind?: 'symlink' | 'directory' | 'file' | 'broken_symlink' | 'missing' | string | null
   resolvedExistingPath?: string | null
+  targetFingerprint?: string
 }
 
 export interface DistributionChange {
@@ -533,6 +590,7 @@ export interface DistributionChange {
   actualMode?: 'link' | 'copy'
   reason?: string
   targetPath: string
+  targetFingerprint?: string
 }
 
 export interface DistributionBlockerDecision {
@@ -872,6 +930,8 @@ export interface GitHubRepoPreview {
     repo: string
     branch: string
     normalizedUrl: string
+    revision?: string | null
+    requestedPath?: string | null
   }
   skills: Array<{
     sourcePath: string
@@ -1072,9 +1132,9 @@ function demoMcpInspectionReport(
 export const skillApiV2 = {
   bootstrap: () => (isTauriRuntime() ? invoke<void>('skill_manager_bootstrap') : Promise.resolve()),
   init: () => (isTauriRuntime() ? invoke<void>('skill_manager_init') : Promise.resolve()),
-  overview: () =>
+  overview: (environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<SkillManagerOverview>('skill_manager_overview')
+      ? invoke<SkillManagerOverview>('skill_manager_overview', undefined, environmentId)
       : Promise.resolve(demoOverview()),
   getSkillPackPickerData: (): Promise<SkillPackPickerData> => {
     if (isTauriRuntime()) return invoke<SkillPackPickerData>('skill_pack_picker_data')
@@ -1086,10 +1146,10 @@ export const skillApiV2 = {
       defaultDistributeMode: overview.settings.defaultDistributeMode,
     })
   },
-  refresh: () => (isTauriRuntime() ? invoke<void>('skill_manager_refresh') : Promise.resolve()),
-  refreshOverview: () =>
+  refresh: (environmentId?: string) => (isTauriRuntime() ? invoke<void>('skill_manager_refresh', undefined, environmentId) : Promise.resolve()),
+  refreshOverview: (environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<SkillManagerOverview>('skill_manager_refresh_overview')
+      ? invoke<SkillManagerOverview>('skill_manager_refresh_overview', undefined, environmentId)
       : Promise.resolve(demoOverview()),
   getSettings: () =>
     isTauriRuntime()
@@ -1117,11 +1177,15 @@ export const skillApiV2 = {
 
   listCenterSkills: () =>
     isTauriRuntime() ? invoke<SkillSummary[]>('list_center_skills_v2') : Promise.resolve([]),
-  getSkillDetail: (skillId: string) =>
-    isTauriRuntime() ? invoke<SkillDetail>('get_skill_detail_v2', { skillId }) : Promise.resolve(null as unknown as SkillDetail),
-  readFileTree: (skillPath: string) =>
+  getSkillDetail: (skillId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<SkillDetail>('get_skill_detail_v2', { skillId }, environmentId) : Promise.resolve(null as unknown as SkillDetail),
+  checkSkillSourceUpdate: (skillId: string, githubToken?: string) =>
+    invoke<SkillSourceUpdateCheck>('check_skill_source_update', { skillId, githubToken }),
+  applySkillSourceUpdate: (skillId: string, expected: SkillSourceUpdateCheck, githubToken?: string) =>
+    invoke<SkillDetail>('apply_skill_source_update', { skillId, expected, githubToken }),
+  readFileTree: (skillPath: string, environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<FileTreeNode>('read_skill_files', { skillPath })
+      ? invoke<FileTreeNode>('read_skill_files', { skillPath }, environmentId)
       : Promise.resolve({
           name: skillPath.split(/[\\/]+/).filter(Boolean).pop() || 'skill',
           nodeType: 'dir' as const,
@@ -1135,11 +1199,11 @@ export const skillApiV2 = {
             },
           ],
         }),
-  readFileContent: (filePath: string) =>
-    isTauriRuntime() ? invoke<string>('read_skill_file_content', { filePath }) : Promise.resolve(''),
-  browseRemoteSkillSources: (path = '~') =>
+  readFileContent: (filePath: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<string>('read_skill_file_content', { filePath }, environmentId) : Promise.resolve(''),
+  browseRemoteSkillSources: (path = '~', environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<RemoteSkillSourceListing>('browse_remote_skill_sources', { path })
+      ? invoke<RemoteSkillSourceListing>('browse_remote_skill_sources', { path }, environmentId)
       : Promise.resolve({ path: '/home/agent', parentPath: null, entries: [] }),
   getSkillExplanation: (skillId: string, lang: string) =>
     isTauriRuntime() ? invoke<SkillExplanation | null>('get_skill_explanation_cmd', { skillId, lang }) : Promise.resolve(null),
@@ -1178,20 +1242,24 @@ export const skillApiV2 = {
     isTauriRuntime()
       ? listen<MarketplaceBatchProgress>('marketplace-skill-batch-progress', (event) => handler(event.payload))
       : Promise.resolve(() => {}),
-  previewGitHubRepoImport: (repoUrl: string, githubToken?: string) =>
+  previewGitHubRepoImport: (repoUrl: string, githubToken?: string, environmentId?: string): Promise<GitHubRepoPreview> =>
     isTauriRuntime()
       ? invoke<GitHubRepoPreview>('preview_github_repo_import', {
           repoUrl,
           githubToken: githubToken?.trim() || null,
-        })
+        }, environmentId)
       : Promise.resolve({ repo: { owner: '', repo: '', branch: 'HEAD', normalizedUrl: repoUrl }, skills: [] }),
-  importGitHubRepoSkills: (repoUrl: string, selections: GitHubSkillImportSelection[], githubToken?: string) =>
+  importGitHubRepoSkills: (
+    repoUrl: string, selections: GitHubSkillImportSelection[], githubToken?: string,
+    options: { environmentId?: string; expectedCommit?: string | null } = {},
+  ) =>
     isTauriRuntime()
       ? invoke<GitHubRepoImportResult>('import_github_repo_skills', {
           repoUrl,
           selections,
           githubToken: githubToken?.trim() || null,
-        })
+          expectedCommit: options.expectedCommit ?? null,
+        }, options.environmentId)
       : Promise.resolve({
           repo: { owner: '', repo: '', branch: 'HEAD', normalizedUrl: repoUrl },
           importedSkills: [],
@@ -1222,7 +1290,7 @@ export const skillApiV2 = {
   executeDistribute: (preview: DistributionPreview) =>
     isTauriRuntime() ? invoke<DistributionPreview>('execute_distribute_skill', { preview }) : Promise.resolve(preview),
 
-  scanAgentInventory: (agentId: string) =>
+  scanAgentInventory: (agentId: string, environmentId?: string) =>
     isTauriRuntime()
       ? invoke<{
           agentId: string
@@ -1233,7 +1301,7 @@ export const skillApiV2 = {
           sharedManaged?: number
           sharedUnmanaged?: number
           sharedReadOnly?: number
-        }>('scan_agent_inventory', { agentId })
+        }>('scan_agent_inventory', { agentId }, environmentId)
       : Promise.resolve({
           agentId,
           managed: 0,
@@ -1249,25 +1317,25 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<AdoptPreview>('preview_adopt_agent_skill', { agentId, unmanagedId }) : Promise.resolve(null as unknown as AdoptPreview),
   executeAdopt: (agentId: string, unmanagedId: string, option: string, renamedId?: string | null) =>
     isTauriRuntime() ? invoke<string>('execute_adopt_agent_skill', { agentId, unmanagedId, option, renamedId: renamedId ?? null }) : Promise.resolve(''),
-  executeAdoptBatch: (items: AdoptBatchItem[]) =>
+  executeAdoptBatch: (items: AdoptBatchItem[], environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<AdoptBatchResult>('execute_adopt_agent_skills', { items })
+      ? invoke<AdoptBatchResult>('execute_adopt_agent_skills', { items }, environmentId)
       : Promise.resolve({
         items: items.map((item) => ({ unmanagedId: item.unmanagedId, skillId: '', error: null })),
         finalizationError: null,
       }),
-  takeoverCenterSkills: (agentId: string, unmanagedIds: string[]) =>
+  takeoverCenterSkills: (agentId: string, unmanagedIds: string[], environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<AdoptBatchResult>('takeover_center_agent_skills', { agentId, unmanagedIds })
+      ? invoke<AdoptBatchResult>('takeover_center_agent_skills', { agentId, unmanagedIds }, environmentId)
       : Promise.resolve({
         items: unmanagedIds.map((unmanagedId) => ({ unmanagedId, skillId: '', error: null })),
         finalizationError: null,
       }),
-  deleteUnmanagedAgentSkill: (agentId: string, unmanagedId: string) =>
-    isTauriRuntime() ? invoke<void>('delete_unmanaged_agent_skill', { agentId, unmanagedId }) : Promise.resolve(),
-  deleteUnmanagedAgentSkills: (agentId: string, unmanagedIds: string[]) =>
+  deleteUnmanagedAgentSkill: (agentId: string, unmanagedId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<void>('delete_unmanaged_agent_skill', { agentId, unmanagedId }, environmentId) : Promise.resolve(),
+  deleteUnmanagedAgentSkills: (agentId: string, unmanagedIds: string[], environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<DeleteUnmanagedAgentSkillsResult>('delete_unmanaged_agent_skills', { agentId, unmanagedIds })
+      ? invoke<DeleteUnmanagedAgentSkillsResult>('delete_unmanaged_agent_skills', { agentId, unmanagedIds }, environmentId)
       : Promise.resolve({ deleted: unmanagedIds.length, failures: [] }),
 
   previewSyncCopy: (targetId: string) =>
@@ -1276,67 +1344,96 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<CopyTargetDiffPreview>('preview_copy_target_diff', { targetId }) : Promise.resolve(null as unknown as CopyTargetDiffPreview),
   executeSyncCopy: (targetId: string, action: string) =>
     isTauriRuntime() ? invoke<CopySyncPreview>('execute_sync_copy_target', { targetId, action }) : Promise.resolve(null as unknown as CopySyncPreview),
-  deleteSkillTargetDistribution: (targetId: string) =>
-    isTauriRuntime() ? invoke<void>('delete_skill_target_distribution', { targetId }) : Promise.resolve(),
-  deleteSkillTargetDistributions: (targetIds: string[]) =>
+  deleteSkillTargetDistribution: (targetId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<void>('delete_skill_target_distribution', { targetId }, environmentId) : Promise.resolve(),
+  deleteSkillTargetDistributions: (targetIds: string[], environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<DeleteSkillTargetDistributionsResult>('delete_skill_target_distributions', { targetIds })
+      ? invoke<DeleteSkillTargetDistributionsResult>('delete_skill_target_distributions', { targetIds }, environmentId)
       : Promise.resolve({ deleted: targetIds.length, failures: [] }),
 
   listPacks: () => (isTauriRuntime() ? invoke<SkillPackSummary[]>('list_skill_packs_v2') : Promise.resolve([])),
-  getPackDetail: (packId: string) =>
-    isTauriRuntime() ? invoke<SkillPackDetail>('get_skill_pack_detail', { packId }) : Promise.resolve(null as unknown as SkillPackDetail),
-  upsertPack: (pack: UpsertPackInput, options: { deferSync?: boolean } = {}) =>
+  getPackDetail: (packId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<SkillPackDetail>('get_skill_pack_detail', { packId }, environmentId) : Promise.resolve(null as unknown as SkillPackDetail),
+  readPackManifest: (path: string) => tauriInvoke<SkillPackManifest>('read_skill_pack_manifest', { path }),
+  readPackManifestLink: (link: string) =>
+    tauriInvoke<{ manifest: SkillPackManifest; sourceUrl: string }>('read_skill_pack_manifest_link', { link }),
+  writePackManifest: (path: string, manifest: SkillPackManifest) =>
+    tauriInvoke<void>('write_skill_pack_manifest', { path, manifest }),
+  getPackFingerprints: (skillIds: string[], environmentId: string, includeSources?: boolean) =>
+    invoke<SkillPackFingerprint[]>('get_skill_pack_fingerprints', { skillIds, includeSources }, environmentId),
+  restorePackMember: (manifest: SkillPackManifest, skillId: string, environmentId: string) =>
+    invoke<void>('restore_skill_pack_member', { manifest, skillId }, environmentId),
+  importReviewedPack: (
+    manifest: SkillPackManifest,
+    reviewed: SkillPackFingerprint[],
+    acceptLocalCopies: boolean,
+    environmentId: string,
+  ) => invoke<SkillPackDetail>('execute_import_skill_pack_manifest', { manifest, reviewed, acceptLocalCopies }, environmentId),
+  upsertPack: (pack: UpsertPackInput, options: { deferSync?: boolean; environmentId?: string } = {}) =>
     isTauriRuntime()
-      ? invoke<SkillPackDetail>('execute_upsert_skill_pack', { pack, deferSync: options.deferSync ?? false })
+      ? invoke<SkillPackDetail>('execute_upsert_skill_pack', { pack, deferSync: options.deferSync ?? false }, options.environmentId)
       : Promise.resolve(null as unknown as SkillPackDetail),
-  previewDeletePack: (packId: string) =>
-    isTauriRuntime() ? invoke<DeleteSkillPackPreview>('preview_delete_skill_pack', { packId }) : Promise.resolve({ packId, packName: packId, appliedAgents: [], affectedTargets: [], removable: true, warnings: [] }),
-  deletePack: (packId: string) =>
-    isTauriRuntime() ? invoke<void>('execute_delete_skill_pack', { packId }) : Promise.resolve(),
-  previewApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy') =>
-    isTauriRuntime() ? invoke<DistributionPreview>('preview_apply_skill_pack', { packId, targetAgents, requestedMode }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions: [] }),
-  executeApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy', blockerDecisions: DistributionBlockerDecision[] = []) =>
-    isTauriRuntime() ? invoke<DistributionPreview>('execute_apply_skill_pack', { packId, targetAgents, requestedMode, blockerDecisions }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions }),
-  syncPackToAgents: (packId: string, targetAgents: string[] = []) =>
-    isTauriRuntime() ? invoke<SkillPackSyncResult>('execute_sync_skill_pack_to_agents', { packId, targetAgents }) : Promise.resolve({ packId, packName: packId, revision: 1, status: 'synced', agents: [] }),
-  previewRemovePackFromAgent: (packId: string, agentId: string) =>
-    isTauriRuntime() ? invoke<RemovePackFromAgentPreview>('preview_remove_skill_pack_from_agent', { packId, agentId }) : Promise.resolve({ packId, packName: packId, agentId, displayName: agentId, affectedTargets: [], willRemoveTargets: 0, willPreserveTargets: 0 }),
-  removePackFromAgent: (packId: string, agentId: string) =>
-    isTauriRuntime() ? invoke<RevokeResult>('execute_remove_skill_pack_from_agent', { packId, agentId }) : Promise.resolve({ packId, agentId, removedClaims: 0, removedTargets: 0, preservedTargets: 0 }),
-  previewRemoveSkillFromPack: (packId: string, skillId: string) =>
-    isTauriRuntime() ? invoke<RemoveSkillFromPackPreview>('preview_remove_skill_from_pack', { packId, skillId }) : Promise.resolve({ packId, packName: packId, skillId, skillName: skillId, affectedTargets: [], appliedAgentCount: 0, canKeepStandalone: true, canRemoveTargets: true }),
-  removeSkillFromPack: (packId: string, skillId: string, alsoRemoveTargets: boolean) =>
-    isTauriRuntime() ? invoke<void>('execute_remove_skill_from_pack', { packId, skillId, alsoRemoveTargets }) : Promise.resolve(),
-  previewMoveDirectSkillToPack: (targetId: string, packId: string) =>
+  previewDeletePack: (packId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<DeleteSkillPackPreview>('preview_delete_skill_pack', { packId }, environmentId) : Promise.resolve({ packId, packName: packId, appliedAgents: [], affectedTargets: [], removable: true, warnings: [] }),
+  deletePack: (packId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<void>('execute_delete_skill_pack', { packId }, environmentId) : Promise.resolve(),
+  previewApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy', environmentId?: string) =>
+    isTauriRuntime() ? invoke<DistributionPreview>('preview_apply_skill_pack', { packId, targetAgents, requestedMode }, environmentId) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions: [] }),
+  executeApplyPack: (
+    packId: string,
+    targetAgents: string[],
+    requestedMode: 'link' | 'copy',
+    blockerDecisions: DistributionBlockerDecision[] = [],
+    reviewedPreview?: DistributionPreview,
+    environmentId?: string,
+  ) => isTauriRuntime()
+    ? invoke<DistributionPreview>('execute_apply_skill_pack', { packId, targetAgents, requestedMode, blockerDecisions, reviewedPreview }, environmentId)
+    : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions }),
+  syncPackToAgents: (packId: string, targetAgents: string[] = [], environmentId?: string) =>
+    isTauriRuntime() ? invoke<SkillPackSyncResult>('execute_sync_skill_pack_to_agents', { packId, targetAgents }, environmentId) : Promise.resolve({ packId, packName: packId, revision: 1, status: 'synced', agents: [] }),
+  previewRemovePackFromAgent: (packId: string, agentId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<RemovePackFromAgentPreview>('preview_remove_skill_pack_from_agent', { packId, agentId }, environmentId) : Promise.resolve({ packId, packName: packId, agentId, displayName: agentId, affectedTargets: [], willRemoveTargets: 0, willPreserveTargets: 0 }),
+  removePackFromAgent: (packId: string, agentId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<RevokeResult>('execute_remove_skill_pack_from_agent', { packId, agentId }, environmentId) : Promise.resolve({ packId, agentId, removedClaims: 0, removedTargets: 0, preservedTargets: 0 }),
+  previewRemoveSkillFromPack: (packId: string, skillId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<RemoveSkillFromPackPreview>('preview_remove_skill_from_pack', { packId, skillId }, environmentId) : Promise.resolve({ packId, packName: packId, skillId, skillName: skillId, affectedTargets: [], appliedAgentCount: 0, canKeepStandalone: true, canRemoveTargets: true }),
+  removeSkillFromPack: (packId: string, skillId: string, alsoRemoveTargets: boolean, environmentId?: string) =>
+    isTauriRuntime() ? invoke<void>('execute_remove_skill_from_pack', { packId, skillId, alsoRemoveTargets }, environmentId) : Promise.resolve(),
+  previewMoveDirectSkillToPack: (targetId: string, packId: string, environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<MoveDirectSkillToPackPreview>('preview_move_direct_skill_to_pack', { targetId, packId })
+      ? invoke<MoveDirectSkillToPackPreview>('preview_move_direct_skill_to_pack', { targetId, packId }, environmentId)
       : Promise.resolve(null as unknown as MoveDirectSkillToPackPreview),
-  moveDirectSkillToPack: (targetId: string, packId: string, blockerDecisions: DistributionBlockerDecision[] = []) =>
+  moveDirectSkillToPack: (
+    targetId: string,
+    packId: string,
+    blockerDecisions: DistributionBlockerDecision[] = [],
+    environmentId?: string,
+  ) =>
     isTauriRuntime()
-      ? invoke<MoveDirectSkillToPackPreview>('execute_move_direct_skill_to_pack', { targetId, packId, blockerDecisions })
+      ? invoke<MoveDirectSkillToPackPreview>('execute_move_direct_skill_to_pack', { targetId, packId, blockerDecisions }, environmentId)
       : Promise.resolve(null as unknown as MoveDirectSkillToPackPreview),
 
   listAgents: () => (isTauriRuntime() ? invoke<AgentSummary[]>('list_managed_agents_v2') : Promise.resolve([])),
   getAgentDetail: (agentId: string) =>
     isTauriRuntime() ? invoke<AgentDetail>('get_agent_detail_v2', { agentId }) : Promise.resolve(null as unknown as AgentDetail),
-  refreshAgentSkillView: (agentId: string) =>
+  refreshAgentSkillView: (agentId: string, environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<AgentSkillViewSnapshot>('refresh_agent_skill_view_v2', { agentId })
+      ? invoke<AgentSkillViewSnapshot>('refresh_agent_skill_view_v2', { agentId }, environmentId)
       : Promise.all([
           skillApiV2.getAgentDetail(agentId),
           skillApiV2.overview(),
           skillApiV2.listUnmanaged(),
         ]).then(([agentDetail, overview, unmanaged]) => ({ agentDetail, overview, unmanaged })),
-  readAgentConfigFile: (agentId: string, path: string) =>
+  readAgentConfigFile: (agentId: string, path: string, environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<AgentConfigDocument>('read_agent_config_file_v2', { agentId, path })
+      ? invoke<AgentConfigDocument>('read_agent_config_file_v2', { agentId, path }, environmentId)
       : Promise.resolve({ path, content: '', revision: 'demo' }),
   writeAgentConfigFile: (
     agentId: string,
     path: string,
     content: string,
     expectedRevision: string,
+    environmentId?: string,
   ) =>
     isTauriRuntime()
       ? invoke<AgentConfigDocument>('write_agent_config_file_v2', {
@@ -1344,7 +1441,7 @@ export const skillApiV2 = {
           path,
           content,
           expectedRevision,
-        })
+        }, environmentId)
       : Promise.resolve({ path, content, revision: `${expectedRevision}-saved` }),
   listPluginInventory: (agentId: string) =>
     isTauriRuntime()
@@ -1404,13 +1501,13 @@ export const skillApiV2 = {
           serverVersion: null,
           toolCount: null,
         }),
-  inspectMcpServer: (agent: string, serverName: string, inspectionId: string) =>
+  inspectMcpServer: (agent: string, serverName: string, inspectionId: string, environmentId: string) =>
     isTauriRuntime()
-      ? invoke<McpInspectionReport>('inspect_mcp_server_cmd', { agent, serverName, inspectionId })
+      ? invoke<McpInspectionReport>('inspect_mcp_server_cmd', { agent, serverName, inspectionId }, environmentId)
       : Promise.resolve(demoMcpInspectionReport(serverName, inspectionId)),
-  cancelMcpInspection: (inspectionId: string) =>
+  cancelMcpInspection: (inspectionId: string, environmentId: string) =>
     isTauriRuntime()
-      ? invoke<void>('cancel_mcp_inspection_cmd', { inspectionId })
+      ? invoke<void>('cancel_mcp_inspection_cmd', { inspectionId }, environmentId)
       : Promise.resolve(),
   callMcpTool: (
     agent: string,
@@ -1418,6 +1515,7 @@ export const skillApiV2 = {
     operationId: string,
     toolName: string,
     argumentsValue: Record<string, unknown>,
+    environmentId: string,
   ) =>
     isTauriRuntime()
       ? invoke<McpOperationResult>('call_mcp_tool_cmd', {
@@ -1426,7 +1524,7 @@ export const skillApiV2 = {
         operationId,
         toolName,
         arguments: argumentsValue,
-      })
+      }, environmentId)
       : Promise.resolve({
         operationId,
         kind: 'tool' as const,
@@ -1445,6 +1543,7 @@ export const skillApiV2 = {
     operationId: string,
     promptName: string,
     argumentsValue: Record<string, string>,
+    environmentId: string,
   ) =>
     isTauriRuntime()
       ? invoke<McpOperationResult>('get_mcp_prompt_cmd', {
@@ -1453,7 +1552,7 @@ export const skillApiV2 = {
         operationId,
         promptName,
         arguments: argumentsValue,
-      })
+      }, environmentId)
       : Promise.resolve({
         operationId,
         kind: 'prompt' as const,
@@ -1466,11 +1565,12 @@ export const skillApiV2 = {
         },
         warnings: [],
       }),
-  cancelMcpOperation: (operationId: string) =>
+  cancelMcpOperation: (operationId: string, environmentId: string) =>
     isTauriRuntime()
-      ? invoke<void>('cancel_mcp_operation_cmd', { operationId })
+      ? invoke<void>('cancel_mcp_operation_cmd', { operationId }, environmentId)
       : Promise.resolve(),
-  listUnmanaged: () => (isTauriRuntime() ? invoke<UnmanagedItemDto[]>('list_unmanaged_v2') : Promise.resolve([])),
+  listUnmanaged: (environmentId?: string) =>
+    isTauriRuntime() ? invoke<UnmanagedItemDto[]>('list_unmanaged_v2', undefined, environmentId) : Promise.resolve([]),
   listAgentSkillInventory: () =>
     isTauriRuntime() ? invoke<AgentSkillInventoryAgent[]>('list_agent_skill_inventory_v2') : Promise.resolve(demoAgentInventory()),
   listProjects: () =>
@@ -1483,6 +1583,14 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<ProjectDetail>('get_skill_project_detail_v2', { projectId }) : Promise.resolve(demoProjectDetail(projectId)),
   scanProject: (projectId: string) =>
     isTauriRuntime() ? invoke<ProjectDetail>('scan_skill_project_v2', { projectId }) : Promise.resolve(demoProjectDetail(projectId)),
+  restoreProjectSkillLock: (projectId: string, revision: string, skillNames: string[]) =>
+    isTauriRuntime()
+      ? invoke<ProjectSkillRestoreResult[]>('restore_project_skill_lock_v2', { projectId, revision, skillNames })
+      : Promise.resolve([]),
+  verifyProjectSkillLock: (projectId: string, revision: string) =>
+    isTauriRuntime()
+      ? invoke<Record<string, ProjectLockedSkill['status']>>('verify_project_skill_lock_v2', { projectId, revision })
+      : Promise.resolve<Record<string, ProjectLockedSkill['status']>>({}),
   installCenterSkillsToProject: (projectId: string, agentId: string, skillIds: string[], requestedMode: 'link' | 'copy') =>
     isTauriRuntime()
       ? invoke<ProjectDetail>('install_center_skills_to_project_v2', { projectId, agentId, skillIds, requestedMode })

@@ -40,11 +40,11 @@ This project adopts the [Contributor Covenant v2.1](CODE_OF_CONDUCT.md). The sho
 
 ### Prerequisites
 
-- macOS (macOS is the only supported platform today)
-- Node.js 20+
+- On macOS, install Xcode Command Line Tools. On Windows x64, install the Microsoft C++ Build Tools with the Desktop development with C++ workload, the MSVC Rust toolchain, and WebView2. See the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
+- Node.js 20 (20.19 or later) or Node.js 22.12 and later
 - pnpm 9+
 - Rust stable + Cargo
-- Tauri CLI: `cargo install tauri-cli` or `pnpm dlx @tauri-apps/cli`
+- Install the Tauri CLI for native builds with `cargo install tauri-cli --locked`.
 
 ### Getting started
 
@@ -58,6 +58,12 @@ pnpm dev         # browser UI only — http://localhost:1423
 ```
 
 `pnpm tauri:dev` first runs `cargo build` for the `agentbro-bridge` binary, then starts Vite + the native window. First build is slow (5-10 min for Rust deps); incremental builds are quick.
+
+### Verify the Windows installer
+
+Run `pnpm tauri:build:windows` on Windows x64. The NSIS and MSI installers are under `src-tauri/target/release/bundle/nsis/` and `src-tauri/target/release/bundle/msi/`.
+
+For Windows changes, run the [Build workflow](https://github.com/shirenchuang/agentbro/actions/workflows/build.yml) manually from the PR branch. The `Smoke test installed Windows app` job installs the NSIS package on a fresh Windows runner, launches the app, and verifies TCP hook delivery.
 
 ### Run before every commit
 
@@ -114,7 +120,7 @@ One commit, one logical change. PRs that include "while I was here, I cleaned up
 2. Fork → branch off `dev` → make your changes → run the four checks above.
 3. Open the PR against `dev`. Title should clearly state what changed (English or Chinese).
 4. Fill in the PR template and keep `Closes #<issue-number>` in the body; `PR policy / Issue link` validates it.
-5. CI runs `ci.yml` (lint + test + cargo check/clippy/fmt + cargo test) and `build.yml` (macOS dual-arch build). Both must be green.
+5. PRs into `dev` require an issue link, frontend lint, tests and build, and Rust formatting, Clippy, and tests. The separate Build workflow can verify Windows installers.
 6. Review cadence: first response usually within 48 business hours. If a week passes with no reply, feel free to nudge maintainers in the PR.
 7. Merge is squash. Repository members may enable auto-merge in advance; the PR merges and deletes its task branch after every required check passes. `Close linked Issues` closes Issues referenced in the body after the PR merges into `dev`.
 

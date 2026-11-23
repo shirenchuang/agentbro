@@ -1,6 +1,6 @@
 [package]
 name = "agentbro"
-version = "3.2.2"
+version = "3.3.0"
 description = "Your AI agents' best bro — monitor, manage, and supercharge every coding agent from one native app"
 authors = ["AgentBro"]
 license = "Apache-2.0"
@@ -27,6 +27,7 @@ tauri-plugin-global-shortcut = "2"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+semver = "1"
 sha2 = "0.10"
 dashmap = "6"
 log = "0.4"
@@ -46,13 +47,14 @@ axum = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip", "brotli", "deflate", "zstd"] }
 futures-util = "0.3"
 async-stream = "0.3"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["backup", "bundled"] }
 regex = "1"
 tauri-plugin-deep-link = "2"
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_UI_Shell"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"

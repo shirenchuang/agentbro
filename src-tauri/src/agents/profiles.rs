@@ -1,4 +1,7 @@
-use super::{deepseek_harness::DeepSeekHarnessAdapter, hook_manager, AgentAdapter};
+use super::{
+    deepseek_harness::DeepSeekHarnessAdapter, hook_manager, workbuddy::WorkBuddyEdition,
+    AgentAdapter,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -501,11 +504,11 @@ pub const QODER_EVENTS: &[HookEventDescriptor] = &[
 ];
 
 pub const WORKBUDDY_EVENTS: &[HookEventDescriptor] = &[
+    matcher_event("PermissionRequest", "*", Some(21_600)),
     plain_event("UserPromptSubmit"),
     matcher_event("PreToolUse", "*", None),
     matcher_event("PostToolUse", "*", None),
     matcher_event("PostToolUseFailure", "*", None),
-    matcher_event("PermissionRequest", "*", Some(21_600)),
     matcher_event("PermissionDenied", "*", None),
     matcher_event("Notification", "*", None),
     plain_event("Stop"),
@@ -734,18 +737,23 @@ pub fn stepfun_profile() -> AgentIntegrationProfile {
     json_profile("stepfun", ".stepfun/settings.json", BASIC_AGENT_EVENTS)
 }
 
-pub fn workbuddy_profile() -> AgentIntegrationProfile {
+pub(super) fn workbuddy_profile(edition: WorkBuddyEdition) -> AgentIntegrationProfile {
+    let (configuration_path, events) = match edition {
+        WorkBuddyEdition::China => (".workbuddy/settings.json", WORKBUDDY_EVENTS),
+        // The international desktop client handles confirmations in its own window.
+        WorkBuddyEdition::Global => (".workbuddy-ai/settings.json", &WORKBUDDY_EVENTS[1..]),
+    };
     AgentIntegrationProfile {
-        id: "workbuddy",
+        id: edition.id(),
         installation_kind: InstallationKind::JsonHooks {
             entry: JsonHookEntry::TypedCommand,
             nested: true,
         },
-        configuration_path: ".workbuddy/settings.json",
+        configuration_path,
         activation_path: None,
-        source: "workbuddy",
+        source: edition.id(),
         extra_args: &[],
-        events: WORKBUDDY_EVENTS,
+        events,
     }
 }
 
@@ -920,7 +928,8 @@ pub fn profile_for_agent(id: &str) -> Option<AgentIntegrationProfile> {
         "qoder-cli" => Some(qoder_cli_profile()),
         "qwen" => Some(qwen_profile()),
         "stepfun" => Some(stepfun_profile()),
-        "workbuddy" => Some(workbuddy_profile()),
+        "workbuddy" => Some(workbuddy_profile(WorkBuddyEdition::China)),
+        "workbuddy-ai" => Some(workbuddy_profile(WorkBuddyEdition::Global)),
         "zcode" => Some(zcode_profile()),
         _ => None,
     }
@@ -1326,7 +1335,7 @@ fn agentbro_command_is_current(profile: &AgentIntegrationProfile, command: &str)
     }
 
     let bridge = hook_manager::bridge_binary_path();
-    let bridge_path = bridge.display().to_string();
+    let bridge_path = bridge_path_for_command(profile, &bridge);
     if !command.contains(&bridge_path) {
         return false;
     }
@@ -1683,17 +1692,48 @@ pub fn managed_bridge_command_labeled(
         return Err("DeepSeek Harness uses a desktop plugin".into());
     }
     let bridge = hook_manager::ensure_bridge_binary()?;
+    Ok(bridge_command_for(
+        profile,
+        &bridge,
+        engine_label,
+        config_root,
+    ))
+}
+
+fn bridge_path_for_command(profile: &AgentIntegrationProfile, bridge: &Path) -> String {
+    let path = bridge.to_string_lossy();
+    if cfg!(target_os = "windows")
+        && matches!(profile.id, "claude-code" | "workbuddy" | "workbuddy-ai")
+    {
+        windows_shell_path(&path)
+    } else {
+        path.into_owned()
+    }
+}
+
+fn bridge_command_for(
+    profile: &AgentIntegrationProfile,
+    bridge: &Path,
+    engine_label: Option<&str>,
+    config_root: Option<&str>,
+) -> String {
+    let bridge_path = bridge_path_for_command(profile, bridge);
     let mut args = vec!["--source".to_string(), profile.source.to_string()];
     if cfg!(target_os = "windows") {
         if let Some(label) = engine_label {
             args.extend(["--engine-label".to_string(), label.to_string()]);
         }
         if let Some(root) = config_root {
-            args.extend(["--config-root".to_string(), root.to_string()]);
+            let root = if profile.id == "claude-code" {
+                windows_shell_path(root)
+            } else {
+                root.to_string()
+            };
+            args.extend(["--config-root".to_string(), root]);
         }
     }
     args.extend(profile.extra_args.iter().map(|arg| arg.to_string()));
-    let mut parts = hook_manager::bridge_command_parts(&bridge, &args);
+    let mut parts = hook_manager::bridge_command_parts(Path::new(&bridge_path), &args);
     if !cfg!(target_os = "windows") {
         if let Some(label) = engine_label {
             parts.insert(
@@ -1708,7 +1748,17 @@ pub fn managed_bridge_command_labeled(
             );
         }
     }
-    Ok(parts.join(" "))
+    parts.join(" ")
+}
+
+fn windows_shell_path(path: &str) -> String {
+    // Git Bash treats Windows path separators as escapes in shell-form hooks.
+    if let Some(unc_path) = path.strip_prefix(r"\\?\UNC\") {
+        return format!("//{}", unc_path.replace('\\', "/"));
+    }
+    path.strip_prefix(r"\\?\")
+        .unwrap_or(path)
+        .replace('\\', "/")
 }
 
 fn bridge_args_json(
@@ -1934,7 +1984,6 @@ fn update_nested_json_hooks(
             *value = serde_json::json!([]);
         }
         let groups = value.as_array_mut().expect("event hook groups is array");
-        groups.retain(|group| !json_hook_contains_profile(group, profile));
 
         let mut inner_hook = serde_json::json!({
             "type": "command",
@@ -2358,11 +2407,66 @@ fn json_hook_contains_profile(value: &Value, profile: &AgentIntegrationProfile) 
 }
 
 fn agentbro_command_matches_profile(profile: &AgentIntegrationProfile, command: &str) -> bool {
-    if !is_agentbro_command(command) {
+    if !is_agentbro_command(command) || command.ends_with(" # AgentBro WSL") {
         return false;
     }
 
     profile.id == "claude-code" || command_source_matches(command, profile.source)
+}
+
+pub(crate) fn wsl_hooks_installed(settings: &Value, marker: &str) -> bool {
+    let mut commands = Vec::new();
+    collect_json_agentbro_commands(settings, &mut commands);
+    commands.iter().any(|command| is_wsl_hook(command, marker))
+}
+
+pub(crate) fn edit_wsl_hooks(
+    settings: &mut Value,
+    profile: &AgentIntegrationProfile,
+    marker: &str,
+    command: Option<&str>,
+) -> Result<(), String> {
+    if !settings.is_object()
+        || settings
+            .get("hooks")
+            .is_some_and(|hooks| !hooks.is_object())
+    {
+        return Err("Expected an object in the WSL Hook settings".to_string());
+    }
+    strip_json_hooks_matching(settings, |hook| {
+        hook.get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| is_wsl_hook(command, marker))
+    });
+    let Some(command) = command else {
+        return Ok(());
+    };
+    let root = settings
+        .as_object_mut()
+        .ok_or("Invalid WSL Hook settings")?;
+    let hooks = root
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or("Invalid WSL Hook settings")?;
+    for event in profile.events {
+        let groups = hooks
+            .entry(event.name)
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| format!("Expected a list for the {} Hook", event.name))?;
+        let handler = flat_json_hook_entry(JsonHookEntry::TypedCommand, event, command);
+        let mut group = serde_json::json!({ "hooks": [handler] });
+        if let HookEntryTemplate::Matcher(matcher) = event.template {
+            group["matcher"] = matcher.into();
+        }
+        groups.push(group);
+    }
+    Ok(())
+}
+
+fn is_wsl_hook(command: &str, marker: &str) -> bool {
+    command.ends_with(" # AgentBro WSL") && command.contains(marker)
 }
 
 fn strip_json_hooks_for_profile(settings: &mut Value, profile: &AgentIntegrationProfile) {
@@ -2381,7 +2485,15 @@ where
     if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
         for value in hooks.values_mut() {
             if let Some(entries) = value.as_array_mut() {
-                entries.retain(|entry| !should_remove(entry));
+                entries.retain_mut(|entry| {
+                    if let Some(handlers) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
+                        let original_count = handlers.len();
+                        handlers.retain(|handler| !should_remove(handler));
+                        !handlers.is_empty() || original_count == 0
+                    } else {
+                        !should_remove(entry)
+                    }
+                });
             }
         }
         hooks.retain(|_, value| {
@@ -3509,6 +3621,64 @@ export default server;
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires Git Bash"]
+    fn windows_claude_hook_keeps_paths_through_git_bash() {
+        let bash = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(std::env::var_os("ProgramFiles").unwrap()).join("Git/bin/bash.exe")
+            });
+        let profile = claude_code_profile();
+        for (bridge, config_root) in [
+            (
+                r"C:\Users\Name\.agentbro\bin\agentbro-bridge.exe",
+                r"C:\Users\Name\.claude",
+            ),
+            (
+                r"C:\Users\User Name\.agentbro\bin\agentbro-bridge.exe",
+                r"\\?\C:\Users\User Name\Claude Settings",
+            ),
+        ] {
+            let command = bridge_command_for(
+                &profile,
+                Path::new(bridge),
+                Some("Test Engine"),
+                Some(config_root),
+            );
+            let output = std::process::Command::new(&bash)
+                .args(["-c", &format!("printf '%s\\n' {command}")])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let expected_bridge = bridge.replace('\\', "/");
+            let expected_root = config_root
+                .strip_prefix(r"\\?\")
+                .unwrap_or(config_root)
+                .replace('\\', "/");
+            assert_eq!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .lines()
+                    .collect::<Vec<_>>(),
+                [
+                    expected_bridge.as_str(),
+                    "--source",
+                    "claude-code",
+                    "--engine-label",
+                    "Test Engine",
+                    "--config-root",
+                    expected_root.as_str()
+                ]
+            );
+        }
+    }
+
     #[test]
     fn toml_cleanup_removes_only_agentbro_hooks() {
         let input = r#"[providers]
@@ -3598,12 +3768,7 @@ name = "also keep"
                             {
                                 "type": "command",
                                 "command": "/usr/bin/env AGENTBRO_CONFIG_ROOT='/Users/me/.claude' '/Users/me/.agentbro/bin/agentbro-bridge'"
-                            }
-                        ]
-                    },
-                    {
-                        "matcher": "*",
-                        "hooks": [
+                            },
                             {
                                 "type": "command",
                                 "command": "/usr/local/bin/custom-notifier --source claude"
@@ -3907,7 +4072,7 @@ name = "also keep"
 
     #[test]
     fn workbuddy_profile_uses_settings_json_nested_hooks() {
-        let profile = workbuddy_profile();
+        let profile = workbuddy_profile(WorkBuddyEdition::China);
         assert_eq!(profile.configuration_path, ".workbuddy/settings.json");
         assert!(matches!(
             profile.installation_kind,
@@ -3963,6 +4128,28 @@ name = "also keep"
         assert!(updated["hooks"].get("PermissionRequest").is_some());
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workbuddy_ai_hooks_use_separate_settings_and_observe_confirmations() {
+        let domestic = profile_for_agent("workbuddy").unwrap();
+        let global = profile_for_agent("workbuddy-ai").unwrap();
+
+        assert!(configuration_url(&domestic).ends_with(".workbuddy/settings.json"));
+        assert!(configuration_url(&global).ends_with(".workbuddy-ai/settings.json"));
+        assert_eq!(global.source, "workbuddy-ai");
+        assert!(global
+            .events
+            .iter()
+            .any(|event| event.name == "Notification"));
+        assert!(!global
+            .events
+            .iter()
+            .any(|event| event.name == "PermissionRequest"));
+        assert!(domestic
+            .events
+            .iter()
+            .any(|event| event.name == "PermissionRequest"));
     }
 
     #[test]

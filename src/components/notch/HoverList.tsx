@@ -1,7 +1,7 @@
 /* Hover List — Flat session list sorted by priority */
-import { useCallback, useEffect, useRef, useState, useMemo, type KeyboardEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, useMemo, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { DiffContent, OverlayItem, PermissionRequest, SessionNotice, SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
@@ -9,9 +9,10 @@ import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
 import { useConfigStore } from '../../stores/configStore'
-import { useSessionStore } from '../../stores/sessionStore'
+import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion, planKey, planReplyError, questionKey, questionReplyError, useSessionStore } from '../../stores/sessionStore'
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
-import { respondAutoApprove, respondPermission, respondPlan, respondQuestion, setNotchFocusable } from '../../services/tauriApi'
+import { setNotchFocusable } from '../../services/tauriApi'
+import { islandActionProps, runIslandAction } from '../../utils/islandActions'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { formatModelName, getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
@@ -56,6 +57,7 @@ const AGENT_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
   'stepfun': { bg: 'rgba(236, 72, 153, 0.15)', text: '#ec4899' },
   'antigravity': { bg: 'rgba(168, 85, 247, 0.15)', text: '#a855f7' },
   'workbuddy': { bg: 'rgba(14, 165, 233, 0.15)', text: '#0ea5e9' },
+  'workbuddy-ai': { bg: 'rgba(14, 165, 233, 0.15)', text: '#0ea5e9' },
   'zcode': { bg: 'rgba(248, 250, 252, 0.12)', text: '#f8fafc' },
   'doubao': { bg: 'rgba(90, 117, 255, 0.15)', text: '#7d91ff' },
   'hermes': { bg: 'rgba(245, 158, 11, 0.15)', text: '#f59e0b' },
@@ -587,6 +589,7 @@ function getOverlayPermissionForSession(session: SessionState, activeOverlay: Ov
   const data = activeOverlay.data as Partial<InlinePermissionRequest> | null | undefined
   if (!data || typeof data.toolName !== 'string' || !data.toolName.trim()) return undefined
   return {
+    toolUseId: data.toolUseId,
     toolName: data.toolName,
     toolInput: data.toolInput,
     diff: data.diff,
@@ -606,12 +609,6 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
     ? getWritePermissionPreview(parsedInput, WRITE_PERMISSION_PREVIEW_LINES)
     : null
   const supportsPersistentActions = supportsPersistentPermissionActions(session.agentType)
-
-  const clearAfter = (work: Promise<void>) => {
-    work
-      .then(() => useSessionStore.getState().clearPermission(session.id))
-      .catch((error) => console.warn('[notch] inline permission response:', error))
-  }
 
   return (
     <div
@@ -668,7 +665,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
           className="hover-list__inline-btn hover-list__inline-btn--deny"
           onClick={(e) => {
             e.stopPropagation()
-            clearAfter(respondPermission(session.id, false))
+            answerDisplayedPermission(session.id, permission, false)
           }}
         >
           {t('notch.deny', { defaultValue: '拒绝' })}
@@ -678,7 +675,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
           className="hover-list__inline-btn hover-list__inline-btn--allow"
           onClick={(e) => {
             e.stopPropagation()
-            clearAfter(respondPermission(session.id, true))
+            answerDisplayedPermission(session.id, permission, true)
           }}
         >
           {t('notch.allowOnce', { defaultValue: '允许一次' })}
@@ -690,7 +687,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
               className="hover-list__inline-btn hover-list__inline-btn--always"
               onClick={(e) => {
                 e.stopPropagation()
-                clearAfter(respondPermission(session.id, true, true))
+                answerDisplayedPermission(session.id, permission, true, true)
               }}
             >
               <span>{t('notch.allowAlways', { defaultValue: '始终允许' })}</span>
@@ -700,7 +697,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
               className="hover-list__inline-btn hover-list__inline-btn--auto"
               onClick={(e) => {
                 e.stopPropagation()
-                clearAfter(respondAutoApprove(session.id))
+                answerDisplayedPermission(session.id, permission, 'auto')
               }}
             >
               {t('notch.autoApprove', { defaultValue: '自动批准' })}
@@ -732,6 +729,7 @@ function parseInlineQuestionTag(question: string): { tag: string | null; text: s
 function InlineQuestionPreview({ session, onDraftStateChange }: { session: SessionState; onDraftStateChange?: (hasDraft: boolean) => void }) {
   const { t } = useTranslation()
   const q = session.pendingQuestion
+  const error = useSessionStore((state) => questionReplyError(state, session.id, q))
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
   const [nestedSelections, setNestedSelections] = useState<Record<number, number | number[]>>({})
   const [nestedCustomAnswers, setNestedCustomAnswers] = useState<Record<number, string>>({})
@@ -746,13 +744,14 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
     onDraftStateChange?.(anyInputActive)
   }, [anyInputActive, onDraftStateChange])
   useEffect(() => () => onDraftStateChange?.(false), [onDraftStateChange])
+  useEffect(() => {
+    if (anyInputActive) return () => { void setNotchFocusable(false) }
+  }, [anyInputActive])
 
   if (!q) return null
 
   const submitAnswer = (answer: string) => {
-    respondQuestion(session.id, answer)
-      .then(() => useSessionStore.getState().clearQuestion(session.id))
-      .catch((error) => console.warn('[notch] inline respondQuestion:', error))
+    void answerDisplayedQuestion(session.id, q, answer)
   }
 
   const nestedQuestions = q.questions || []
@@ -817,9 +816,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                         key={oi}
                         type="button"
                         className={`hover-list__inline-chip${isSelected ? ' hover-list__inline-chip--selected' : ''}${item.multiSelect ? ' hover-list__inline-chip--checkbox' : ''}`}
-                        onMouseDown={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
+                        {...islandActionProps(() => {
                           setNestedSelections((prev) => {
                             if (!item.multiSelect) {
                               if (prev[qi] === oi) {
@@ -841,7 +838,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                           if (!item.multiSelect) {
                             setNestedCustomAnswers((prev) => { const n = { ...prev }; delete n[qi]; return n })
                           }
-                        }}
+                        })}
                       >
                         {item.multiSelect && (
                           <span className={`hover-list__inline-chip-check${isSelected ? ' hover-list__inline-chip-check--checked' : ''}`}>
@@ -893,12 +890,10 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                     <button
                       type="button"
                       className="hover-list__inline-chip hover-list__inline-chip--other"
-                      onMouseDown={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
+                      {...islandActionProps(() => {
                         setNotchFocusable(true)
                         setNestedInputStates((prev) => ({ ...prev, [qi]: true }))
-                      }}
+                      })}
                     >
                       {t('notch.typeHint', { defaultValue: 'Other' })}
                     </button>
@@ -912,14 +907,11 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
           type="button"
           className="hover-list__inline-submit"
           disabled={!allNestedAnswered}
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            handleNestedSubmit()
-          }}
+          {...islandActionProps(handleNestedSubmit)}
         >
           {'✓'} 提交所有回答
         </button>
+        {error && <div role="alert" className="question-card__error">{error}</div>}
       </div>
     )
   }
@@ -969,12 +961,10 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
               key={`${i}-${opt.label}`}
               type="button"
               className={`hover-list__inline-question-opt${selectedIndices.has(i) ? ' hover-list__inline-question-opt--selected' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
+              {...islandActionProps(() => {
                 if (q.multiSelect) toggleMultiSelect(i)
                 else submitAnswer(opt.label)
-              }}
+              })}
             >
               <span className="hover-list__inline-question-opt-index">
                 {q.multiSelect && selectedIndices.has(i) ? '✓' : i + 1}
@@ -994,12 +984,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                 e.preventDefault()
                 if (composing) return
                 const val = customText.trim()
-                if (val) {
-                  submitAnswer(val)
-                  setShowCustomInput(false)
-                  setCustomText('')
-                  setNotchFocusable(false)
-                }
+                if (val) submitAnswer(val)
               }}
             >
               <span className="hover-list__inline-question-opt-index">{inlineOptions.length + 1}</span>
@@ -1029,12 +1014,10 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
             <button
               type="button"
               className="hover-list__inline-question-opt hover-list__inline-question-opt--other"
-              onMouseDown={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
+              {...islandActionProps(() => {
                 setNotchFocusable(true)
                 setShowCustomInput(true)
-              }}
+              })}
             >
               <span className="hover-list__inline-question-opt-index">{inlineOptions.length + 1}</span>
               <span className="hover-list__inline-question-opt-body">
@@ -1047,17 +1030,14 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
               type="button"
               className="hover-list__inline-submit"
               disabled={selectedIndices.size === 0}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                submitMultiSelect()
-              }}
+              {...islandActionProps(submitMultiSelect)}
             >
               确认 ({selectedIndices.size})
             </button>
           )}
         </div>
       )}
+      {error && <div role="alert" className="question-card__error">{error}</div>}
     </div>
   )
 }
@@ -1065,20 +1045,18 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
 function InlinePlanPreview({ session }: { session: SessionState }) {
   const { t } = useTranslation()
   const [feedback, setFeedback] = useState('')
+  const error = useSessionStore((state) => planReplyError(state, session.id, session))
   if (!session.planTitle && !session.planContent) return null
   const permissions = session.planPermissions || []
   const trimmedFeedback = feedback.trim()
 
   const submitPlan = (mode: string, message?: string) => {
-    respondPlan(session.id, mode, message)
-      .then(() => useSessionStore.getState().clearPlan(session.id))
-      .catch((error) => console.warn('[notch] inline respondPlan:', error))
+    void answerDisplayedPlan(session.id, session, mode, message)
   }
 
   const submitFeedback = () => {
     if (!trimmedFeedback) return
     submitPlan('feedback', trimmedFeedback)
-    setFeedback('')
   }
 
   return (
@@ -1142,15 +1120,7 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
           type="button"
           className="hover-list__inline-plan-send"
           disabled={!trimmedFeedback}
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            submitFeedback()
-          }}
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-          }}
+          {...islandActionProps(submitFeedback)}
         >
           {t('notch.sendFeedback', { defaultValue: 'Send Feedback' })}
         </button>
@@ -1159,37 +1129,26 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
         <button
           type="button"
           className="hover-list__inline-plan-btn hover-list__inline-plan-btn--feedback"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            submitPlan('manual')
-          }}
+          {...islandActionProps(() => submitPlan('manual'))}
         >
           {t('notch.manualReview', { defaultValue: 'Manual Review' })}
         </button>
         <button
           type="button"
           className="hover-list__inline-plan-btn hover-list__inline-plan-btn--accept"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            submitPlan('acceptEdits')
-          }}
+          {...islandActionProps(() => submitPlan('acceptEdits'))}
         >
           {t('notch.acceptEdits', { defaultValue: 'Accept Edits' })}
         </button>
         <button
           type="button"
           className="hover-list__inline-plan-btn hover-list__inline-plan-btn--auto"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            submitPlan('bypassPermissions')
-          }}
+          {...islandActionProps(() => submitPlan('bypassPermissions'))}
         >
           {t('notch.autoApprovePerms', { defaultValue: 'Auto' })}
         </button>
       </div>
+      {error && <div className="plan-approval__error" role="alert">{error}</div>}
     </div>
   )
 }
@@ -1217,6 +1176,7 @@ function SessionCard({
   activeOverlay?: OverlayItem | null
 }) {
   const { t } = useTranslation()
+  const isPresent = useIsPresent()
   const badge = getAgentBadge(session)
   const agentName = getAgentDisplayName(session)
   const appLabel = getSessionAppLabel(session)
@@ -1226,6 +1186,7 @@ function SessionCard({
   const termBadge = terminalLabel ? getTerminalBadge(terminalLabel) : null
   const recentUserMessage = latestUserMessage(session)
   const title = getHoverSessionTitle(session, recentUserMessage)
+  const titleId = useId()
   const assistantPreview = latestAssistantPreview(session)
   const priority = computePriority(session)
   const showCacheTTL = useConfigStore((s) => s.showCacheTTL)
@@ -1233,7 +1194,6 @@ function SessionCard({
   const mutedSessions = useSessionStore((s) => s.mutedSessions)
   const muteSession = useSessionStore((s) => s.muteSession)
   const unmuteSession = useSessionStore((s) => s.unmuteSession)
-  const openedOnMouseDownRef = useRef(false)
   const isMuted = Boolean(mutedSessions[session.id])
   const isCompactingContext = session.phase === 'compacting'
     || (session.phase === 'processing' && !session.lastToolName && isCompactingContextDescription(session.description))
@@ -1242,7 +1202,7 @@ function SessionCard({
   const showPassiveDot = isPassiveSession(session) && session.phase !== 'ready'
   const canJump = canJumpToSession(session)
   const inlinePermission = session.pendingPermission ?? getOverlayPermissionForSession(session, activeOverlay)
-  const showInlineQuestion = !!session.pendingQuestion
+  const inlineQuestion = session.pendingQuestion
   const showInlinePlan = !!(session.planTitle || session.planContent)
   const notice = inferSessionNotice(session)
   const listSubagents = getSessionListSubagents(session)
@@ -1254,27 +1214,8 @@ function SessionCard({
       target.closest('button, a, input, select, textarea, [data-no-open]'),
     )
   }
-  const handleClickCapture = (event: MouseEvent<HTMLDivElement>) => {
-    if (openedOnMouseDownRef.current) {
-      openedOnMouseDownRef.current = false
-      return
-    }
-    if (shouldIgnoreOpen(event.target)) return
-    event.preventDefault()
-    event.stopPropagation()
-    handleOpen()
-  }
-  const handleMouseDownCapture = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || shouldIgnoreOpen(event.target)) return
-    event.preventDefault()
-    event.stopPropagation()
-    openedOnMouseDownRef.current = true
-    handleOpen()
-  }
-  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return
-    event.preventDefault()
-    handleOpen()
+  const handleCardAction = (event: MouseEvent<HTMLDivElement>) => {
+    if (!shouldIgnoreOpen(event.target)) runIslandAction(event, handleOpen)
   }
   const handleJump = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -1284,6 +1225,8 @@ function SessionCard({
   return (
     <motion.div
       key={session.id}
+      inert={!isPresent}
+      aria-hidden={!isPresent || undefined}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -1291,13 +1234,11 @@ function SessionCard({
     >
       <div
         data-no-drag
-        role="button"
-        tabIndex={0}
-        aria-selected={selected}
+        role="group"
+        aria-labelledby={titleId}
         className={`hover-list__card${selected ? ' hover-list__card--selected' : ''}${session.phase === 'done' ? ' hover-list__card--done' : ''}${showPassiveDot ? ' hover-list__card--passive' : ''}${isMuted ? ' hover-list__card--muted' : ''}`}
-        onMouseDownCapture={handleMouseDownCapture}
-        onClickCapture={handleClickCapture}
-        onKeyDown={handleKeyDown}
+        onMouseDownCapture={handleCardAction}
+        onClickCapture={handleCardAction}
       >
         <div className="hover-list__row-layout">
           {/* Left: mascot / status indicator */}
@@ -1318,7 +1259,14 @@ function SessionCard({
           <div className="hover-list__content-col">
             {/* Row 1: title + badges + duration + mute + jump */}
             <div className="hover-list__row1">
-              <span className="hover-list__session-title">{title}</span>
+              <button
+                id={titleId}
+                type="button"
+                className="hover-list__session-title"
+                {...islandActionProps(handleOpen)}
+              >
+                {title}
+              </button>
 
               <div className="hover-list__meta">
                 {showAgentBadge && (
@@ -1479,10 +1427,10 @@ function SessionCard({
         {inlinePermission && <InlinePermissionPreview session={session} permission={inlinePermission} />}
 
         {/* Row 8: inline question */}
-        {showInlineQuestion && <InlineQuestionPreview session={session} onDraftStateChange={onInputDraftStateChange} />}
+        {inlineQuestion && <InlineQuestionPreview key={questionKey(inlineQuestion)} session={session} onDraftStateChange={onInputDraftStateChange} />}
 
         {/* Row 9: inline plan */}
-        {showInlinePlan && <InlinePlanPreview session={session} />}
+        {showInlinePlan && <InlinePlanPreview key={planKey(session)} session={session} />}
       </div>
     </motion.div>
   )
@@ -1532,6 +1480,7 @@ export function HoverList({
     if (visibleSessions.length === 0) return
 
     const handler = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented) return
       const target = event.target
       if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return
 
@@ -1548,6 +1497,7 @@ export function HoverList({
       }
 
       if (event.key === 'Enter') {
+        if (target instanceof HTMLElement && target.closest('button, [role="button"], a[href]')) return
         event.preventDefault()
         const session = visibleSessions[selectedIndexRef.current]
         if (!session) return

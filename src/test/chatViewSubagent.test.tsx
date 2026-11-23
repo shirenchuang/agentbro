@@ -238,9 +238,39 @@ describe('ChatView subagent history', () => {
     expect(tauriMocks.getChatHistoryTail).not.toHaveBeenCalled()
   })
 
-  it('shows plan-specific detail actions and routes them to plan modes', () => {
+  it.each(['approval', 'another control'])('preserves keyboard navigation after denial with focus on %s', async (focusTarget) => {
     const current = session({
       phase: 'waiting_approval',
+      pendingPermission: {
+        toolUseId: 'denied-read',
+        toolName: 'Read',
+        toolInput: '{"file_path":"/tmp/smoke.txt"}',
+      },
+    })
+    useSessionStore.setState({
+      sessions: { [current.id]: current },
+      sessionList: [current],
+      activeSessionId: current.id,
+    })
+
+    render(<ChatView onBack={vi.fn()} />)
+
+    const deny = screen.getByRole('button', { name: 'notch.deny' })
+    const back = screen.getByRole('button', { name: 'notch.back' })
+    const jump = screen.getByRole('button', { name: 'notch.jumpToTerminal' })
+    if (focusTarget === 'approval') deny.focus()
+    else jump.focus()
+    fireEvent.click(deny, { detail: 0 })
+
+    await waitFor(() => expect(deny).not.toBeInTheDocument())
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', false, undefined, 'denied-read')
+    expect(focusTarget === 'approval' ? back : jump).toHaveFocus()
+  })
+
+  it('shows plan-specific detail actions and routes them to plan modes', async () => {
+    const current = session({
+      phase: 'waiting_approval',
+      planRequestId: 'detail-plan',
       planTitle: 'Implementation plan',
       planContent: '1. Fix detail approval',
     })
@@ -259,8 +289,9 @@ describe('ChatView subagent history', () => {
 
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Accept Edits' }))
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined, 'detail-plan')
     expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Accept Edits' })).not.toBeInTheDocument())
   })
 
   it('confirms detail multi-select questions instead of submitting the first clicked option', () => {

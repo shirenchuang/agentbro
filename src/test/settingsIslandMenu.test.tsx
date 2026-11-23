@@ -69,6 +69,7 @@ describe('settings island menu', () => {
       displayMonitor: 'auto',
       followFocus: false,
       tipsEnabled: true,
+      islandEnabled: true,
       sshHosts: [],
       analyticsEnabled: false,
       analyticsConsentPromptCompleted: true,
@@ -231,9 +232,12 @@ describe('settings island menu', () => {
 
     fireEvent.click(screen.getByText('settings.island.title'))
 
-    await waitFor(() => expect(screen.getByText('settings.tipsEnabled')).toBeInTheDocument())
-    const tipsRow = screen.getByText('settings.tipsEnabled').closest('.setting-row')
-    fireEvent.click(tipsRow!.querySelector('[role="switch"]')!)
+    const tipsToggle = await screen.findByRole('switch', { name: 'settings.tipsEnabled' })
+    expect(tipsToggle).toHaveAccessibleDescription('settings.tipsEnabledDesc')
+    expect(tipsToggle).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(tipsToggle)
+    expect(tipsToggle).toHaveAccessibleName('settings.tipsEnabled')
+    expect(tipsToggle).toHaveAttribute('aria-checked', 'false')
 
     expect(tauriMocks.setIslandFeatureFlags).toHaveBeenCalledWith(expect.objectContaining({
       tipsEnabled: false,
@@ -253,7 +257,9 @@ describe('settings island menu', () => {
     render(<SettingsApp onClose={vi.fn()} />)
 
     fireEvent.click(screen.getByText('settings.island.title'))
-    fireEvent.click(await screen.findByText('Quiet Assistant'))
+    const quietPreset = await screen.findByRole('button', { name: /Quiet Assistant/ })
+    fireEvent.click(quietPreset)
+    await waitFor(() => expect(quietPreset).toHaveAttribute('aria-pressed', 'true'))
 
     expect(useConfigStore.getState()).toEqual(expect.objectContaining({
       interactionMode: 'minimal',
@@ -264,10 +270,31 @@ describe('settings island menu', () => {
     }))
     expect(screen.queryByText('Custom visibility')).not.toBeInTheDocument()
 
-    const autoHideRow = screen.getByText('settings.autoHideNoSessions').closest('.setting-row')
-    fireEvent.click(autoHideRow!.querySelector('[role="switch"]')!)
+    const autoHide = screen.getByRole('switch', { name: 'settings.autoHideNoSessions' })
+    expect(autoHide).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(autoHide)
+    expect(await screen.findByText('Custom visibility')).toBeInTheDocument()
+    expect(autoHide).toHaveAttribute('aria-checked', 'false')
+  })
 
-    await waitFor(() => expect(screen.getByText('Custom visibility')).toBeInTheDocument())
+  it('preserves user visibility settings when turning the island off and on', async () => {
+    const visibility = {
+      interactionMode: 'minimal' as const,
+      smartSuppression: false,
+      autoHideNoSessions: true,
+      idleCompactDwellSeconds: 17,
+      noSessionsHideDelay: 19,
+    }
+    useConfigStore.setState(visibility)
+
+    render(<SettingsApp onClose={vi.fn()} />)
+    fireEvent.click(screen.getByText('settings.island.title'))
+    const enabled = await screen.findByRole('switch', { name: 'Enable Island', checked: true })
+    fireEvent.click(enabled)
+    const disabled = await screen.findByRole('switch', { name: 'Enable Island', checked: false })
+    fireEvent.click(disabled)
+    expect(await screen.findByRole('switch', { name: 'Enable Island', checked: true })).toBeInTheDocument()
+    expect(useConfigStore.getState()).toMatchObject(visibility)
   })
 
   it('shows the primary display label instead of a stale raw display id', async () => {
@@ -378,6 +405,7 @@ describe('settings island menu', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     const row = (await screen.findByText('会话开始')).closest('.sound-event-row')!
+    expect(screen.getByRole('switch', { name: '会话开始' })).toHaveAttribute('aria-checked', 'false')
     fireEvent.click(row.querySelector('.sound-event-row__play')!)
 
     await waitFor(() => expect(tauriMocks.previewSound).toHaveBeenCalledWith('session-start', 'builtin:hero'))
