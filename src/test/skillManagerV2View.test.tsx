@@ -2763,6 +2763,16 @@ describe('selecting a skill updates detail', () => {
 })
 
 describe('Skill detail slider + agent page render without crashing', () => {
+  function previewFiles(root: string, names: string[]): NonNullable<SkillDetail['files']> {
+    const separator = root.includes('\\') ? '\\' : '/'
+    return {
+      name: 'release-checklist',
+      nodeType: 'dir',
+      path: root,
+      children: names.map((name) => ({ name, nodeType: 'file', path: `${root}${separator}${name}`, children: null })),
+    }
+  }
+
   const agentDetail: AgentDetail = {
     id: 'claude-code',
     displayName: 'Claude Code',
@@ -2869,9 +2879,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
       importedFromAgent: null, importedFromPath: null, installedVia: 'agentbro',
       createdAt: '2026-11-19T12:00:00Z', updatedAt: '2026-11-19T12:00:00Z',
     }
+    const root = '/center/release-checklist'
     const detail: SkillDetail = {
       ...makeSkill({ sourceType: 'skillssh', sourceUri }), source,
-      centerResolvedPath: null, files: null, frontmatter: {}, targets: [],
+      centerResolvedPath: null, files: previewFiles(root, ['SKILL.md', 'notes.md']), frontmatter: {}, targets: [],
     }
     const checked = {
       sourceUri, installedRef: oldVersion, latestRef: newVersion, currentHash: 'check-hash', updateAvailable: true,
@@ -2883,9 +2894,16 @@ describe('Skill detail slider + agent page render without crashing', () => {
     }
     vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue(detail)
     vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+    let finishUpdatedDoc!: (content: string) => void
+    const updatedDoc = new Promise<string>((resolve) => { finishUpdatedDoc = resolve })
+    let applyingSource = false
+    vi.spyOn(skillApiV2, 'readFileContent').mockImplementation(async (path) => (
+      path.endsWith('notes.md') ? 'Selected reference notes.' : applyingSource ? updatedDoc : 'Original instructions.'
+    ))
     const check = vi.spyOn(skillApiV2, 'checkSkillSourceUpdate').mockResolvedValue(checked)
-    const apply = vi.spyOn(skillApiV2, 'applySkillSourceUpdate').mockResolvedValue({
-      ...detail, source: { ...source, sourceRef: newVersion },
+    const apply = vi.spyOn(skillApiV2, 'applySkillSourceUpdate').mockImplementation(async () => {
+      applyingSource = true
+      return { ...detail, source: { ...source, sourceRef: newVersion } }
     })
 
     const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
@@ -2910,6 +2928,13 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(apply).toHaveBeenCalledWith(detail.id, checked, 'fixture-token')
     expect(screen.queryByLabelText('GitHub 访问令牌（仅本次使用）')).not.toBeInTheDocument()
     expect(screen.getByText(newVersion)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '文件' }))
+    fireEvent.click(screen.getByRole('button', { name: /notes\.md/ }))
+    expect(await screen.findByText('Selected reference notes.')).toBeInTheDocument()
+    await act(async () => { finishUpdatedDoc('Updated instructions.') })
+    expect(screen.getByText('Selected reference notes.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '概览' }))
+    expect(screen.getByText('Updated instructions.')).toBeInTheDocument()
   })
 
   it('loads the file tree for unmanaged fallback skills', async () => {
@@ -2961,6 +2986,115 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getAllByText('SKILL.md').length).toBeGreaterThan(0)
     expect(screen.getByText('reference.md')).toBeInTheDocument()
     expect(screen.getByText('2 个文件')).toBeInTheDocument()
+  })
+
+  it('keeps the selected Windows file preview when a slow unmanaged document finishes', async () => {
+    const root = 'C:\\Users\\Owner\\.claude\\skills\\manual-skill'
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockRejectedValue(new Error('not in center'))
+    vi.spyOn(skillApiV2, 'readFileTree').mockResolvedValue(previewFiles(root, ['SKILL.md', 'notes.md']))
+    let finishDocument!: (content: string) => void
+    const pendingDocument = new Promise<string>((resolve) => { finishDocument = resolve })
+    const read = vi.spyOn(skillApiV2, 'readFileContent').mockImplementation(async (path) => (
+      path.endsWith('notes.md') ? 'Windows reference notes.' : pendingDocument
+    ))
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="manual-skill" open onClose={() => {}} fallbackSkill={{
+      id: 'manual-skill', name: 'manual-skill', centerPath: root,
+    }} />)
+    await waitFor(() => expect(read).toHaveBeenCalledWith(`${root}\\SKILL.md`, LOCAL_RUNTIME_ENVIRONMENT_ID))
+    fireEvent.click(screen.getByRole('button', { name: '文件' }))
+    fireEvent.click(screen.getByRole('button', { name: /notes\.md/ }))
+    expect(await screen.findByText('Windows reference notes.')).toBeInTheDocument()
+
+    await act(async () => { finishDocument('Windows skill instructions.') })
+    expect(screen.getByText('Windows reference notes.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '概览' }))
+    expect(screen.getByText('Windows skill instructions.')).toBeInTheDocument()
+    expect(read).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByRole('button', { name: '文件' }))
+    fireEvent.click(screen.getByRole('button', { name: /SKILL\.md/ }))
+    expect((await screen.findByText('Windows skill instructions.')).closest('.sm2__markdown'))
+      .toHaveClass('sm2__markdown--file-skill')
+  })
+
+  it('opens the Windows default document when the unmanaged file tree cannot be read', async () => {
+    const root = 'C:\\Users\\Owner\\.claude\\skills\\manual-skill'
+    vi.spyOn(skillApiV2, 'readFileTree').mockRejectedValue(new Error('tree unavailable'))
+    const read = vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValue('Standalone Windows instructions.')
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="manual-skill" open onClose={() => {}} fallbackSkill={{
+      id: 'manual-skill', name: 'manual-skill', centerPath: root, readOnly: true,
+    }} />)
+
+    expect(await screen.findByText('Standalone Windows instructions.')).toBeInTheDocument()
+    expect(read).toHaveBeenCalledExactlyOnceWith(`${root}\\SKILL.md`, LOCAL_RUNTIME_ENVIRONMENT_ID)
+  })
+
+  it.each([false, true])('keeps reference text out of the overview without a readable document, empty file=%s', async (emptyDocument) => {
+    const root = '/center/release-checklist'
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue({
+      ...makeSkill(), frontmatter: {}, source: null, targets: [],
+      files: previewFiles(root, emptyDocument ? ['SKILL.md', 'notes.md'] : ['notes.md']),
+    })
+    vi.spyOn(skillApiV2, 'readFileContent').mockImplementation(async (path) => (
+      path.endsWith('notes.md') ? 'Reference-only text.' : ''
+    ))
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: '文件' }))
+    fireEvent.click(screen.getByRole('button', { name: /notes\.md/ }))
+    expect(await screen.findByText('Reference-only text.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '概览' }))
+    expect(screen.queryByText('Reference-only text.')).not.toBeInTheDocument()
+    expect(await screen.findByText('未找到说明文档')).toBeInTheDocument()
+  })
+
+  it.each([true, false])('recognizes only the root Skill document with nested directories first, root present=%s', async (hasRootDocument) => {
+    const root = '/center/release-checklist'
+    const files = previewFiles(root, hasRootDocument ? ['SKILL.md'] : [])
+    const nested = previewFiles(`${root}/examples`, ['SKILL.md'])
+    files.children = [{ ...nested, name: 'examples' }, ...(files.children ?? [])]
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue({
+      ...makeSkill(), frontmatter: {}, source: null, targets: [], files,
+    })
+    const read = vi.spyOn(skillApiV2, 'readFileContent').mockImplementation(async (path) => (
+      path === `${root}/SKILL.md` ? 'Main Skill instructions.' : 'Nested example instructions.'
+    ))
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+
+    expect(await screen.findByText(hasRootDocument ? 'Main Skill instructions.' : '未找到说明文档')).toBeInTheDocument()
+    expect(screen.queryByText('Nested example instructions.')).not.toBeInTheDocument()
+    if (hasRootDocument) expect(read).toHaveBeenCalledExactlyOnceWith(`${root}/SKILL.md`, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    else expect(read).not.toHaveBeenCalled()
+  })
+
+  it('closes an Agent file preview when its host changes instead of reading the old path remotely', async () => {
+    const root = '/c/skills/manual-skill'
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram()])
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockRejectedValue(new Error('not in center'))
+    const tree = vi.spyOn(skillApiV2, 'readFileTree').mockResolvedValue(previewFiles(root, ['SKILL.md']))
+    vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValue('Local-only instructions.')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByText('manual-skill', { selector: '.sm2__agent-skill-card-titleline strong' }))
+    expect(await screen.findByText('Local-only instructions.')).toBeInTheDocument()
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'remote-runtime' })
+    })
+    await waitFor(() => expect(screen.queryByText('Local-only instructions.')).not.toBeInTheDocument())
+    expect(tree).toHaveBeenCalledExactlyOnceWith(root, LOCAL_RUNTIME_ENVIRONMENT_ID)
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({ runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
+    })
+    expect(screen.queryByText('Local-only instructions.')).not.toBeInTheDocument()
   })
 
   it('labels linked center skills with their real source directory', async () => {
@@ -3054,12 +3188,13 @@ describe('Skill detail slider + agent page render without crashing', () => {
       targets: [],
       source: null,
     })
-    vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValue('# Release Checklist\n\nCopy this text.')
+    const read = vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValue('# Release Checklist\n\nCopy this text.')
 
     const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
     render(<SkillDetailSlider skillId="release-checklist" open={true} onClose={() => {}} />)
 
     const paragraph = await screen.findByText('Copy this text.')
+    expect(read).toHaveBeenCalledExactlyOnceWith('/center/release-checklist/SKILL.md', LOCAL_RUNTIME_ENVIRONMENT_ID)
     const overviewMarkdown = paragraph.closest('.sm2__markdown')
     expect(overviewMarkdown).toHaveClass('selectable')
     const title = document.body.querySelector('.sm2__slideover-title .selectable')

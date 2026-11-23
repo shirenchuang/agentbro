@@ -65,6 +65,7 @@ export function SkillDetailSlider({
   ])
   const visibleView = useRef<typeof view | null>(null)
   const fileRequest = useRef(0)
+  const documentRequest = useRef(0)
   const [loadedDetail, setLoadedDetail] = useState<{ view: typeof view; detail: SkillDetail } | null>(null)
   const detail = loadedDetail?.view === view ? loadedDetail.detail : null
   const [loading, setLoading] = useState(false)
@@ -83,8 +84,7 @@ export function SkillDetailSlider({
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<DetailTab>('overview')
   const [fileViewMode, setFileViewMode] = useState<FileViewMode>('preview')
-  const [skillDocPath, setSkillDocPath] = useState<string | null>(null)
-  const [skillDocContent, setSkillDocContent] = useState('')
+  const [skillDocument, setSkillDocument] = useState<{ path: string; content: string; loading: boolean } | null>(null)
   const [copyMenu, setCopyMenu] = useState<CopyMenuState | null>(null)
   const readOnly = fallbackSkill?.readOnly === true
 
@@ -104,14 +104,15 @@ export function SkillDetailSlider({
 
   useEffect(() => {
     if (!open || !skillId) return
+    let cancelled = false
+    const isCurrentLoad = () => !cancelled && isCurrentView()
     setLoading(true)
     setError(null)
     setTab('overview')
     setLoadedDetail(null)
     setActiveFile(null)
     setFileLoading(false)
-    setSkillDocPath(null)
-    setSkillDocContent('')
+    setSkillDocument(null)
     setFileContent('')
     setDiffPreview(null)
     setDiffLoadingTarget(null)
@@ -124,35 +125,13 @@ export function SkillDetailSlider({
     setSelectedDeleteTargetIds(new Set())
     setBatchDeleteTargetIds(null)
     const loadFallbackDetail = async (fallback: SkillDetailFallback) => {
-      const d = fallbackToSkillDetail(fallback)
-      setDetail(d)
-      const fallbackDocPath = `${fallback.centerPath}/SKILL.md`
-      setSkillDocPath(fallbackDocPath)
-      try {
-        const files = await skillApiV2.readFileTree(fallback.centerPath, environmentId)
-        if (!isCurrentView()) return
-        const skillMd = findFile(files, 'SKILL.md') || fallbackDocPath
-        setDetail({ ...d, files })
-        setSkillDocPath(skillMd)
-        setActiveFile(skillMd)
-        const content = await skillApiV2.readFileContent(skillMd, environmentId)
-        if (!isCurrentView()) return
-        setSkillDocContent(content)
-        setFileContent(content)
-      } catch {
-        if (!isCurrentView()) return
-        try {
-          const content = await skillApiV2.readFileContent(fallbackDocPath, environmentId)
-          if (!isCurrentView()) return
-          setActiveFile(fallbackDocPath)
-          setSkillDocContent(content)
-          setFileContent(content)
-        } catch {
-          if (!isCurrentView()) return
-          setSkillDocContent('')
-          setFileContent('')
-        }
-      }
+      const files = await skillApiV2.readFileTree(fallback.centerPath, environmentId).catch(() => null)
+      if (!isCurrentLoad()) return
+      setDetail({ ...fallbackToSkillDetail(fallback), files })
+      const fallbackPath = /^(?:[a-z]:[\\/]|\\\\)/i.test(fallback.centerPath)
+        ? `${fallback.centerPath.replace(/[\\/]+$/, '')}\\SKILL.md`
+        : `${fallback.centerPath.replace(/\/+$/, '')}/SKILL.md`
+      await loadFile(findSkillDocument(files) || fallbackPath, { document: true, fallbackPath })
     }
     const loadDetail = async () => {
       if (readOnly && fallbackSkill) {
@@ -161,19 +140,11 @@ export function SkillDetailSlider({
       }
       try {
         const d = await skillApiV2.getSkillDetail(skillId, environmentId)
-        if (!isCurrentView()) return
+        if (!isCurrentLoad()) return
         setDetail(d)
-        const skillMd = findFile(d.files, 'SKILL.md')
-        setSkillDocPath(skillMd)
-        if (skillMd) {
-          void loadFile(skillMd)
-          const content = await skillApiV2.readFileContent(skillMd, environmentId).catch(() => '')
-          if (isCurrentView()) setSkillDocContent(content)
-        } else {
-          setSkillDocContent('')
-        }
+        await loadFile(findSkillDocument(d.files), { document: true })
       } catch (e) {
-        if (!isCurrentView()) return
+        if (!isCurrentLoad()) return
         if (!fallbackSkill) {
           setError(String(e))
           return
@@ -182,8 +153,9 @@ export function SkillDetailSlider({
       }
     }
     void loadDetail().finally(() => {
-      if (isCurrentView()) setLoading(false)
+      if (isCurrentLoad()) setLoading(false)
     })
+    return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
 
@@ -203,20 +175,33 @@ export function SkillDetailSlider({
     }
   }, [copyMenu])
 
-  const loadFile = async (path: string) => {
+  const loadFile = async (path: string | null, { document, fallbackPath }: { document?: boolean; fallbackPath?: string } = {}) => {
     if (!isCurrentView()) return
     const request = ++fileRequest.current
-    const isCurrent = () => request === fileRequest.current && isCurrentView()
+    const isCurrentDocument = () => document && request === documentRequest.current && isCurrentView()
+    if (document) {
+      documentRequest.current = request
+      setSkillDocument(path ? { path, content: '', loading: true } : null)
+    }
     setActiveFile(path)
-    setFileViewMode(isMarkdownPath(path) ? 'preview' : 'source')
-    setFileLoading(true)
-    try {
-      const content = await skillApiV2.readFileContent(path, environmentId)
-      if (isCurrent()) setFileContent(content)
-    } catch (e) {
-      if (isCurrent()) setFileContent(`无法读取文件：${e}`)
-    } finally {
-      if (isCurrent()) setFileLoading(false)
+    setFileContent('')
+    setFileViewMode(!path || isMarkdownPath(path) ? 'preview' : 'source')
+    setFileLoading(Boolean(path))
+    if (!path) return
+
+    const read = (file: string) => skillApiV2.readFileContent(file, environmentId).then(
+      (content) => ({ path: file, content, error: null }),
+      (error: unknown) => ({ path: file, content: '', error: String(error) }),
+    )
+    let result = await read(path)
+    if (result.error !== null && fallbackPath && fallbackPath !== path && isCurrentDocument()) {
+      result = await read(fallbackPath)
+    }
+    if (isCurrentDocument()) setSkillDocument({ path: result.path, content: result.content, loading: false })
+    if (request === fileRequest.current && isCurrentView()) {
+      setActiveFile(result.path)
+      setFileContent(result.error === null ? result.content : `无法读取文件：${result.error}`)
+      setFileLoading(false)
     }
   }
 
@@ -224,17 +209,7 @@ export function SkillDetailSlider({
     if (isCurrentRuntime()) void useSkillStoreV2.getState().loadOverview(true)
     if (!isCurrentView() || skillId !== updated.id) return
     setDetail(updated)
-    const path = findFile(updated.files, 'SKILL.md')
-    setSkillDocPath(path)
-    setActiveFile(path)
-    setSkillDocContent('')
-    setFileContent('')
-    setFileViewMode('preview')
-    if (!path) return
-    const content = await skillApiV2.readFileContent(path, environmentId).catch(() => '')
-    if (!isCurrentView()) return
-    setSkillDocContent(content)
-    setFileContent(content)
+    await loadFile(findSkillDocument(updated.files), { document: true })
   }
 
   const doSync = async (targetId: string, action: string) => {
@@ -433,9 +408,9 @@ export function SkillDetailSlider({
           {tab === 'overview' && (
             <OverviewTab
               detail={detail}
-              docPath={skillDocPath}
-              docContent={skillDocContent || fileContent}
-              fileLoading={fileLoading}
+              docPath={skillDocument?.path ?? null}
+              docContent={skillDocument?.content ?? ''}
+              docLoading={skillDocument?.loading ?? false}
             />
           )}
           {tab === 'files' && (
@@ -569,12 +544,12 @@ function OverviewTab({
   detail,
   docPath,
   docContent,
-  fileLoading,
+  docLoading,
 }: {
   detail: SkillDetail
   docPath: string | null
   docContent: string
-  fileLoading: boolean
+  docLoading: boolean
 }) {
   const { t } = useTranslation()
   const frontmatter = Object.entries(detail.frontmatter || {})
@@ -592,7 +567,7 @@ function OverviewTab({
           <small>{STATUS_LABEL[detail.status] || detail.status}</small>
         </div>
         <div className="sm2__markdown sm2__markdown--document sm2__markdown--skilldoc selectable">
-          {fileLoading ? (
+          {docLoading ? (
             <div className="sm2__empty sm2__empty--compact">读取说明文档…</div>
           ) : docContent ? (
             <>
@@ -1490,16 +1465,9 @@ function CompactInfo({
   )
 }
 
-function findFile(node: FileTreeNode | null, name: string): string | null {
-  if (!node) return null
-  if (node.name === name && node.nodeType === 'file') return node.path
-  if (node.children) {
-    for (const c of node.children) {
-      const f = findFile(c, name)
-      if (f) return f
-    }
-  }
-  return null
+function findSkillDocument(root: FileTreeNode | null): string | null {
+  const entries = root?.nodeType === 'file' ? [root] : root?.children
+  return entries?.find((entry) => entry.nodeType === 'file' && entry.name === 'SKILL.md')?.path ?? null
 }
 
 function countFiles(node: FileTreeNode | null): number {
@@ -1522,7 +1490,7 @@ function relativeFilePath(path: string, root: string): string {
 }
 
 function isSkillMarkdownPath(path: string | null): boolean {
-  return Boolean(path && /(^|\/)SKILL\.md$/i.test(path))
+  return path !== null && pathBasename(path).toLowerCase() === 'skill.md'
 }
 
 function formatMetaValue(value: string): string {
