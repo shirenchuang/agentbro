@@ -10,6 +10,8 @@ import { getToolActivityLabel } from '../../utils/toolLabels'
 import { composerHints, getComposerCapability, supportsPersistentPermissionActions, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import './ApprovalBar.css'
 
+const WINDOWS_APPROVAL_FOCUS_STABLE_MS = 100
+
 interface ApprovalBarProps {
   session: SessionState
   onAllow: () => void
@@ -32,14 +34,20 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
     const view = isWindowsPlatform() ? document.defaultView : null
     let timer: ReturnType<typeof setTimeout> | undefined
     let attempt: { button: Element } | null = null
+    let focusedAt: number | null = null
 
     const onFocus = () => {
       clearTimeout(timer)
       timer = undefined
-      attempt = null
+      focusedAt = document.hasFocus() ? performance.now() : null
     }
 
     const onBlur = () => {
+      // WebView2 can briefly report focus during a recovery and blur again immediately.
+      if (focusedAt !== null && performance.now() - focusedAt >= WINDOWS_APPROVAL_FOCUS_STABLE_MS) {
+        attempt = null
+      }
+      focusedAt = null
       if (timer !== undefined) return
       timer = setTimeout(() => {
         timer = undefined
