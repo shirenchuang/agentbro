@@ -1291,6 +1291,8 @@
       "uninstallUnverified": "アンインストールコマンドは完了しました。{{agent}} が削除されたことを確認できませんでした。",
       "cleanupBusy": "クリーンアップ中",
       "cleanupDescription": "現在の実行環境でこの Agent に対して検出された Skill と AgentBro Hook をクリーンアップします。",
+      "cleanupHookDescription": "この操作で、現在の実行環境にあるこの Agent の AgentBro Hook を削除します。",
+      "cleanupSharedSkills": "共有 Skills と関連するスキルパックは保持されます。",
       "pathSettings": {
         "tab": "パスと設定",
         "title": "ローカルリソースと設定",

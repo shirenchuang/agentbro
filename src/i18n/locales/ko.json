@@ -1291,6 +1291,8 @@
       "uninstallUnverified": "제거 명령이 완료되었습니다. {{agent}}가 제거되었는지 확인할 수 없습니다.",
       "cleanupBusy": "정리 중",
       "cleanupDescription": "현재 실행 환경에서 이 Agent에 대해 감지된 Skill과 AgentBro Hook을 정리합니다.",
+      "cleanupHookDescription": "이 작업은 현재 실행 환경에서 이 Agent의 AgentBro Hook을 제거합니다.",
+      "cleanupSharedSkills": "공유 Skills와 연결된 스킬 팩은 유지됩니다.",
       "pathSettings": {
         "tab": "경로 및 설정",
         "title": "로컬 리소스 및 설정",

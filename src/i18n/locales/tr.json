@@ -1139,6 +1139,8 @@
       "uninstallUnverified": "Kaldırma komutu tamamlandı. AgentBro, {{agent}} aracının kaldırıldığını doğrulayamadı.",
       "cleanupBusy": "Temizleniyor",
       "cleanupDescription": "Geçerli çalışma ortamında bu Agent için algılanan Skill ve AgentBro Hook öğelerini temizle.",
+      "cleanupHookDescription": "Bu işlem, geçerli çalışma ortamında bu Agent için AgentBro Hook yapılandırmasını kaldırır.",
+      "cleanupSharedSkills": "Paylaşılan Skills ve bağlı beceri paketleri korunur.",
       "pathSettings": {
         "tab": "Yollar ve ayarlar",
         "title": "Yerel kaynaklar ve yapılandırma",

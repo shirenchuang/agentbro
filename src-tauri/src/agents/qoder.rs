@@ -325,6 +325,10 @@ impl AgentAdapter for QoderAdapter {
     fn hook_config_paths(&self) -> Vec<PathBuf> {
         vec![self.settings_path()]
     }
+
+    fn hooks_installed(&self) -> bool {
+        profiles::is_installed_at(&self.profile(), &self.settings_path())
+    }
 }
 
 fn string_field<'a>(raw: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
