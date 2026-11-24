@@ -59,6 +59,9 @@ pub fn managed_agent_ids() -> Vec<String> {
         "copilot",
         "qwen",
         "qwenwork-cn",
+        "qoder-desktop",
+        "qoder",
+        "qoder-cli",
         "kimi",
         "doubao",
         "deepseek",
@@ -174,6 +177,21 @@ fn table() -> &'static [AgentMeta] {
             icon_key: "qwen",
         },
         AgentMeta {
+            id: "qoder-desktop",
+            display_name: "Qoder Desktop",
+            icon_key: "qoder",
+        },
+        AgentMeta {
+            id: "qoder",
+            display_name: "Qoder IDE",
+            icon_key: "qoder",
+        },
+        AgentMeta {
+            id: "qoder-cli",
+            display_name: "Qoder CLI",
+            icon_key: "qoder",
+        },
+        AgentMeta {
             id: "kimi",
             display_name: "Kimi Code",
             icon_key: "kimi",
@@ -280,6 +298,7 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "copilot" => ".copilot/skills",
         "qwen" => ".qwen/skills",
         "qwenwork-cn" => ".qwenworkcn/skills",
+        "qoder" | "qoder-cli" | "qoder-desktop" => ".qoder/skills",
         "kimi" => return Some(agent_paths::kimi_code_home_for(home).join("skills")),
         "doubao" => return Some(agent_paths::doubao_user_skills_dir_for(home)),
         "deepseek" => ".deepseek/skills",
@@ -383,6 +402,15 @@ pub fn is_read_only_agent_skill_path(home: &Path, agent: &str, path: &Path) -> b
 /// Runtime status includes the program and Agent-owned residual capabilities;
 /// fixture homes keep the broader path-based behavior used by service tests.
 pub fn agent_installed(home: &std::path::Path, agent: &str) -> bool {
+    // The three Qoder products share their skills and settings on disk.
+    if matches!(agent, "qoder" | "qoder-desktop" | "qoder-cli") && is_runtime_home(home) {
+        return if agent == "qoder-cli" {
+            agent_program_installed(agent)
+        } else {
+            crate::agents::programs::installed_app_path_for_agent(agent).is_some()
+        };
+    }
+
     #[cfg(not(target_os = "windows"))]
     if is_runtime_home(home) && crate::agents::programs::has_program_metadata(agent) {
         if agent_program_installed(agent) {
@@ -451,7 +479,6 @@ fn directory_has_valid_skill_inner(path: &Path, recursive: bool, depth: usize) -
     })
 }
 
-#[cfg(not(target_os = "windows"))]
 fn agent_program_installed(agent: &str) -> bool {
     use crate::agents::AdapterStatus;
 

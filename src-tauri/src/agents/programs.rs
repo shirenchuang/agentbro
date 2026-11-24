@@ -1424,8 +1424,9 @@ fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> 
         });
     #[cfg(target_os = "windows")]
     let existing = existing.or_else(|| {
-        windows_app_paths::find_registered(&windows_registration_names(agent_id, meta))
-            .filter(|path| app_path_matches_agent(agent_id, Path::new(path)))
+        windows_app_paths::find_registered(&windows_registration_names(agent_id, meta), |path| {
+            app_path_matches_agent(agent_id, Path::new(path))
+        })
     });
     existing
 }

@@ -443,10 +443,13 @@ function Test-InstalledRegisteredAgentApp(
         }
         Write-Output "Agent Management detected the registered $AgentName fixture and displayed its custom executable path."
         if ($AgentName -eq 'Qoder Desktop') {
-            if (Find-PackControl $settings 'Qoder IDE' ([Windows.Automation.ControlType]::Button)) {
-                throw 'Agent Management also counted the registered Qoder Desktop as an installed IDE'
+            foreach ($otherEdition in @('Qoder IDE', 'Qoder CLI')) {
+                $null = Wait-IslandValue "$otherEdition listed as uninstalled" {
+                    $agent = Find-PackControl $settings $otherEdition ([Windows.Automation.ControlType]::Button)
+                    $agent -and ($agent.Current.ClassName -split '\s+') -contains 'sm2-sidebar__subitem--muted'
+                }
             }
-            Write-Output 'Agent Management kept Qoder IDE separate from the registered Qoder Desktop app.'
+            Write-Output 'Agent Management kept Qoder IDE and CLI separate from the registered Qoder Desktop app.'
         }
 
         Remove-Item -LiteralPath $executable
