@@ -1155,8 +1155,20 @@ fn package_command(program: impl AsRef<OsStr>, path: Option<&OsStr>) -> Command 
 fn package_operation_command(command: &str) -> Command {
     let path = executable::augmented_path_env();
     if let Some(arguments) = command.strip_prefix("npm ") {
-        let mut process = package_command(executable::command_path("npm"), path.as_deref());
+        let launcher = executable::command_path("npm");
+        let mut process = package_command(&launcher, path.as_deref());
         process.args(arguments.split_ascii_whitespace());
+        #[cfg(target_os = "windows")]
+        if launcher
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+            })
+        {
+            // Rust runs batch shims via cmd /C, which can lose an exit /B status.
+            process.raw_arg("& exit");
+        }
         return process;
     }
 

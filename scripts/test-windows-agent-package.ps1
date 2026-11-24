@@ -344,7 +344,10 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     }
     Write-Output 'The uninstall confirmation focused Cancel and restored focus after native Escape.'
     [AgentBroSmokeInput]::PressKeyInWindow($handle, 0x20)
-    foreach ($issue in @('The uninstall command failed.', 'AgentBro still detects Claude Code.')) {
+    foreach ($issue in @(
+        'The uninstall command failed. uninstall failed for claude-code (exit code: 1)',
+        'AgentBro still detects Claude Code.'
+    )) {
         $confirm = Wait-IslandValue 'the uninstall confirmation reviewing unmanaged Skills and the Hook' {
             $button = Find-PackControl $settings '确认卸载'
             if ($button -and (Test-PackVisibleText $settings '未管理 Skills') -and
