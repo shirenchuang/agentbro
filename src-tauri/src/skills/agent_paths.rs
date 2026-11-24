@@ -20,6 +20,43 @@ pub fn claude_code_home_for(home: &Path) -> PathBuf {
     home.join(".claude")
 }
 
+const QODER_CONFIG_DIR: &str = "QODER_CONFIG_DIR";
+
+pub fn qoder_cli_home() -> PathBuf {
+    qoder_cli_home_for(&home())
+}
+
+pub fn qoder_cli_home_for(home: &Path) -> PathBuf {
+    if dirs::home_dir().as_deref() == Some(home) {
+        let configured = std::env::var_os(QODER_CONFIG_DIR)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(qoder_cli_home_from_shell);
+        if let Some(path) = configured.filter(|path| path.is_absolute()) {
+            return path;
+        }
+    }
+    home.join(".qoder")
+}
+
+#[cfg(target_os = "macos")]
+fn qoder_cli_home_from_shell() -> Option<PathBuf> {
+    static SHELL_ROOT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    SHELL_ROOT
+        .get_or_init(|| {
+            crate::agents::executable::interactive_login_shell_vars(&[QODER_CONFIG_DIR])
+                .into_iter()
+                .next()
+                .map(|(_, value)| PathBuf::from(value))
+        })
+        .clone()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn qoder_cli_home_from_shell() -> Option<PathBuf> {
+    None
+}
+
 pub fn kimi_code_home() -> PathBuf {
     let h = home();
     kimi_code_home_for(&h)
@@ -138,7 +175,15 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             settings_file: None,
         },
         "opencode" => basic_skill_paths(&h, ".opencode/skills"),
-        "qoder" | "qoder-cli" | "qoder-desktop" => basic_skill_paths(&h, ".qoder/skills"),
+        "qoder" | "qoder-desktop" => basic_skill_paths(&h, ".qoder/skills"),
+        "qoder-cli" => {
+            let root = qoder_cli_home_for(&h);
+            SkillPaths {
+                skill_dirs: vec![root.join("skills")],
+                mcp_config: None,
+                settings_file: Some(root.join("settings.json")),
+            }
+        }
         "qwen" => basic_skill_paths(&h, ".qwen/skills"),
         "qwenwork-cn" => basic_skill_paths(&h, ".qwenworkcn/skills"),
         "kimi" | "kimi-code-cli" => {
