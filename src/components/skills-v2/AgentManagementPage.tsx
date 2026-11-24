@@ -116,6 +116,14 @@ function isCurrentAgentSkillScope(scope: AgentSkillScope) {
     && agentSelectionRevision === scope.agentSelectionRevision
 }
 
+function isUninstallProgramPresent(program: AgentProgramInfo, environmentId: string) {
+  // SSH inventory can mark a CLI installed based on its remaining configuration or Skills.
+  if (environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID && program.kind === 'cli' && program.uninstallCommand) {
+    return program.binaryPath !== null
+  }
+  return isAgentProgramInstalled(program)
+}
+
 function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: AgentProgramInfo) {
   return isAgentProgramInstalled(reviewed) === isAgentProgramInstalled(current)
     && reviewed.kind === current.kind
@@ -127,6 +135,7 @@ function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: Ag
     && reviewed.uninstallCommand === current.uninstallCommand
     && reviewed.hooksInstalled === current.hooksInstalled
     && reviewed.configDir === current.configDir
+    && reviewed.skillsDir === current.skillsDir
 }
 
 export function AgentManagementPage() {
@@ -588,12 +597,11 @@ export function AgentManagementPage() {
     const failures: string[] = []
     let removedSkills = 0
     try {
-      const uninstallProgram = Boolean(isAgentProgramInstalled(program) && program.uninstallCommand)
-      let commandSucceeded = false
+      const uninstallProgram = Boolean(program.uninstallCommand && isUninstallProgramPresent(program, environmentId))
+      let cleanupBlocked: string | null = null
       if (uninstallProgram) {
         try {
           await agentApi.uninstall(agent.id, environmentId)
-          commandSucceeded = true
         } catch (error) {
           if (isAgentPackageOperationBusy(error)) {
             if (isCurrent()) {
@@ -602,60 +610,68 @@ export function AgentManagementPage() {
             }
             return
           }
-          failures.push(`程序：${skillErrorMessage(t, error)}`)
+          cleanupBlocked = t('skills.agentManagement.uninstallCommandFailed', { error: skillErrorMessage(t, error) })
+        }
+        if (cleanupBlocked === null) {
+          const detected = await agentApi.list(environmentId)
+            .then((programs) => programs.find((item) => item.id === agent.id), () => undefined)
+          if (!detected) {
+            cleanupBlocked = t('skills.agentManagement.uninstallUnverified', { agent: agent.displayName })
+          } else if (isUninstallProgramPresent(detected, environmentId)) {
+            cleanupBlocked = t('skills.agentManagement.programStillInstalled', { agent: agent.displayName })
+          } else if (detected.configDir !== program.configDir || detected.skillsDir !== program.skillsDir) {
+            cleanupBlocked = t('skills.agentManagement.uninstallProfileChanged', { agent: agent.displayName })
+          }
         }
       }
 
-      const targetIds = agent.skills.map((skill) => skill.id)
-      if (targetIds.length > 0) {
+      if (cleanupBlocked === null) {
+        const targetIds = agent.skills.map((skill) => skill.id)
+        if (targetIds.length > 0) {
+          try {
+            const result = await skillApiV2.deleteSkillTargetDistributions(targetIds, environmentId)
+            removedSkills += result.deleted
+            failures.push(...result.failures.map((failure) => `Skill：${failure.error}`))
+          } catch (error) {
+            failures.push(`已管理 Skills：${skillErrorMessage(t, error)}`)
+          }
+        }
+
+        for (const item of unmanagedItems) {
+          try {
+            await skillApiV2.deleteUnmanagedAgentSkill(agent.id, item.id, environmentId)
+            removedSkills += 1
+          } catch (error) {
+            failures.push(`${item.inferredSkillId || item.path}：${skillErrorMessage(t, error)}`)
+          }
+        }
+
+        if (program.hooksInstalled) {
+          try {
+            await agentApi.uninstallHook(agent.id, environmentId)
+          } catch (error) {
+            failures.push(`Hook：${skillErrorMessage(t, error)}`)
+          }
+        }
+
         try {
-          const result = await skillApiV2.deleteSkillTargetDistributions(targetIds, environmentId)
-          removedSkills += result.deleted
-          failures.push(...result.failures.map((failure) => `Skill：${failure.error}`))
+          const remainingUnmanaged = await skillApiV2.listUnmanaged(environmentId)
+          if (isCurrent()) useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
         } catch (error) {
-          failures.push(`已管理 Skills：${skillErrorMessage(t, error)}`)
+          failures.push(skillErrorMessage(t, error))
         }
-      }
-
-      for (const item of unmanagedItems) {
-        try {
-          await skillApiV2.deleteUnmanagedAgentSkill(agent.id, item.id, environmentId)
-          removedSkills += 1
-        } catch (error) {
-          failures.push(`${item.inferredSkillId || item.path}：${skillErrorMessage(t, error)}`)
-        }
-      }
-
-      if (program.hooksInstalled) {
-        try {
-          await agentApi.uninstallHook(agent.id, environmentId)
-        } catch (error) {
-          failures.push(`Hook：${skillErrorMessage(t, error)}`)
-        }
-      }
-
-      try {
-        const remainingUnmanaged = await skillApiV2.listUnmanaged(environmentId)
-        if (isCurrent()) useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
-      } catch (error) {
-        failures.push(skillErrorMessage(t, error))
       }
       if (!isCurrent()) return
       setUninstallTarget(null)
       const [refreshed] = await Promise.all([loadPrograms(target), state.loadOverview(true)])
       if (!isCurrent()) return
-      const status = refreshed?.[agent.id]?.status
-      const removedProgram = status === 'notInstalled' || status === 'unavailable'
-      if (commandSucceeded && !removedProgram) {
-        failures.unshift(t(status
-          ? 'skills.agentManagement.programStillInstalled'
-          : 'skills.agentManagement.uninstallUnverified', { agent: agent.displayName }))
-      }
-      if ((!uninstallProgram || failures.length > 0) && useSkillStoreV2.getState().selectedAgentId === agent.id) {
+      if ((!uninstallProgram || cleanupBlocked !== null || failures.length > 0) && useSkillStoreV2.getState().selectedAgentId === agent.id) {
         await state.loadAgentDetail(agent.id, true)
       }
       if (!isCurrent()) return
-      if (failures.length > 0) {
+      if (cleanupBlocked !== null) {
+        state.setError(t('skills.agentManagement.uninstallCleanupPreserved', { reason: cleanupBlocked }))
+      } else if (failures.length > 0) {
         const errors = failures.slice(0, 3).join(' ')
         state.setError(uninstallProgram
           ? `部分卸载失败，${errors}`
@@ -678,7 +694,7 @@ export function AgentManagementPage() {
           const nextAgent = nextAgents.find((item) => {
             if (item.id === SHARED_SKILLS_AGENT_ID) return false
             const detected = refreshed?.[item.id]
-            return detected ? isAgentProgramInstalled(detected) : item.installed
+            return detected ? isUninstallProgramPresent(detected, environmentId) : item.installed
           })
           await state.selectAgent(nextAgent?.id ?? null)
         }
@@ -787,7 +803,7 @@ export function AgentManagementPage() {
   }
 
   const selectedProgram = detail ? programs[detail.id] ?? null : null
-  const selectedProgramInstalled = selectedProgram?.status === 'installed' || selectedProgram?.status === 'updateAvailable'
+  const selectedProgramInstalled = selectedProgram ? isUninstallProgramPresent(selectedProgram, runtimeEnvironmentId) : false
   const canUninstallProgram = Boolean(selectedProgramInstalled && selectedProgram?.uninstallCommand)
   const selectedUnmanagedItems = detail
     ? removableUnmanagedSkills(state.unmanaged, detail.id)
@@ -807,7 +823,7 @@ export function AgentManagementPage() {
     ? uninstallTarget.agent
     : null
   const uninstallProgram = uninstallTarget?.program
-  const uninstallProgramInstalled = uninstallProgram ? isAgentProgramInstalled(uninstallProgram) : false
+  const uninstallProgramInstalled = uninstallTarget ? isUninstallProgramPresent(uninstallTarget.program, uninstallTarget.environmentId) : false
   const cleanupOnly = !uninstallProgramInstalled || !uninstallProgram?.uninstallCommand
   const uninstallUnmanagedItems = uninstallTarget?.unmanagedItems ?? []
 

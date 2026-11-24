@@ -83,6 +83,11 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
     exit /b 0
 )
 if "%~1 %~2 %~3"=="uninstall -g @anthropic-ai/claude-code" (
+    if not exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall-failed" (
+        type nul > "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall-failed"
+        >&2 echo fixture uninstall failed
+        exit /b 1
+    )
     if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall" (
         del /q "%~dp0claude.cmd"
         if exist "%~dp0claude.cmd" exit /b 1
@@ -94,6 +99,16 @@ if "%~1 %~2 %~3"=="uninstall -g @anthropic-ai/claude-code" (
 exit /b 1
 '@
     Set-Content -LiteralPath (Join-Path $fixtureBin 'npm.cmd') -Value ($fixtureNpm -replace '\r?\n', "`r`n") -Encoding ascii
+    $unmanagedSkill = Join-Path $env:CLAUDE_CONFIG_DIR 'skills\uninstall-fixture'
+    $null = New-Item -ItemType Directory -Path $unmanagedSkill -Force
+    @'
+---
+name: Uninstall fixture
+description: Check that a failed uninstall preserves a local skill.
+---
+
+This Skill belongs to the test Agent.
+'@ | Set-Content -LiteralPath (Join-Path $unmanagedSkill 'SKILL.md') -Encoding ascii
 }
 $env:Path = ($fixtureSearchPath + @($env:Path)) -join ';'
 
