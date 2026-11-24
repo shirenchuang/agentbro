@@ -770,12 +770,16 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
             @{ Label = 'Detailed output'; Key = 0x0D; KeyName = 'Enter' },
             @{ Label = 'Submit All'; Key = 0x20; KeyName = 'Space' }
         )) {
+            $button = Wait-IslandValue "$($target.Label) button in the Island" {
+                $island = Find-VisibleIsland
+                if ($island -and $island.Handle -eq $WindowHandle) {
+                    Find-IslandButton $island.Element { param($Name) $Name.EndsWith($target.Label) }
+                }
+            }
             $hasFocus = {
                 $focused = [Windows.Automation.AutomationElement]::FocusedElement
-                $focused -and $focused.Current.ProcessId -eq $AppProcessId -and
-                    $focused.Current.HasKeyboardFocus -and
-                    $focused.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
-                    $focused.Current.Name.EndsWith($target.Label)
+                $focused -and $button.Current.HasKeyboardFocus -and
+                    [Windows.Automation.Automation]::Compare($focused.GetRuntimeId(), $button.GetRuntimeId())
             }
             for ($tabs = 0; $tabs -lt 24 -and -not (& $hasFocus); $tabs++) {
                 [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)
