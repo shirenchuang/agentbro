@@ -762,19 +762,36 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
         }
         Write-Output 'Ctrl+Alt+F10 reopened the Island and the original multipart Hook stayed pending.'
 
-        foreach ($label in @('Production region', 'Detailed output', 'Submit All')) {
-            Click-IslandElement $null "multipart question control $label" -FindElement {
-                $island = Find-VisibleIsland
-                if ($island) { Find-IslandButton $island.Element { param($Name) $Name.EndsWith($label) } }
+        $null = Wait-IslandValue 'the Island foreground window after the global question shortcut' {
+            [AgentBroSmokeInput]::GetForegroundWindow() -eq $WindowHandle
+        } 5
+        foreach ($target in @(
+            @{ Label = 'Production region'; Key = 0x20; KeyName = 'Space' },
+            @{ Label = 'Detailed output'; Key = 0x0D; KeyName = 'Enter' },
+            @{ Label = 'Submit All'; Key = 0x20; KeyName = 'Space' }
+        )) {
+            $hasFocus = {
+                $focused = [Windows.Automation.AutomationElement]::FocusedElement
+                $focused -and $focused.Current.ProcessId -eq $AppProcessId -and
+                    $focused.Current.HasKeyboardFocus -and
+                    $focused.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
+                    $focused.Current.Name.EndsWith($target.Label)
             }
+            for ($tabs = 0; $tabs -lt 24 -and -not (& $hasFocus); $tabs++) {
+                [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)
+                Start-Sleep -Milliseconds 125
+            }
+            $null = Wait-IslandValue "native Tab focus on $($target.Label)" $hasFocus 3
+            [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, $target.Key)
+            Write-Output "Sent native $($target.KeyName) to the focused $($target.Label) control."
         }
-        if (-not $multipart.Reply.Wait(8000)) { throw 'The multipart Hook did not receive the manual answer' }
+        if (-not $multipart.Reply.Wait(8000)) { throw 'The multipart Hook did not receive the keyboard answer' }
         $response = $multipart.Reply.GetAwaiter().GetResult() | ConvertFrom-Json
         $answers = $response.answer | ConvertFrom-Json
         if ($answers.'Pick a region?' -ne 'Production region' -or $answers.'Pick an output?' -ne 'Detailed output') {
             throw 'The manual reply did not include both selected answers'
         }
-        Write-Output 'The original multipart Hook received both manually selected answers.'
+        Write-Output 'The original multipart Hook received both answers selected and submitted with the native keyboard.'
     } finally {
         $multipart.Connection.Dispose()
     }
