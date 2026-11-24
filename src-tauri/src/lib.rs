@@ -6212,8 +6212,8 @@ pub fn run() {
             let startup_adapters = adapters.clone();
             let startup_config_store = config_store.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                if ClaudeCodeAdapter::update_hook_script_if_needed() {
-                    log::info!("Hook script was updated to match new app version");
+                if let Err(error) = agents::hook_manager::ensure_bridge_binary() {
+                    log::warn!("Failed to prepare the Hook bridge at startup: {error}");
                 }
                 let enabled_intent = startup_config_store.get().enabled_agents;
                 for adapter in startup_adapters.iter() {

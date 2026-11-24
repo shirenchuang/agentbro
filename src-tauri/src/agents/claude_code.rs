@@ -965,17 +965,6 @@ impl ClaudeCodeAdapter {
 
         HookVerificationResult::Ok
     }
-
-    /// Check if the deployed bridge binary differs from the bundled version.
-    /// If so, overwrite with the new version (app was updated).
-    /// Returns true if the binary was updated.
-    pub fn update_hook_script_if_needed() -> bool {
-        if let Err(e) = hook_manager::ensure_bridge_binary() {
-            log::warn!("Failed to update bridge binary: {}", e);
-            return false;
-        }
-        false
-    }
 }
 
 /// Expand `~` prefix to the user's home directory
