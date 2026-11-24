@@ -204,11 +204,11 @@ fn open_path_windows(target: &str) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 mod windows_shell {
+    use crate::platform::windows_shell::ShellApartment;
     use std::collections::HashSet;
     use std::io;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::path::{Component, Path, PathBuf, Prefix};
-    use std::ptr::null;
     use std::time::{Duration, Instant};
     use windows::core::{Interface, BSTR};
     use windows::Win32::System::Com::{CoCreateInstance, IDispatch, CLSCTX_LOCAL_SERVER};
@@ -217,27 +217,24 @@ mod windows_shell {
         Folder, Folder2, IShellFolderViewDual, IShellWindows, IWebBrowserApp, ShellWindows,
         SVSI_DESELECTOTHERS, SVSI_ENSUREVISIBLE, SVSI_FOCUSED, SVSI_SELECT,
     };
-    use windows_sys::Win32::System::Com::{
-        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
-    };
-    use windows_sys::Win32::UI::Shell::{
-        ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SW_SHOWNORMAL};
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
     pub(super) fn open(path: &Path) -> Result<(), String> {
         let target =
             prepare_path(path).map_err(|error| format!("open {}: {error}", path.display()))?;
-        let _apartment = ShellApartment::initialize()?;
-        open_in_shell(&target).map_err(|error| format!("open {}: {error}", path.display()))
+        let apartment = ShellApartment::initialize()?;
+        apartment
+            .open(target.as_os_str())
+            .map_err(|error| format!("open {}: {error}", path.display()))
     }
 
     pub(super) fn reveal(path: &Path) -> Result<(), String> {
         let target =
             prepare_path(path).map_err(|error| format!("reveal {}: {error}", path.display()))?;
-        let _apartment = ShellApartment::initialize()?;
+        let apartment = ShellApartment::initialize()?;
         let Some(parent) = target.parent() else {
-            return open_in_shell(&target)
+            return apartment
+                .open(target.as_os_str())
                 .map_err(|error| format!("reveal {}: {error}", path.display()));
         };
         let filename = BSTR::from_wide(
@@ -253,7 +250,9 @@ mod windows_shell {
         let existing_windows: HashSet<_> = explorer_windows(&shell)
             .filter_map(|window| unsafe { window.HWND() }.ok().map(|id| id.0))
             .collect();
-        open_in_shell(parent).map_err(|error| format!("open {}: {error}", parent.display()))?;
+        apartment
+            .open(parent.as_os_str())
+            .map_err(|error| format!("open {}: {error}", parent.display()))?;
 
         let start = Instant::now();
         loop {
@@ -324,43 +323,6 @@ mod windows_shell {
                         .canonicalize()
                         .is_ok_and(|expected| expected == resolved)
                 }))
-    }
-
-    fn open_in_shell(path: &Path) -> io::Result<()> {
-        let target: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
-        let mut execute = SHELLEXECUTEINFOW {
-            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-            fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
-            lpFile: target.as_ptr(),
-            nShow: SW_SHOWNORMAL,
-            ..Default::default()
-        };
-        if unsafe { ShellExecuteExW(&mut execute) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-
-    struct ShellApartment;
-
-    impl ShellApartment {
-        fn initialize() -> Result<Self, String> {
-            let flags = (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32;
-            let result = unsafe { CoInitializeEx(null(), flags) };
-            if result < 0 {
-                return Err(format!(
-                    "initialize Windows Shell: {}",
-                    io::Error::from_raw_os_error(result)
-                ));
-            }
-            Ok(Self)
-        }
-    }
-
-    impl Drop for ShellApartment {
-        fn drop(&mut self) {
-            unsafe { CoUninitialize() };
-        }
     }
 
     fn prepare_path(path: &Path) -> io::Result<PathBuf> {
