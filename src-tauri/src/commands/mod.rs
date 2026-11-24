@@ -1606,14 +1606,14 @@ fn upsert_codex_app_server_pending_permission(
         session.term_bundle_id = Some("com.openai.codex".to_string());
         session.phase = SessionPhase::WaitingApproval;
         session.description = Some(preview.to_string());
-        session.pending_permission = Some(crate::hooks::session_store::PendingPermission {
+        session.set_pending_permission(Some(crate::hooks::session_store::PendingPermission {
             tool_use_id: Some(tool_use_id),
             tool_name: tool_name.to_string(),
             tool_input: tool_input.to_string(),
             diff: None,
             options: None,
-        });
-        session.pending_question = None;
+        }));
+        session.set_pending_question(None);
         session.pending_plan = None;
     });
 }
@@ -1633,8 +1633,8 @@ fn upsert_codex_app_server_pending_question(
         session.term_bundle_id = Some("com.openai.codex".to_string());
         session.phase = SessionPhase::WaitingInput;
         session.description = Some(preview.to_string());
-        session.pending_question = Some(pending_question);
-        session.pending_permission = None;
+        session.set_pending_question(Some(pending_question));
+        session.set_pending_permission(None);
         session.pending_plan = None;
     });
 }
