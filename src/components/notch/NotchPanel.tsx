@@ -1084,6 +1084,7 @@ export function NotchPanel() {
       if (!hitbox || hitbox.dataset.islandHidden === 'true' || displayChanging || store.panelState === 'collapsed'
         || e.defaultPrevented || e.repeat || e.isComposing || getInputFocusTarget(e.target)) return
 
+      // The queue advances before AnimatePresence mounts the next interactive layer.
       const card = hitbox.querySelector<HTMLElement>('[data-blocking-overlay-id]:not([inert])')
       if (card) {
         if (activeOverlay && card.dataset.blockingOverlayId === activeOverlay.id && store.activeOverlay?.id === activeOverlay.id) {
@@ -1093,8 +1094,8 @@ export function NotchPanel() {
       }
 
       if (!activeSession || store.activeSessionId !== activeSession.id) return
-      const rows = hitbox.querySelectorAll<HTMLElement>('[data-island-session-id]')
-      if (Array.from(rows).some((row) => row.dataset.islandSessionId === activeSession.id && !row.closest('[inert]'))) {
+      const rows = hitbox.querySelectorAll<HTMLElement>('[data-inline-reply-session-id]')
+      if (Array.from(rows).some((row) => row.dataset.inlineReplySessionId === activeSession.id && !row.closest('[inert]'))) {
         return { session: activeSession }
       }
     }

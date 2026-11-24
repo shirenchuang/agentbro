@@ -332,7 +332,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   const showHistoryLimitNotice = !currentSubagentHistory && activeSession.chatHistoryMeta?.hasMore
 
   return (
-    <div className="chat-view" data-island-session-id={activeSession.id}>
+    <div className="chat-view" data-inline-reply-session-id={currentSubagentHistory ? undefined : activeSession.id}>
       <ChatHeader session={activeSession} backRef={backRef} onBack={handleBack} onJump={handleJump} />
 
       {islandMonitorSubagents && showAgentActivityDetails && activeSession.subagents && activeSession.subagents.length > 0 && (

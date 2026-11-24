@@ -1763,6 +1763,41 @@ describe('NotchPanel island shell', () => {
     expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
   })
 
+  it('keeps permission shortcuts inactive in the read-only subagent transcript', async () => {
+    useConfigStore.setState({
+      islandMonitorSubagents: true,
+      showAgentActivityDetails: true,
+      shortcuts: [{ action: 'reject-action', label: 'Reject Action', keys: 'CommandOrControl+Shift+D' }],
+    })
+    const permission = { toolUseId: 'parent-request', toolName: 'Bash', toolInput: 'echo parent' }
+    mountIsland(null, {
+      phase: 'waiting_approval',
+      pendingPermission: permission,
+      subagents: [{
+        agentId: 'child',
+        agentType: 'Explore',
+        description: 'Inspect workspace',
+        agentTranscriptPath: 'demo://subagent/child',
+        startedAt: Date.now() - 1000,
+        status: 'completed',
+        tools: [],
+      }],
+    })
+    act(() => useSessionStore.getState().setPanelState('expanded'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand subagents' }))
+    fireEvent.click(screen.getByRole('button', { name: /Inspect workspace/ }))
+    expect(await screen.findByText('readonly')).toBeInTheDocument()
+
+    const stroke = { key: 'd', shiftKey: true, ...primaryModifierKeyEvent() }
+    fireEvent.keyDown(window, stroke)
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+
+    fireEvent.click(document.querySelector('.chat-view__subagent-back')!)
+    fireEvent.keyDown(window, stroke)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledExactlyOnceWith('s1', false, undefined, 'parent-request')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined())
+  })
+
   it('routes configured panel and session navigation shortcuts', () => {
     useConfigStore.setState({
       shortcuts: [

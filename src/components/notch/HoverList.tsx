@@ -1244,7 +1244,7 @@ function SessionCard({
     >
       <div
         data-no-drag
-        data-island-session-id={session.id}
+        data-inline-reply-session-id={inlinePermission || inlineQuestion || showInlinePlan ? session.id : undefined}
         role="group"
         aria-labelledby={titleId}
         className={`hover-list__card${selected ? ' hover-list__card--selected' : ''}${session.phase === 'done' ? ' hover-list__card--done' : ''}${showPassiveDot ? ' hover-list__card--passive' : ''}${isMuted ? ' hover-list__card--muted' : ''}`}
