@@ -522,3 +522,62 @@ function Test-InstalledRegisteredAgentApp(
         Remove-Item -LiteralPath $directory -Recurse -ErrorAction SilentlyContinue
     }
 }
+
+function Test-InstalledAgentAfterPathChange([Windows.Automation.AutomationElement]$Island) {
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+        throw 'The saved PATH fixture requires an isolated GitHub-hosted runner'
+    }
+
+    $settings = Open-ManagedAgent $Island 'Qoder CLI' -SearchQuery 'Qoder' -RefreshPrograms
+    $refreshPrograms = {
+        $refresh = Wait-IslandValue 'the enabled Agent version refresh' {
+            $button = Find-PackControl $settings '获取版本' ([Windows.Automation.ControlType]::Button)
+            if ($button -and $button.Current.IsEnabled) { $button }
+        }
+        Invoke-PackControl $refresh
+    }
+    $isUndetected = {
+        $agent = Find-PackControl $settings 'Qoder CLI' ([Windows.Automation.ControlType]::Button)
+        $agent -and ($agent.Current.ClassName -split '\s+') -contains 'sm2-sidebar__subitem--muted'
+    }
+    $null = Wait-IslandValue 'Qoder CLI missing before the saved PATH change' $isUndetected
+    $processId = $settings.Current.ProcessId
+    $folderName = "AgentBro 命令行 $([Guid]::NewGuid().ToString('N'))"
+    $directory = Join-Path $env:USERPROFILE $folderName
+    $executable = Join-Path $directory 'qoder.exe'
+    $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    if (-not $environment) { throw 'The runner has no user Environment registry key' }
+    try {
+        $original = $environment.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $null = New-Item -ItemType Directory -Path $directory
+        Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\where.exe') -Destination $executable
+        $originalKind = if ($null -ne $original) { $environment.GetValueKind('Path') }
+        $newEntry = '%USERPROFILE%\' + $folderName
+        $changedPath = if ($original) { "$original;$newEntry" } else { $newEntry }
+        try {
+            $environment.SetValue('Path', $changedPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            Write-Output 'Added an expandable CLI directory to the saved user PATH after AgentBro started.'
+            & $refreshPrograms
+            Invoke-ManagedAgentButton $settings 'Paths & settings'
+            $null = Wait-IslandValue 'Qoder CLI discovered through the changed saved PATH' {
+                (Test-PackVisibleText $settings $executable) -and -not (& $isUndetected)
+            }
+            Write-Output 'The installed Agent Management discovered Qoder CLI in the newly saved directory.'
+        } finally {
+            if ($null -eq $original) { $environment.DeleteValue('Path', $false) }
+            else { $environment.SetValue('Path', $original, $originalKind) }
+        }
+
+        & $refreshPrograms
+        $null = Wait-IslandValue 'Qoder CLI missing after restoring the saved PATH' {
+            (& $isUndetected) -and -not (Test-PackVisibleText $settings $executable)
+        }
+        if ($settings.Current.ProcessId -ne $processId -or -not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw 'The PATH discovery fixture must use the same process and executable throughout'
+        }
+        Write-Output 'Restoring the saved PATH hid the same Qoder CLI executable without restarting AgentBro.'
+    } finally {
+        $environment.Dispose()
+        Remove-Item -LiteralPath $directory -Recurse -ErrorAction SilentlyContinue
+    }
+}

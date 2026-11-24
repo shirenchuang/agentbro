@@ -944,6 +944,7 @@ try {
     if ($VerifyRegisteredAgentApp) {
         Test-InstalledRegisteredAgentApp $island
         Test-InstalledRegisteredAgentApp $island -AgentName 'Qoder Desktop' -ExeName 'Qoder.exe'
+        Test-InstalledAgentAfterPathChange $island
     }
 } catch {
     try {
