@@ -469,17 +469,6 @@ def openclaw_state_path():
     return HOME / ".openclaw"
 
 
-def claude_config_root():
-    configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
-    if configured and "," not in configured:
-        if configured == "~":
-            return HOME
-        path = HOME / configured[2:] if configured.startswith("~/") else pathlib.Path(configured)
-        if path.is_absolute():
-            return path
-    return HOME / ".claude"
-
-
 def agent_config_path(agent_id):
     spec = agent_spec(agent_id)
     if not spec:
@@ -490,7 +479,7 @@ def agent_config_path(agent_id):
     if agent_id == "codex" and os.environ.get("CODEX_HOME"):
         return expand_path(os.environ["CODEX_HOME"]) / "config.toml"
     if agent_id == "claude-code":
-        return claude_config_root() / "settings.json"
+        return claude_config_root(HOME) / "settings.json"
     return HOME / spec["config"]
 
 
@@ -535,7 +524,7 @@ def agent_skills_path(agent_id):
     if agent_id == "openclaw":
         return openclaw_workspace_path() / "skills"
     if agent_id == "claude-code":
-        return claude_config_root() / "skills"
+        return claude_config_root(HOME) / "skills"
     return HOME / spec["skills"]
 
 
@@ -4219,11 +4208,14 @@ def agent_programs():
         package_manager, package_name = package_data.get(spec["id"], (None, None))
         installed = agent_installed(spec, binary)
         config_path = agent_config_path(spec["id"])
-        config_text = config_path.read_text(errors="replace") if config_path.is_file() else ""
-        hooks_installed = (
-            (HOME / ".agentbro" / "remote" / "hook.py").is_file()
-            and ("remote/hook.py" in config_text or "remote-hook.py" in config_text)
-        )
+        if spec["id"] == "claude-code":
+            hooks_installed = remote_hook_status(HOME, config_path) == "installed"
+        else:
+            config_text = config_path.read_text(errors="replace") if config_path.is_file() else ""
+            hooks_installed = (
+                (HOME / ".agentbro" / "remote" / "hook.py").is_file()
+                and ("remote/hook.py" in config_text or "remote-hook.py" in config_text)
+            )
         result.append({
             "id": spec["id"],
             "displayName": spec["displayName"],

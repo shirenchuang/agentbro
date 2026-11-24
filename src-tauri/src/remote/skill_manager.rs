@@ -1,10 +1,11 @@
-use super::installer::{base64_encode, run_ssh, run_ssh_with_input};
+use super::installer::{
+    base64_encode, run_ssh, run_ssh_with_input, REMOTE_HOOK_SETTINGS, REMOTE_RUNNER_COMMAND,
+};
 use super::manager::RemoteHost;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 const RESPONSE_MARKER: &str = "__AGENTBRO_REMOTE_SKILL_MANAGER__";
-const REMOTE_RUNNER_COMMAND: &str = "\"${SHELL:-/bin/bash}\" -lc 'python3 -'";
 
 pub async fn invoke(host: &RemoteHost, command: &str, mut args: Value) -> Result<Value, String> {
     let staged = stage_local_skill_source(host, command, &mut args).await?;
@@ -44,8 +45,9 @@ fn render_script(command: &str, args: Value) -> Result<String, String> {
         "args": args,
     });
     let payload = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
-    Ok(include_str!("skill_manager.py")
-        .replace("__AGENTBRO_REQUEST_B64__", &base64_encode(&payload)))
+    let script = include_str!("skill_manager.py")
+        .replace("__AGENTBRO_REQUEST_B64__", &base64_encode(&payload));
+    Ok(format!("{REMOTE_HOOK_SETTINGS}\n{script}"))
 }
 
 struct StagedLocalSource {
@@ -1423,6 +1425,52 @@ os.replace = _agentbro_fail_link_activation
         assert_eq!(selected["claims"].as_array().unwrap().len(), 1);
         assert_eq!(selected["claims"][0]["packId"], "partner");
         std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_claude_program_status_reads_hook_commands_in_the_active_profile() {
+        let fixture = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let home = fixture.path().canonicalize().unwrap();
+        let profiles = home.join("Claude profiles");
+        let active = profiles.join("Active profile");
+        let default = home.join(".claude");
+        let bridge = home.join(".agentbro/remote");
+        for directory in [&active, &default, &bridge] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(bridge.join("hook.py"), "# shared bridge").unwrap();
+        std::fs::write(
+            default.join("settings.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"python3 ~/.agentbro/remote/hook.py"}]}]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            active.join("settings.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo ~/.agentbro/remote/hook.py"}]}]}}"#,
+        )
+        .unwrap();
+
+        let query = |configured| {
+            let programs = run_script_in_claude_profile(
+                &home,
+                configured,
+                "agent_list",
+                serde_json::json!({}),
+            )
+            .unwrap();
+            programs
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|program| program["id"] == "claude-code")
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(query(None)["hooksInstalled"], true);
+        let configured = query(Some("~/Claude profiles/Active profile"));
+        assert_eq!(configured["configDir"], active.to_str().unwrap());
+        assert_eq!(configured["hooksInstalled"], false);
     }
 
     #[test]
