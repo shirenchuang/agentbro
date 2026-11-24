@@ -204,7 +204,8 @@ export function SkillPackPicker() {
     updateApplied(selectedAgentId, pack.id, !wasApplied)
     try {
       if (wasApplied) {
-        await skillApiV2.removePackFromAgent(pack.id, selectedAgentId)
+        const targetScope = agents.find((agent) => agent.id === selectedAgentId)?.targetScope
+        await skillApiV2.removePackFromAgent(pack.id, selectedAgentId, selectedEnvironmentId, targetScope ? { targetScope } : undefined)
       } else {
         const result = await skillApiV2.executeApplyPack(pack.id, [selectedAgentId], mode)
         if (result.blockers.length > 0) {

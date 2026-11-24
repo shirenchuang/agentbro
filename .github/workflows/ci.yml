@@ -94,8 +94,16 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::programs::tests'
       - name: Test Agent launcher discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::executable::tests'
+      - name: Test native Codex Desktop jump fallback
+        timeout-minutes: 2
+        run: |
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE --exact platform::windows_shell::tests::windows_shell_resolves_registered_protocols
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE --exact commands::tests::windows_codex_jump_falls_back_when_the_protocol_and_package_are_unavailable
       - name: Test native JSON Hook settings edits
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::profiles::tests::json_hook_'
+      - name: Test session snapshot ordering
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE --exact hooks::session_store::tests::pushed_and_polled_session_snapshots_share_revisions_across_store_clones'
       - name: Test Agent and Skill metadata writes
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::registry::tests'
       - name: Test OpenCode MCP configuration discovery

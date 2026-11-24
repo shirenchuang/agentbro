@@ -138,6 +138,7 @@ export interface AgentSummary {
   isCustom?: boolean
   enabled: boolean
   skillsDir: string | null
+  targetScope?: string
   version: string | null
   latestVersion: string | null
   installed: boolean
@@ -452,6 +453,7 @@ export interface AgentDetail {
   version: string | null
   latestVersion: string | null
   skillsDir: string | null
+  targetScope?: string
   configPath: string | null
   mcpConfigPath: string | null
   pluginDir: string | null
@@ -592,6 +594,7 @@ export interface DistributionChange {
   actualMode?: 'link' | 'copy'
   reason?: string
   targetPath: string
+  targetId?: string
   sourceFingerprint?: string
   targetFingerprint?: string
 }
@@ -744,6 +747,7 @@ export interface RemovePackFromAgentPreview {
   packName: string
   agentId: string
   displayName: string
+  targetScope?: string
   affectedTargets: AffectedTarget[]
   willRemoveTargets: number
   willPreserveTargets: number
@@ -1269,21 +1273,27 @@ export const skillApiV2 = {
           skippedSkills: selections.filter(item => item.resolution === 'skip').map(item => item.sourcePath),
         }),
 
-  previewDeleteCenterSkill: (skillId: string) =>
+  previewDeleteCenterSkill: (skillId: string, environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<DeleteCenterSkillPreview>('preview_delete_center_skill', { skillId })
+      ? invoke<DeleteCenterSkillPreview>('preview_delete_center_skill', { skillId }, environmentId)
       : Promise.resolve({ skillId, skillIds: [skillId], affectedTargets: [], removable: true, warnings: [] }),
-  executeDeleteCenterSkill: (skillId: string, removeLinked: boolean) =>
+  executeDeleteCenterSkill: (skillId: string, removeLinked: boolean, environmentId?: string, reviewedPreview?: DeleteCenterSkillPreview) =>
     isTauriRuntime()
-      ? invoke<void>('execute_delete_center_skill', { skillId, removeLinked })
+      ? invoke<void>('execute_delete_center_skill', {
+        skillId, removeLinked,
+        ...(reviewedPreview && environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID ? { reviewedPreview } : {}),
+      }, environmentId)
       : Promise.resolve(),
-  previewDeleteCenterSkills: (skillIds: string[]) =>
+  previewDeleteCenterSkills: (skillIds: string[], environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<DeleteCenterSkillPreview>('preview_delete_center_skills', { skillIds })
+      ? invoke<DeleteCenterSkillPreview>('preview_delete_center_skills', { skillIds }, environmentId)
       : Promise.resolve({ skillId: skillIds[0] ?? '', skillIds, affectedTargets: [], removable: true, warnings: [] }),
-  executeDeleteCenterSkills: (skillIds: string[], removeLinked: boolean) =>
+  executeDeleteCenterSkills: (skillIds: string[], removeLinked: boolean, environmentId?: string, reviewedPreview?: DeleteCenterSkillPreview) =>
     isTauriRuntime()
-      ? invoke<void>('execute_delete_center_skills', { skillIds, removeLinked })
+      ? invoke<void>('execute_delete_center_skills', {
+        skillIds, removeLinked,
+        ...(reviewedPreview && environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID ? { reviewedPreview } : {}),
+      }, environmentId)
       : Promise.resolve(),
 
   previewDistribute: (skillIds: string[], targetAgents: string[], requestedMode: 'link' | 'copy') =>
@@ -1396,12 +1406,18 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<SkillPackSyncResult>('execute_sync_skill_pack_to_agents', { packId, targetAgents }, environmentId) : Promise.resolve({ packId, packName: packId, revision: 1, status: 'synced', agents: [] }),
   previewRemovePackFromAgent: (packId: string, agentId: string, environmentId?: string) =>
     isTauriRuntime() ? invoke<RemovePackFromAgentPreview>('preview_remove_skill_pack_from_agent', { packId, agentId }, environmentId) : Promise.resolve({ packId, packName: packId, agentId, displayName: agentId, affectedTargets: [], willRemoveTargets: 0, willPreserveTargets: 0 }),
-  removePackFromAgent: (packId: string, agentId: string, environmentId?: string) =>
-    isTauriRuntime() ? invoke<RevokeResult>('execute_remove_skill_pack_from_agent', { packId, agentId }, environmentId) : Promise.resolve({ packId, agentId, removedClaims: 0, removedTargets: 0, preservedTargets: 0 }),
+  removePackFromAgent: (packId: string, agentId: string, environmentId?: string, reviewedPreview?: Partial<RemovePackFromAgentPreview>) =>
+    isTauriRuntime() ? invoke<RevokeResult>('execute_remove_skill_pack_from_agent', {
+      packId, agentId,
+      ...(reviewedPreview && environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID ? { reviewedPreview } : {}),
+    }, environmentId) : Promise.resolve({ packId, agentId, removedClaims: 0, removedTargets: 0, preservedTargets: 0 }),
   previewRemoveSkillFromPack: (packId: string, skillId: string, environmentId?: string) =>
     isTauriRuntime() ? invoke<RemoveSkillFromPackPreview>('preview_remove_skill_from_pack', { packId, skillId }, environmentId) : Promise.resolve({ packId, packName: packId, skillId, skillName: skillId, affectedTargets: [], appliedAgentCount: 0, canKeepStandalone: true, canRemoveTargets: true }),
-  removeSkillFromPack: (packId: string, skillId: string, alsoRemoveTargets: boolean, environmentId?: string) =>
-    isTauriRuntime() ? invoke<void>('execute_remove_skill_from_pack', { packId, skillId, alsoRemoveTargets }, environmentId) : Promise.resolve(),
+  removeSkillFromPack: (packId: string, skillId: string, alsoRemoveTargets: boolean, environmentId?: string, reviewedPreview?: RemoveSkillFromPackPreview) =>
+    isTauriRuntime() ? invoke<void>('execute_remove_skill_from_pack', {
+      packId, skillId, alsoRemoveTargets,
+      ...(reviewedPreview && environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID ? { reviewedPreview } : {}),
+    }, environmentId) : Promise.resolve(),
   previewMoveDirectSkillToPack: (targetId: string, packId: string, environmentId?: string) =>
     isTauriRuntime()
       ? invoke<MoveDirectSkillToPackPreview>('preview_move_direct_skill_to_pack', { targetId, packId }, environmentId)

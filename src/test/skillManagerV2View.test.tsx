@@ -151,7 +151,9 @@ describe('Skill library view mode (no Agent matrix)', () => {
   beforeEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    useRuntimeEnvironmentStore.setState({ selectedEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
     useSkillStoreV2.setState({
+      runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
       activeTab: 'library',
       activeInstallTab: 'official',
       viewMode: 'cards',
@@ -438,8 +440,12 @@ describe('Skill library view mode (no Agent matrix)', () => {
     expect(document.body.querySelector('.sm2-delete-skill__inline-action')).toBeNull()
   })
 
-  it('deletes multiple selected center skills from the library', async () => {
-    const previewDelete = vi.spyOn(skillApiV2, 'previewDeleteCenterSkills').mockResolvedValue({
+  it.each([false, true])('binds batch center deletion to the reviewed runtime, switched=%s', async (switchRuntime) => {
+    const environmentId = switchRuntime ? 'skill-library-ssh' : LOCAL_RUNTIME_ENVIRONMENT_ID
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    selectEnvironment(environmentId)
+    useSkillStoreV2.setState({ runtimeEnvironmentId: environmentId })
+    const preview = {
       skillId: 'release-checklist',
       skillIds: ['release-checklist', 'db-debug'],
       affectedTargets: [
@@ -454,7 +460,8 @@ describe('Skill library view mode (no Agent matrix)', () => {
       ],
       removable: false,
       warnings: [],
-    })
+    }
+    const previewDelete = vi.spyOn(skillApiV2, 'previewDeleteCenterSkills').mockResolvedValue(preview)
     const executeDelete = vi.spyOn(skillApiV2, 'executeDeleteCenterSkills').mockResolvedValue(undefined)
 
     const { SkillLibraryPage } = await import('../components/skills-v2/SkillLibraryPage')
@@ -466,11 +473,21 @@ describe('Skill library view mode (no Agent matrix)', () => {
     fireEvent.click(screen.getByRole('button', { name: /^删除 2 个 Skill$/ }))
 
     expect(await screen.findByRole('heading', { name: '批量删除 2 个 Skill' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '删除但保留Agent副本' }))
+    const confirm = screen.getByRole('button', { name: '删除但保留Agent副本' })
+    expect(previewDelete).toHaveBeenCalledWith(['release-checklist', 'db-debug'], environmentId)
+    if (switchRuntime) {
+      act(() => {
+        selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+        selectEnvironment(environmentId)
+      })
+      expect(confirm).not.toBeInTheDocument()
+      expect(executeDelete).not.toHaveBeenCalled()
+      return
+    }
+    fireEvent.click(confirm)
 
     await waitFor(() => {
-      expect(previewDelete).toHaveBeenCalledWith(['release-checklist', 'db-debug'])
-      expect(executeDelete).toHaveBeenCalledWith(['release-checklist', 'db-debug'], false)
+      expect(executeDelete).toHaveBeenCalledWith(['release-checklist', 'db-debug'], false, environmentId, preview)
     })
   })
 
@@ -9585,16 +9602,17 @@ describe('Skill detail slider + agent page render without crashing', () => {
     act(() => useSkillStoreV2.setState({ packs }))
     vi.mocked(skillApiV2.overview).mockResolvedValue({ ...overview, packs })
     vi.mocked(skillApiV2.getPackDetail).mockImplementation(async (id) => id === other.id ? other : pack)
-    vi.spyOn(skillApiV2, 'previewRemoveSkillFromPack').mockResolvedValue({
+    const preview = {
       packId: pack.id, packName: pack.name, skillId: skill.id, skillName: skill.name,
       affectedTargets: [], appliedAgentCount: 0, canKeepStandalone: true, canRemoveTargets: true,
-    })
+    }
+    vi.spyOn(skillApiV2, 'previewRemoveSkillFromPack').mockResolvedValue(preview)
     let finishRemoval!: () => void
     const pending = new Promise<void>((resolve) => { finishRemoval = resolve })
     const remove = vi.spyOn(skillApiV2, 'removeSkillFromPack').mockReturnValue(pending)
     fireEvent.click(screen.getByRole('button', { name: '移除' }))
     fireEvent.click(await screen.findByRole('button', { name: switchRuntime ? '同步从 Agent 移除' : '保留为直接分发' }))
-    expect(remove).toHaveBeenCalledWith(pack.id, skill.id, switchRuntime, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(remove).toHaveBeenCalledWith(pack.id, skill.id, switchRuntime, LOCAL_RUNTIME_ENVIRONMENT_ID, preview)
 
     if (switchRuntime) {
       const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
@@ -9612,7 +9630,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('button', { name: '保留为直接分发' })).not.toBeInTheDocument()
   })
 
-  it('refreshes the selected agent detail after revoking a pack from the pack workspace', async () => {
+  it('forwards the SSH Pack removal review and refreshes the selected Agent', async () => {
+    const environmentId = 'claude-ssh-host'
+    useRuntimeEnvironmentStore.getState().selectEnvironment(environmentId)
     const appliedPack = { packId: 'default', packName: '全量技能包', memberCount: 1, agentId: 'claude-code', displayName: 'Claude Code' }
     const defaultPack: SkillPackDetail = {
       id: 'default',
@@ -9635,16 +9655,18 @@ describe('Skill detail slider + agent page render without crashing', () => {
       ],
     }
     vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
-    vi.spyOn(skillApiV2, 'previewRemovePackFromAgent').mockResolvedValue({
+    const preview = {
       packId: 'default',
       packName: '全量技能包',
       agentId: 'claude-code',
       displayName: 'Claude Code',
+      targetScope: 'claude-code@profile-scope',
       affectedTargets: [],
       willRemoveTargets: 1,
       willPreserveTargets: 0,
-    })
-    vi.spyOn(skillApiV2, 'removePackFromAgent').mockResolvedValue({
+    }
+    vi.spyOn(skillApiV2, 'previewRemovePackFromAgent').mockResolvedValue(preview)
+    const removePack = vi.spyOn(skillApiV2, 'removePackFromAgent').mockResolvedValue({
       packId: 'default',
       agentId: 'claude-code',
       removedClaims: 1,
@@ -9656,6 +9678,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       useSkillStoreV2.setState({ selectedAgentDetail: refreshedAgent })
     })
     useSkillStoreV2.setState({
+      runtimeEnvironmentId: environmentId,
       packs: [
         { id: 'default', name: '全量技能包', description: defaultPack.description, tags: [], memberCount: 1, appliedAgentCount: 1, healthy: true },
       ],
@@ -9676,6 +9699,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(await screen.findByRole('button', { name: '撤销技能包' }))
 
     await waitFor(() => expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true))
+    expect(removePack).toHaveBeenCalledWith('default', 'claude-code', environmentId, preview)
     expect(useSkillStoreV2.getState().selectedAgentDetail?.appliedPacks).toEqual([])
   })
 
@@ -9769,7 +9793,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(loadOverview).toHaveBeenCalledWith(true)
   })
 
-  it('removes an applied pack from the Agent Skills tab without a preview round trip', async () => {
+  it.each([LOCAL_RUNTIME_ENVIRONMENT_ID, 'claude-ssh-host'])('removes an applied pack on %s without another preview', async (environmentId) => {
+    useRuntimeEnvironmentStore.getState().selectEnvironment(environmentId)
+    const targetScope = environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID ? undefined : 'claude-code@profile-scope'
     const previewRemove = vi.spyOn(skillApiV2, 'previewRemovePackFromAgent')
     const removePack = vi.spyOn(skillApiV2, 'removePackFromAgent').mockResolvedValue({
       packId: 'default',
@@ -9781,8 +9807,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
     const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
     useSkillStoreV2.setState({
+      runtimeEnvironmentId: environmentId,
       selectedAgentDetail: {
         ...agentDetail,
+        targetScope,
         appliedPacks: [
           { packId: 'default', packName: '全量技能包', memberCount: 73, agentId: 'claude-code', displayName: 'Claude Code' },
         ],
@@ -9797,7 +9825,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByText('Skills (2)'))
     fireEvent.click(screen.getByRole('button', { name: '取消应用 全量技能包' }))
 
-    await waitFor(() => expect(removePack).toHaveBeenCalledWith('default', 'claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
+    await waitFor(() => expect(removePack).toHaveBeenCalledWith('default', 'claude-code', environmentId, targetScope ? { targetScope } : undefined))
     expect(previewRemove).not.toHaveBeenCalled()
     expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
     expect(loadOverview).toHaveBeenCalledWith(true)

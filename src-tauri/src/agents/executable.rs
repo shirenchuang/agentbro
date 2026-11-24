@@ -141,15 +141,53 @@ pub fn codex_desktop_app_candidates() -> Vec<PathBuf> {
 
 #[cfg(target_os = "windows")]
 pub fn codex_desktop_app_user_model_ids() -> Vec<String> {
-    let mut candidates = vec!["OpenAI.Codex_2p2nqsd0c76g0!App".to_string()];
+    let mut candidates = vec!["OpenAI.Codex_2p2nqsd0c76g0".to_string()];
 
     for program_files in ["ProgramFiles", "ProgramW6432"] {
         if let Some(root) = std::env::var_os(program_files).map(PathBuf::from) {
-            candidates.extend(windows_codex_app_user_model_ids(&root.join("WindowsApps")));
+            candidates.extend(windows_codex_package_families(&root.join("WindowsApps")));
         }
     }
 
-    dedupe_strings(candidates)
+    registered_codex_app_ids(candidates, windows_package_registered)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn registered_codex_app_ids(
+    package_families: Vec<String>,
+    is_registered: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    dedupe_strings(package_families)
+        .into_iter()
+        .filter(|family| is_registered(family))
+        .map(|family| format!("{family}!App"))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_package_registered(package_family: &str) -> bool {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+    use windows_sys::Win32::Storage::Packaging::Appx::{
+        FindPackagesByPackageFamily, PACKAGE_FILTER_HEAD,
+    };
+
+    let family = package_family.encode_utf16().chain([0]).collect::<Vec<_>>();
+    let mut count = 0;
+    let mut buffer_len = 0;
+    // A size-only query returns the count of main packages registered for this user.
+    let status = unsafe {
+        FindPackagesByPackageFamily(
+            family.as_ptr(),
+            PACKAGE_FILTER_HEAD,
+            &mut count,
+            null_mut(),
+            &mut buffer_len,
+            null_mut(),
+            null_mut(),
+        )
+    };
+    matches!(status, ERROR_INSUFFICIENT_BUFFER | ERROR_SUCCESS) && count > 0
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -323,7 +361,7 @@ fn windows_codex_bundled_cli_candidates() -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_codex_app_user_model_ids(windows_apps_dir: &Path) -> Vec<String> {
+fn windows_codex_package_families(windows_apps_dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(windows_apps_dir) else {
         return Vec::new();
     };
@@ -334,7 +372,7 @@ fn windows_codex_app_user_model_ids(windows_apps_dir: &Path) -> Vec<String> {
         .filter(|name| name.to_ascii_lowercase().starts_with("openai.codex_"))
         .filter_map(|name| {
             let publisher_id = name.rsplit_once("__")?.1;
-            Some(format!("OpenAI.Codex_{publisher_id}!App"))
+            Some(format!("OpenAI.Codex_{publisher_id}"))
         })
         .collect()
 }
@@ -610,7 +648,7 @@ fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn dedupe_strings(values: Vec<String>) -> Vec<String> {
     let mut seen = BTreeSet::new();
     values
@@ -621,6 +659,69 @@ fn dedupe_strings(values: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_store_candidates_require_current_user_registration() {
+        let known = "OpenAI.Codex_2p2nqsd0c76g0";
+        let alternative = "OpenAI.Codex_abcd1234efghi";
+        let candidates = vec![
+            known.to_string(),
+            alternative.to_string(),
+            alternative.to_ascii_lowercase(),
+        ];
+        assert!(super::registered_codex_app_ids(candidates.clone(), |_| false).is_empty());
+        assert_eq!(
+            super::registered_codex_app_ids(candidates, |family| family == alternative),
+            [format!("{alternative}!App")]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_codex_discovery_matches_current_user_packages() {
+        let powershell = super::command_path("powershell");
+        let output = crate::platform::process::background_command(powershell)
+            .args([
+                "-NoProfile", "-NonInteractive", "-Command",
+                "$ErrorActionPreference = 'Stop'; Get-AppxPackage -PackageTypeFilter Main | Select-Object -ExpandProperty PackageFamilyName",
+            ])
+            .output()
+            .expect("read the current user's Windows packages");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let installed: Vec<_> = listing
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        if let Some(family) = installed.first() {
+            assert!(super::windows_package_registered(family), "{family}");
+        }
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            assert!(
+                !installed.is_empty(),
+                "the hosted Windows runner should have a registered system package"
+            );
+        }
+        assert!(!super::windows_package_registered(
+            "AgentBro.DoesNotExist_2p2nqsd0c76g0"
+        ));
+
+        let codex = "OpenAI.Codex_2p2nqsd0c76g0";
+        let model_ids = super::codex_desktop_app_user_model_ids();
+        assert_eq!(
+            model_ids
+                .iter()
+                .any(|id| id.eq_ignore_ascii_case(&format!("{codex}!App"))),
+            installed
+                .iter()
+                .any(|family| family.eq_ignore_ascii_case(codex))
+        );
+    }
+
     #[cfg(any(unix, target_os = "windows"))]
     #[test]
     fn agent_package_shell_respects_inherited_path_precedence() {

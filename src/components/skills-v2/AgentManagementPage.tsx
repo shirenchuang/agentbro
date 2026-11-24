@@ -358,7 +358,8 @@ export function AgentManagementPage() {
     setNotice(null)
     state.setError(null)
     try {
-      await skillApiV2.removePackFromAgent(packId, agentId, runtimeSelection.environmentId)
+      const targetScope = detail?.id === agentId ? detail.targetScope : undefined
+      await skillApiV2.removePackFromAgent(packId, agentId, runtimeSelection.environmentId, targetScope ? { targetScope } : undefined)
       await finishPackAction(runtimeSelection, agentId, '技能包已取消应用')
     } catch (e) {
       if (isAgentRuntimeSelection(runtimeSelection)) state.setError(String(e))

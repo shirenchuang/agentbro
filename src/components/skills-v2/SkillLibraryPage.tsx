@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { filteredSkills, useSkillStoreV2 } from '../../stores/skillStoreV2'
+import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { SkillSummary, SkillPackSummary, DeleteCenterSkillPreview } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
@@ -23,6 +24,12 @@ type FilterSelectOption = {
   value: string
   label: string
 }
+type DeleteRuntime = Pick<ReturnType<typeof useRuntimeEnvironmentStore.getState>, 'selectedEnvironmentId' | 'selectionRevision'>
+
+function isDeleteRuntimeCurrent(runtime: DeleteRuntime) {
+  const current = useRuntimeEnvironmentStore.getState()
+  return current.selectedEnvironmentId === runtime.selectedEnvironmentId && current.selectionRevision === runtime.selectionRevision
+}
 
 export function SkillLibraryPage() {
   const { t } = useTranslation()
@@ -35,7 +42,11 @@ export function SkillLibraryPage() {
   const [batchMode, setBatchMode] = useState(false)
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set())
   const [sliderSkillId, setSliderSkillId] = useState<string | null>(null)
-  const [deletePreview, setDeletePreview] = useState<DeleteCenterSkillPreview | null>(null)
+  const runtimeId = useRuntimeEnvironmentStore((current) => current.selectedEnvironmentId)
+  const selectionRevision = useRuntimeEnvironmentStore((current) => current.selectionRevision)
+  const [deleteReview, setDeleteReview] = useState<{ preview: DeleteCenterSkillPreview; runtime: DeleteRuntime } | null>(null)
+  const deletePreview = deleteReview?.runtime.selectedEnvironmentId === runtimeId
+    && deleteReview.runtime.selectionRevision === selectionRevision ? deleteReview.preview : null
   const [packFilter, setPackFilter] = useState('')
   const [packMembersById, setPackMembersById] = useState<Record<string, string[]>>({})
   const [packMembershipsLoading, setPackMembershipsLoading] = useState(false)
@@ -186,47 +197,41 @@ export function SkillLibraryPage() {
     setDistributeFor(selectedSkills)
   }
 
-  const openBatchDelete = async () => {
-    if (selectedSkills.length === 0) return
+  const openDelete = async (skillIds: string[]) => {
+    if (skillIds.length === 0 || busy) return
+    const runtime = { selectedEnvironmentId: runtimeId, selectionRevision }
     setBusy(true)
     try {
-      const p = await skillApiV2.previewDeleteCenterSkills(selectedSkills.map((skill) => skill.id))
-      setDeletePreview(p)
+      const preview = skillIds.length > 1
+        ? await skillApiV2.previewDeleteCenterSkills(skillIds, runtimeId)
+        : await skillApiV2.previewDeleteCenterSkill(skillIds[0], runtimeId)
+      if (isDeleteRuntimeCurrent(runtime)) setDeleteReview({ preview, runtime })
     } catch (e) {
-      state.setError(String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const openDelete = async (skillId: string) => {
-    setBusy(true)
-    try {
-      const p = await skillApiV2.previewDeleteCenterSkill(skillId)
-      setDeletePreview(p)
-    } catch (e) {
-      state.setError(String(e))
+      if (isDeleteRuntimeCurrent(runtime)) state.setError(String(e))
     } finally {
       setBusy(false)
     }
   }
 
   const confirmDelete = async (removeLinked: boolean) => {
-    if (!deletePreview) return
+    if (!deletePreview || !deleteReview || busy || !isDeleteRuntimeCurrent(deleteReview.runtime)) return
+    const { runtime } = deleteReview
+    const environmentId = runtime.selectedEnvironmentId
     const skillIds = deletePreviewSkillIds(deletePreview)
     setBusy(true)
     try {
       if (skillIds.length > 1) {
-        await skillApiV2.executeDeleteCenterSkills(skillIds, removeLinked)
+        await skillApiV2.executeDeleteCenterSkills(skillIds, removeLinked, environmentId, deletePreview)
       } else {
-        await skillApiV2.executeDeleteCenterSkill(skillIds[0] ?? deletePreview.skillId, removeLinked)
+        await skillApiV2.executeDeleteCenterSkill(skillIds[0] ?? deletePreview.skillId, removeLinked, environmentId, deletePreview)
       }
-      setDeletePreview(null)
+      if (!isDeleteRuntimeCurrent(runtime)) return
+      setDeleteReview(null)
       setSliderSkillId(null)
       setSelectedSkillIds(new Set())
       await state.loadOverview(true)
     } catch (e) {
-      state.setError(String(e))
+      if (isDeleteRuntimeCurrent(runtime)) state.setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -314,7 +319,7 @@ export function SkillLibraryPage() {
             <button className="sm2__btn sm2__btn--primary" onClick={openBatchDistribute} disabled={selectedSkillIds.size === 0}>
               分发 {selectedSkillIds.size} 个 Skill
             </button>
-            <button className="sm2__btn sm2__btn--danger" onClick={openBatchDelete} disabled={selectedSkillIds.size === 0 || busy}>
+            <button className="sm2__btn sm2__btn--danger" onClick={() => void openDelete(selectedSkills.map((skill) => skill.id))} disabled={selectedSkillIds.size === 0 || busy}>
               删除 {selectedSkillIds.size} 个 Skill
             </button>
           </div>
@@ -397,7 +402,7 @@ export function SkillLibraryPage() {
         open={!!sliderSkillId}
         onClose={() => setSliderSkillId(null)}
         onDistribute={(s) => setDistributeFor([s])}
-        onDelete={openDelete}
+        onDelete={(skillId) => void openDelete([skillId])}
       />
 
       {distributeFor && state.settings && (
@@ -426,11 +431,11 @@ export function SkillLibraryPage() {
           modalClassName="sm2__modal--delete-skill"
           destructive
           busy={busy}
-          onCancel={() => setDeletePreview(null)}
+          onCancel={() => setDeleteReview(null)}
           onConfirm={() => confirmDelete(false)}
           actions={(
             <>
-              <button className="sm2__btn" onClick={() => setDeletePreview(null)} disabled={busy}>
+              <button className="sm2__btn" onClick={() => setDeleteReview(null)} disabled={busy}>
                 {t('skills.cancel')}
               </button>
               <button

@@ -150,6 +150,7 @@ it('opens the notification session list once per keyboard or pointer activation'
 describe('NotchPanel island shell', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useSessionStore.setState({ acknowledgedInteractionIds: new Map() })
     tauriMocks.getChatHistory.mockResolvedValue([])
     tauriMocks.isTerminalFocused.mockResolvedValue(false)
     tauriMocks.jumpToTerminal.mockResolvedValue(undefined)
@@ -1765,10 +1766,12 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(useSessionStore.getState().panelState).toBe('hover'))
 
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'hover')
-    expect(document.querySelector('.notch-panel__alert-content')).not.toBeInTheDocument()
-    expect(document.querySelector('.hover-list')).toBeInTheDocument()
-    expect(screen.getByText('agentbro · Port dynamic island')).toBeInTheDocument()
-    expect(document.querySelector('.hover-list__inline-perm')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(document.querySelector('.notch-panel__alert-content')).not.toBeInTheDocument()
+      expect(document.querySelector('.hover-list')).toBeInTheDocument()
+      expect(screen.getByText('agentbro · Port dynamic island')).toBeInTheDocument()
+      expect(document.querySelector('.hover-list__inline-perm')).toBeInTheDocument()
+    })
   })
 
   it('keeps suppressed blocking overlays queued without auto-expanding the island', async () => {
@@ -1935,11 +1938,13 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingQuestion).toEqual(first)
 
     const second = { ...first, toolUseId: 'second', options: ['Ship it', 'Pause here'] }
+    const stale = useSessionStore.getState().sessions.s1
     act(() => {
       const state = useSessionStore.getState()
       state.replaceAllSessions([{ ...state.sessions.s1, pendingQuestion: second }])
     })
     await act(async () => sent.resolve())
+    act(() => useSessionStore.getState().replaceAllSessions([stale]))
     expect(useSessionStore.getState().sessions.s1.pendingQuestion).toEqual(second)
     expect(useSessionStore.getState().activeOverlay?.data).toEqual(second)
 
@@ -2203,11 +2208,13 @@ describe('NotchPanel island shell', () => {
     expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'acceptEdits', undefined, 'first-plan')
 
     const replacement = { ...first, planRequestId: 'replacement-plan' }
+    const stale = useSessionStore.getState().sessions.s1
     act(() => {
       const state = useSessionStore.getState()
       state.replaceAllSessions([{ ...state.sessions.s1, ...replacement }])
     })
     await act(async () => sending.resolve())
+    act(() => useSessionStore.getState().replaceAllSessions([stale]))
 
     expect(useSessionStore.getState().sessions.s1.planRequestId).toBe('replacement-plan')
     expect(useSessionStore.getState().activeOverlay?.data).toMatchObject(replacement)
