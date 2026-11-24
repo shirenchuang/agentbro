@@ -123,7 +123,7 @@ If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Doubao, Qoder, OpenCode
 - Over SSH, list and inspect stdio and HTTP MCP servers from the remote Codex TOML configuration. Reading the file requires Python 3.11 or later, or an existing `tomli` installation on older Python. Credentials are read and used on the SSH host.
 - Browse plugins for Codex, Claude Code, WorkBuddy, ZCode, Kimi, and other supported agents. Search, enable or disable supported plugins, inspect manifests and packaged capabilities, and preview files.
 - Edit supported JSON or text config files with validation. The Projects view imports repositories and checks project-level instructions, skills, MCP servers, and plugins.
-- Preview skills.sh project lock files and select missing GitHub Skills to restore to the project's .agents/skills directory. Restoration verifies the v2 content hash and preserves existing entries. [skills.sh lock format](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
+- Preview skills.sh project lock files and restore missing Skills from GitHub, HTTPS Git repositories such as GitLab, or installed npm dependencies. AgentBro verifies the v2 content hash and preserves existing entries in `.agents/skills`. [skills.sh lock format](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
 
 <table>
   <tr>
