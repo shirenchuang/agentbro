@@ -7,5 +7,7 @@ pub mod monitor_tracker;
 pub mod notifications;
 pub mod process;
 #[cfg(target_os = "windows")]
+pub(crate) mod windows_environment;
+#[cfg(target_os = "windows")]
 pub(crate) mod windows_shell;
 pub mod wsl;
