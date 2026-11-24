@@ -2,13 +2,16 @@
 
 ## English
 
-AgentBro v{{VERSION}} fixes Windows Codex Desktop jumps, keeps answered Island prompts closed, and respects custom Claude Code profiles over SSH.
+AgentBro v{{VERSION}} adds the standalone Qoder desktop app and improves Island shortcuts, Agent Management, and Windows discovery.
 
 ### Highlights
 
-- **Open Codex Desktop sessions more reliably on Windows.** AgentBro checks the desktop package registered for the current user and recognizes supported standalone installs. A session jump can fall back to an available launcher when Windows cannot open the thread link. [#551](https://github.com/shirenchuang/agentbro/pull/551)
-- **Keep answered questions and plan approvals closed in the Island.** Once a response is accepted, a delayed session update can no longer reopen that prompt or replace a newer one. This also applies after responding through a keyboard shortcut or another AgentBro window. [#553](https://github.com/shirenchuang/agentbro/pull/553)
-- **Use the active Claude Code profile on SSH hosts.** Skill discovery, distribution, and plugin settings follow `CLAUDE_CONFIG_DIR` from the remote login shell. Each profile keeps its own Skill Pack assignments. Pack and library operations recheck the reviewed targets if the profile changes before confirmation. [#549](https://github.com/shirenchuang/agentbro/pull/549)
+- **Qoder Desktop in Agent Management and the Island.** AgentBro discovers Qoder Desktop, Qoder IDE, and Qoder CLI separately on macOS and Windows. In Qoder Desktop, the Hook reports live task activity and lets you allow once or deny eligible requests in the Island. [#562](https://github.com/shirenchuang/agentbro/pull/562)
+- **Qoder CLI sessions and one-time approvals.** The CLI Hook follows session switches and exits, returns one-time decisions, and can be repaired without removing the other Qoder apps' Hooks. Hooks and Skills follow the CLI's custom user configuration directory. [#568](https://github.com/shirenchuang/agentbro/pull/568) · [#570](https://github.com/shirenchuang/agentbro/pull/570)
+- **Island shortcuts follow the request you see.** The shortcuts act once per key press, use the visible prompt when the Island is open, and pick the latest pending request when the Island is collapsed. Skip opens structured questions so you can review and answer them. [#574](https://github.com/shirenchuang/agentbro/pull/574) · [#576](https://github.com/shirenchuang/agentbro/pull/576) · [#578](https://github.com/shirenchuang/agentbro/pull/578) · [#580](https://github.com/shirenchuang/agentbro/pull/580)
+- **Agent cleanup protects shared resources.** AgentBro checks that an uninstall succeeded before removing Hooks and Skills, preserves Skills shared by other Agents, and refreshes Hook actions after cleanup. [#558](https://github.com/shirenchuang/agentbro/pull/558) · [#564](https://github.com/shirenchuang/agentbro/pull/564) · [#566](https://github.com/shirenchuang/agentbro/pull/566)
+- **Windows detects CLI installs after a refresh.** Agent Management uses current saved Windows PATH entries when scanning for agents, including installs made since AgentBro opened. [#572](https://github.com/shirenchuang/agentbro/pull/572)
+- **Claude Code Hooks follow the active profile over SSH.** AgentBro checks, installs, and removes Hooks in the directory selected by the remote login shell's `CLAUDE_CONFIG_DIR`. [#561](https://github.com/shirenchuang/agentbro/pull/561)
 
 ### Install and update
 
@@ -24,17 +27,20 @@ AgentBro v{{VERSION}} fixes Windows Codex Desktop jumps, keeps answered Island p
 ### Notes
 
 - The Windows installers are x64 and may show a SmartScreen prompt. Intermittent startup and Island accessibility reports are tracked in [#194](https://github.com/shirenchuang/agentbro/issues/194) and [#351](https://github.com/shirenchuang/agentbro/issues/351).
-- [Full changes since v3.5.0](https://github.com/shirenchuang/agentbro/compare/v3.5.0...v{{VERSION}})
+- [Full changes since v3.5.1](https://github.com/shirenchuang/agentbro/compare/v3.5.1...v{{VERSION}})
 
 ## 中文
 
-AgentBro v{{VERSION}} 修复了 Windows 上的 Codex 桌面版会话跳转和灵动岛提示重复弹出的问题，并支持 SSH 主机上的 Claude Code 自定义配置目录。
+AgentBro v{{VERSION}} 新增独立 Qoder 桌面版接入，并改进了灵动岛快捷键、Agent 管理和 Windows 上的安装检测。
 
 ### 重点更新
 
-- **Windows 上更可靠地打开 Codex 桌面版会话。** AgentBro 会检查当前用户注册的桌面应用包，也能识别受支持的独立安装。Windows 无法打开会话链接时，可以改用可用的启动程序打开 Codex。[#551](https://github.com/shirenchuang/agentbro/pull/551)
-- **灵动岛已处理的问题和计划审批保持关闭。** 回复被接收后，延迟的会话更新不会让同一条提示重新弹出，也不会挤掉更新的提示。通过快捷键或 AgentBro 的其他窗口回复时同样生效。[#553](https://github.com/shirenchuang/agentbro/pull/553)
-- **SSH 主机使用 Claude Code 当前配置目录。** 技能发现、分发和插件设置遵循远程登录 Shell 中的 `CLAUDE_CONFIG_DIR`。不同配置各自记录已应用的技能包。如果在确认前切换了配置，技能包和技能库操作会重新核对预览时的目标。[#549](https://github.com/shirenchuang/agentbro/pull/549)
+- **Agent 管理和灵动岛支持 Qoder 桌面版。** 在 macOS 和 Windows 上分别识别 Qoder 桌面版、Qoder IDE 和 Qoder CLI。桌面版安装 Hook 后，灵动岛会显示实时任务状态，并能对支持的审批请求选择「允许一次」或「拒绝」。[#562](https://github.com/shirenchuang/agentbro/pull/562)
+- **Qoder CLI 会话和单次审批。** Hook 会跟踪会话切换和退出，回传单次审批结果。修复 CLI Hook 时会保留其他 Qoder 应用的 Hook。Hook 和技能都遵循 CLI 的自定义用户配置目录。[#568](https://github.com/shirenchuang/agentbro/pull/568) · [#570](https://github.com/shirenchuang/agentbro/pull/570)
+- **灵动岛快捷键跟随当前请求。** 每次按键只处理一次。灵动岛展开时操作当前显示的请求，收起时选取最近到达的待处理请求。「跳过」遇到结构化问题会打开问题卡片，让你查看并作答。[#574](https://github.com/shirenchuang/agentbro/pull/574) · [#576](https://github.com/shirenchuang/agentbro/pull/576) · [#578](https://github.com/shirenchuang/agentbro/pull/578) · [#580](https://github.com/shirenchuang/agentbro/pull/580)
+- **清理 Agent 时保留共享资源。** AgentBro 确认卸载成功后才会移除 Hook 和技能，保留其他 Agent 共用的技能，并在清理后刷新 Hook 操作状态。[#558](https://github.com/shirenchuang/agentbro/pull/558) · [#564](https://github.com/shirenchuang/agentbro/pull/564) · [#566](https://github.com/shirenchuang/agentbro/pull/566)
+- **Windows 刷新后可识别新安装的 CLI。** Agent 管理扫描时会读取 Windows 当前保存的 PATH，也能发现 AgentBro 启动后安装的程序。[#572](https://github.com/shirenchuang/agentbro/pull/572)
+- **SSH 上的 Claude Code Hook 跟随当前配置。** AgentBro 在远程登录 Shell 的 `CLAUDE_CONFIG_DIR` 指定的目录中检查、安装和移除 Hook。[#561](https://github.com/shirenchuang/agentbro/pull/561)
 
 ### 安装与更新
 
@@ -50,4 +56,4 @@ AgentBro v{{VERSION}} 修复了 Windows 上的 Codex 桌面版会话跳转和灵
 ### 说明
 
 - Windows 安装包为 x64，可能出现 SmartScreen 提示。偶发启动和灵动岛无障碍问题在 [#194](https://github.com/shirenchuang/agentbro/issues/194) 和 [#351](https://github.com/shirenchuang/agentbro/issues/351) 中跟踪。
-- [自 v3.5.0 以来的完整改动](https://github.com/shirenchuang/agentbro/compare/v3.5.0...v{{VERSION}})
+- [自 v3.5.1 以来的完整改动](https://github.com/shirenchuang/agentbro/compare/v3.5.1...v{{VERSION}})
