@@ -294,7 +294,7 @@
     "shortcutDeny": "현재 권한 요청 거부",
     "shortcutDenyDesc": "가장 오래 대기 중인 권한 요청에 거부 응답을 보냅니다",
     "shortcutSkip": "현재 질문 건너뛰기",
-    "shortcutSkipDesc": "가장 오래 대기 중인 질문의 첫 번째 답변을 선택합니다",
+    "shortcutSkipDesc": "가장 오래 대기 중인 질문이 단일 선택형이면 첫 번째 옵션을 선택합니다. 다른 질문은 아일랜드를 열어 직접 답변합니다.",
     "inWindowShortcuts": "창 내부 단축키",
     "pressKeys": "키를 누르세요...",
     "cancel": "취소",

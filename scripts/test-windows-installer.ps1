@@ -380,6 +380,8 @@ if ($VerifyGlobalShortcuts) {
         globalShortcut = 'Control+Alt+F8'
         shortcutDeny = 'Control+Alt+F9'
         shortcutDenyEnabled = $true
+        shortcutSkip = 'Control+Alt+F10'
+        shortcutSkipEnabled = $true
     } | ConvertTo-Json | Set-Content -LiteralPath $shortcutConfigPath -Encoding utf8
 }
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'

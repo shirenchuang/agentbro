@@ -599,29 +599,33 @@ function Test-KeyboardPermissionDenial(
     }
 }
 
-function Open-GlobalPermissionFixture([string]$Label, [string]$TargetSession) {
+function Open-GlobalHookFixture([hashtable]$Event) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
         $stream = $connection.GetStream()
-        $command = "echo AgentBro global shortcut $Label"
-        $event = @{
-            agent = 'claude-code'
-            event = 'PermissionRequest'
-            session_id = $TargetSession
-            cwd = $Workspace
-            tool_name = 'Bash'
-            tool_use_id = "global-denial-$Label"
-            tool_input = @{ command = $command }
-        }
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes(($event | ConvertTo-Json -Compress) + "`n")
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes(($Event | ConvertTo-Json -Depth 8 -Compress) + "`n")
         $stream.Write($bytes, 0, $bytes.Length)
         $reader = [System.IO.StreamReader]::new($stream)
-        [PSCustomObject]@{ Connection = $connection; Reply = $reader.ReadLineAsync(); Command = $command }
+        [PSCustomObject]@{ Connection = $connection; Reply = $reader.ReadLineAsync() }
     } catch {
         $connection.Dispose()
         throw
     }
+}
+
+function Open-GlobalPermissionFixture([string]$Label, [string]$TargetSession) {
+    $command = "echo AgentBro global shortcut $Label"
+    $fixture = Open-GlobalHookFixture @{
+        agent = 'claude-code'
+        event = 'PermissionRequest'
+        session_id = $TargetSession
+        cwd = $Workspace
+        tool_name = 'Bash'
+        tool_use_id = "global-denial-$Label"
+        tool_input = @{ command = $command }
+    }
+    $fixture | Add-Member -NotePropertyName Command -NotePropertyValue $command -PassThru
 }
 
 function Test-InstalledGlobalShortcuts([IntPtr]$WindowHandle) {
@@ -703,6 +707,77 @@ function Test-InstalledGlobalShortcuts([IntPtr]$WindowHandle) {
         }
     }
     Write-Output 'Ctrl+Alt+F8 hid and showed the native Island on separate presses. Both releases preserved visibility.'
+}
+
+function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
+    $event = @{
+        agent = 'claude-code'
+        event = 'AskQuestion'
+        session_id = $SessionId
+        cwd = $Workspace
+        question = 'Pick a single answer for the global shortcut'
+        options = @('Suggested answer', 'Alternative answer')
+    }
+    $simple = Open-GlobalHookFixture $event
+    try {
+        $null = Wait-IslandValue 'the single-choice question' {
+            $island = Find-VisibleIsland
+            $island -and (Test-PackVisibleText $island.Element $event.question)
+        }
+        try { [AgentBroSmokeInput]::SetGlobalShortcutKey(0x79, $true) }
+        finally { [AgentBroSmokeInput]::SetGlobalShortcutKey(0x79, $false) }
+        if (-not $simple.Reply.Wait(8000)) { throw 'The global shortcut did not answer the single-choice Hook' }
+        $response = $simple.Reply.GetAwaiter().GetResult() | ConvertFrom-Json
+        if ($response.answer -ne 'Suggested answer') { throw 'The global shortcut chose the wrong single-choice answer' }
+        Write-Output 'Ctrl+Alt+F10 returned the first option to the original single-choice Hook.'
+    } finally {
+        $simple.Connection.Dispose()
+    }
+
+    $event.question = 'Pick a region?'
+    $event.options = @('Preview region', 'Production region')
+    $event.questions = @(
+        @{ question = 'Pick a region?'; options = @(@{ label = 'Preview region' }, @{ label = 'Production region' }) },
+        @{ question = 'Pick an output?'; options = @(@{ label = 'Summary output' }, @{ label = 'Detailed output' }) }
+    )
+    $multipart = Open-GlobalHookFixture $event
+    try {
+        $null = Wait-IslandValue 'both parts of the multipart question' {
+            $island = Find-VisibleIsland
+            $island -and (Test-PackVisibleText $island.Element 'Pick an output?')
+        }
+        try { [AgentBroSmokeInput]::SetGlobalShortcutKey(0x77, $true) }
+        finally { [AgentBroSmokeInput]::SetGlobalShortcutKey(0x77, $false) }
+        $null = Wait-IslandValue 'the native Island hidden before the global question shortcut' {
+            -not [AgentBroSmokeInput]::IsWindowVisible($WindowHandle)
+        }
+        try { [AgentBroSmokeInput]::SetGlobalShortcutKey(0x79, $true) }
+        finally { [AgentBroSmokeInput]::SetGlobalShortcutKey(0x79, $false) }
+        if ($multipart.Reply.Wait(600)) {
+            throw "The global shortcut completed the multipart Hook: $($multipart.Reply.GetAwaiter().GetResult())"
+        }
+        $null = Wait-IslandValue 'the Island reopened with the unresolved multipart question' {
+            $island = Find-VisibleIsland
+            $island -and (Test-PackVisibleText $island.Element 'Pick an output?')
+        }
+        Write-Output 'Ctrl+Alt+F10 reopened the Island and the original multipart Hook stayed pending.'
+
+        foreach ($label in @('Production region', 'Detailed output', 'Submit All')) {
+            Click-IslandElement $null "multipart question control $label" -FindElement {
+                $island = Find-VisibleIsland
+                if ($island) { Find-IslandButton $island.Element { param($Name) $Name.EndsWith($label) } }
+            }
+        }
+        if (-not $multipart.Reply.Wait(8000)) { throw 'The multipart Hook did not receive the manual answer' }
+        $response = $multipart.Reply.GetAwaiter().GetResult() | ConvertFrom-Json
+        $answers = $response.answer | ConvertFrom-Json
+        if ($answers.'Pick a region?' -ne 'Production region' -or $answers.'Pick an output?' -ne 'Detailed output') {
+            throw 'The manual reply did not include both selected answers'
+        }
+        Write-Output 'The original multipart Hook received both manually selected answers.'
+    } finally {
+        $multipart.Connection.Dispose()
+    }
 }
 
 function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Island) {
@@ -1066,6 +1141,7 @@ try {
     }
     if ($VerifyGlobalShortcuts) {
         Test-InstalledGlobalShortcuts $islandWindow.Handle
+        Test-InstalledGlobalQuestionShortcut $islandWindow.Handle
     }
 } catch {
     try {

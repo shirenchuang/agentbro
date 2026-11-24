@@ -282,7 +282,7 @@
     "shortcutDeny": "Geçerli izin isteğini reddet",
     "shortcutDenyDesc": "Bekleyen en eski izin isteğine ret yanıtı gönderir",
     "shortcutSkip": "Geçerli soruyu atla",
-    "shortcutSkipDesc": "Bekleyen en eski soru için ilk yanıtı seçer",
+    "shortcutSkipDesc": "Bekleyen en eski soru tek seçimliyse ilk seçeneği seçer. Diğer soruları elle yanıtlamak için adayı açar.",
     "inWindowShortcuts": "Pencere İçi Kısayollar",
     "pressKeys": "Tuşlara basın...",
     "cancel": "İptal",
