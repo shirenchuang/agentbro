@@ -599,7 +599,7 @@ function Test-KeyboardPermissionDenial(
     }
 }
 
-function Open-GlobalPermissionFixture([string]$Label) {
+function Open-GlobalPermissionFixture([string]$Label, [string]$TargetSession) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
@@ -608,7 +608,7 @@ function Open-GlobalPermissionFixture([string]$Label) {
         $event = @{
             agent = 'claude-code'
             event = 'PermissionRequest'
-            session_id = "$SessionId-global-$Label"
+            session_id = $TargetSession
             cwd = $Workspace
             tool_name = 'Bash'
             tool_use_id = "global-denial-$Label"
@@ -641,17 +641,31 @@ function Test-InstalledGlobalShortcuts([IntPtr]$WindowHandle) {
         $response = $Fixture.Reply.GetAwaiter().GetResult() | ConvertFrom-Json
         if ($response.decision -ne 'deny') { throw "Unexpected global shortcut response: $($response.decision)" }
     }
-    $first = Open-GlobalPermissionFixture 'first'
+    $first = Open-GlobalPermissionFixture 'first' "$SessionId-global-first"
     $second = $null
     try {
         & $waitForPrompt $first
+        $second = Open-GlobalPermissionFixture 'second' $SessionId
+        Click-IslandElement $null 'the global permission queue session list button' -CenterAfterLayout -FindElement {
+            $island = Find-VisibleIsland
+            if ($island) {
+                Find-IslandButton $island.Element {
+                    param($Name)
+                    $Name -eq 'Make agents easier to use' -or $Name -match '^Show all \d+ sessions$'
+                }
+            }
+        }
+        & $waitForPrompt $first
+        & $waitForPrompt $second
+        Write-Output 'Both permission Hooks are waiting. The older session published its request second.'
         try {
             [AgentBroSmokeInput]::SetGlobalShortcutKey(0x78, $true)
+            $replied = [System.Threading.Tasks.Task]::WaitAny(
+                [System.Threading.Tasks.Task[]]@($first.Reply, $second.Reply), 8000)
+            if ($replied -eq 1) { throw 'Global keydown answered the older session instead of the first pending request' }
             & $readDenial $first
-            $second = Open-GlobalPermissionFixture 'second'
-            & $waitForPrompt $second
             if ($second.Reply.Wait(300)) { throw 'Holding the first shortcut replied to the second Hook' }
-            Write-Output 'Global Ctrl+Alt+F9 denied the first Hook on keydown. The second Hook is waiting.'
+            Write-Output 'Global Ctrl+Alt+F9 denied the earliest pending Hook on keydown. The older session is still waiting.'
         } finally {
             [AgentBroSmokeInput]::SetGlobalShortcutKey(0x78, $false)
         }
