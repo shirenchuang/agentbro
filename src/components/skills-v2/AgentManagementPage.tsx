@@ -89,6 +89,7 @@ type AgentActionTarget = AgentRuntimeSelection & {
 }
 type AgentUninstallTarget = AgentActionTarget & {
   program: AgentProgramInfo
+  preservesSharedSkills: boolean
   unmanagedItems: UnmanagedItemDto[]
 }
 
@@ -136,6 +137,17 @@ function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: Ag
     && reviewed.hooksInstalled === current.hooksInstalled
     && reviewed.configDir === current.configDir
     && reviewed.skillsDir === current.skillsDir
+}
+
+function hasSharedSkillsDirectory(program: AgentProgramInfo, programs: AgentProgramInfo[], environmentId: string) {
+  if (!program.skillsDir) return false
+  const windows = environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID && isWindowsPlatform()
+  const normalize = (path: string) => {
+    const normalized = windows ? path.replaceAll('\\', '/').toLowerCase() : path
+    return normalized.replace(/\/+$/, '') || normalized
+  }
+  const root = normalize(program.skillsDir)
+  return programs.some((other) => other.id !== program.id && other.skillsDir && normalize(other.skillsDir) === root)
 }
 
 export function AgentManagementPage() {
@@ -568,12 +580,13 @@ export function AgentManagementPage() {
     const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
     const program = programs[agent.id]
     if (!program || !isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) return
-    const unmanagedItems = removableUnmanagedSkills(useSkillStoreV2.getState().unmanaged, agent.id)
-    setUninstallTarget({ agent, program, unmanagedItems, environmentId: selectedEnvironmentId, selectionRevision })
+    const preservesSharedSkills = hasSharedSkillsDirectory(program, Object.values(programs), selectedEnvironmentId)
+    const unmanagedItems = preservesSharedSkills ? [] : removableUnmanagedSkills(useSkillStoreV2.getState().unmanaged, agent.id)
+    setUninstallTarget({ agent, program, preservesSharedSkills, unmanagedItems, environmentId: selectedEnvironmentId, selectionRevision })
   }
 
   const uninstallAgent = async (target: AgentUninstallTarget) => {
-    const { agent, program, unmanagedItems, environmentId, selectionRevision } = target
+    const { agent, program, preservesSharedSkills, unmanagedItems, environmentId, selectionRevision } = target
     const isCurrent = () => isAgentRuntimeSelection(target)
     if (!isCurrent()) {
       setUninstallTarget(null)
@@ -581,10 +594,12 @@ export function AgentManagementPage() {
     }
 
     const snapshot = useSkillStoreV2.getState().agentProgramSnapshot
-    const currentProgram = snapshot?.environmentId === environmentId && snapshot.selectionRevision === selectionRevision
-      ? snapshot.programs[agent.id]
+    const currentPrograms = snapshot?.environmentId === environmentId && snapshot.selectionRevision === selectionRevision
+      ? snapshot.programs
       : undefined
-    if (!currentProgram || !matchesReviewedUninstallProgram(program, currentProgram)) {
+    const currentProgram = currentPrograms?.[agent.id]
+    if (!currentPrograms || !currentProgram || !matchesReviewedUninstallProgram(program, currentProgram)
+      || hasSharedSkillsDirectory(currentProgram, Object.values(currentPrograms), environmentId) !== preservesSharedSkills) {
       setUninstallTarget(null)
       state.setError(t('skills.agentManagement.uninstallReviewChanged', { agent: agent.displayName }))
       return
@@ -599,6 +614,7 @@ export function AgentManagementPage() {
     try {
       const uninstallProgram = Boolean(program.uninstallCommand && isUninstallProgramPresent(program, environmentId))
       let cleanupBlocked: string | null = null
+      let preserveSkills = preservesSharedSkills
       if (uninstallProgram) {
         try {
           await agentApi.uninstall(agent.id, environmentId)
@@ -613,19 +629,21 @@ export function AgentManagementPage() {
           cleanupBlocked = t('skills.agentManagement.uninstallCommandFailed', { error: skillErrorMessage(t, error) })
         }
         if (cleanupBlocked === null) {
-          const detected = await agentApi.list(environmentId)
-            .then((programs) => programs.find((item) => item.id === agent.id), () => undefined)
+          const detectedPrograms = await agentApi.list(environmentId).catch(() => [])
+          const detected = detectedPrograms.find((item) => item.id === agent.id)
           if (!detected) {
             cleanupBlocked = t('skills.agentManagement.uninstallUnverified', { agent: agent.displayName })
           } else if (isUninstallProgramPresent(detected, environmentId)) {
             cleanupBlocked = t('skills.agentManagement.programStillInstalled', { agent: agent.displayName })
           } else if (detected.configDir !== program.configDir || detected.skillsDir !== program.skillsDir) {
             cleanupBlocked = t('skills.agentManagement.uninstallProfileChanged', { agent: agent.displayName })
+          } else {
+            preserveSkills ||= hasSharedSkillsDirectory(detected, detectedPrograms, environmentId)
           }
         }
       }
 
-      if (cleanupBlocked === null) {
+      if (cleanupBlocked === null && !preserveSkills) {
         const targetIds = agent.skills.map((skill) => skill.id)
         if (targetIds.length > 0) {
           try {
@@ -645,7 +663,9 @@ export function AgentManagementPage() {
             failures.push(`${item.inferredSkillId || item.path}：${skillErrorMessage(t, error)}`)
           }
         }
+      }
 
+      if (cleanupBlocked === null) {
         if (program.hooksInstalled) {
           try {
             await agentApi.uninstallHook(agent.id, environmentId)
@@ -805,19 +825,16 @@ export function AgentManagementPage() {
   const selectedProgram = detail ? programs[detail.id] ?? null : null
   const selectedProgramInstalled = selectedProgram ? isUninstallProgramPresent(selectedProgram, runtimeEnvironmentId) : false
   const canUninstallProgram = Boolean(selectedProgramInstalled && selectedProgram?.uninstallCommand)
-  const selectedUnmanagedItems = detail
-    ? removableUnmanagedSkills(state.unmanaged, detail.id)
-    : []
-  const selectedHasResiduals = Boolean(detail && (
-    detail.skills.length > 0
-    || selectedUnmanagedItems.length > 0
-    || detail.appliedPacks.length > 0
-    || selectedProgram?.hooksInstalled
-  ))
+  const selectedHasPrivateSkills = Boolean(detail && selectedProgram
+    && !hasSharedSkillsDirectory(selectedProgram, Object.values(programs), runtimeEnvironmentId) && (
+      detail.skills.length > 0
+      || removableUnmanagedSkills(state.unmanaged, detail.id).length > 0
+      || detail.appliedPacks.length > 0
+    ))
   const canUninstallSelectedAgent = Boolean(
     selectedProgram
     && !selectedProgram.isCustom
-    && (canUninstallProgram || selectedHasResiduals),
+    && (canUninstallProgram || selectedProgram.hooksInstalled || selectedHasPrivateSkills),
   )
   const uninstallAgentTarget = uninstallTarget && isRuntimeEnvironment(uninstallTarget.environmentId, uninstallTarget.selectionRevision)
     ? uninstallTarget.agent
@@ -965,7 +982,9 @@ export function AgentManagementPage() {
             })}
           </p>
           <p className="sm2-agent-uninstall__intro">
-            {cleanupOnly ? t('skills.agentManagement.cleanupDescription') : '卸载会移除支持自动卸载的程序，并清理该运行环境中 AgentBro 检测到的残留。'}
+            {cleanupOnly
+              ? t(uninstallTarget.preservesSharedSkills ? 'skills.agentManagement.cleanupHookDescription' : 'skills.agentManagement.cleanupDescription')
+              : '卸载会移除支持自动卸载的程序，并清理该运行环境中 AgentBro 检测到的残留。'}
           </p>
           <div className="sm2-agent-uninstall__summary" aria-label="卸载清理范围">
             {uninstallProgramInstalled && uninstallProgram?.uninstallCommand && (
@@ -974,13 +993,13 @@ export function AgentManagementPage() {
             {uninstallProgramInstalled && !uninstallProgram?.uninstallCommand && (
               <div><strong>程序</strong><span>不支持自动卸载，将保留</span></div>
             )}
-            {uninstallAgentTarget.skills.length > 0 && (
+            {!uninstallTarget.preservesSharedSkills && uninstallAgentTarget.skills.length > 0 && (
               <div><strong>{uninstallAgentTarget.skills.length}</strong><span>已管理 Skills</span></div>
             )}
             {uninstallUnmanagedItems.length > 0 && (
               <div className="sm2-agent-uninstall__danger-count"><strong>{uninstallUnmanagedItems.length}</strong><span>未管理 Skills</span></div>
             )}
-            {uninstallAgentTarget.appliedPacks.length > 0 && (
+            {!uninstallTarget.preservesSharedSkills && uninstallAgentTarget.appliedPacks.length > 0 && (
               <div><strong>{uninstallAgentTarget.appliedPacks.length}</strong><span>技能包关联</span></div>
             )}
             {uninstallProgram?.hooksInstalled && (
@@ -994,6 +1013,9 @@ export function AgentManagementPage() {
             <div className="sm2-agent-uninstall__warning">未管理 Skills 会直接删除；若中心库没有副本，删除后无法从 AgentBro 恢复。</div>
           )}
           <div className="sm2-agent-uninstall__preserved">保留：中心技能库、Agent 配置、会话记录、MCP 与插件配置。</div>
+          {uninstallTarget.preservesSharedSkills && (
+            <div className="sm2-agent-uninstall__preserved">{t('skills.agentManagement.cleanupSharedSkills')}</div>
+          )}
           {uninstallProgramInstalled && uninstallProgram?.uninstallCommand && (
             <code className="sm2__command-preview">
               {uninstallProgram.kind === 'app'

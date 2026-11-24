@@ -398,6 +398,56 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     Test-InstalledAgentPackageAcrossSettingsWindows $settings $fixtureLauncher
 }
 
+function Test-InstalledQoderSharedSkillsCleanup([Windows.Automation.AutomationElement]$Settings) {
+    $profileDir = Join-Path $env:USERPROFILE '.qoder'
+    if (Test-Path -LiteralPath $profileDir) { throw 'The runner already has a Qoder profile' }
+    $skillDir = Join-Path $profileDir 'skills\qoder-cleanup-fixture'
+    $skill = Join-Path $skillDir 'SKILL.md'
+    $config = Join-Path $profileDir 'settings.json'
+    try {
+        $null = New-Item -ItemType Directory -Path $skillDir
+        @('---', 'name: qoder-cleanup-fixture', 'description: Shared Qoder Skill fixture', '---', 'Fixture content') |
+            Set-Content -LiteralPath $skill -Encoding utf8
+        $originalSkill = Get-Content -LiteralPath $skill -Raw
+        Invoke-PackControl (Wait-IslandValue 'the Hooks tab' { Find-PackControl $Settings 'Hooks' })
+        Invoke-PackControl (Wait-IslandValue 'the Qoder Desktop Hook install button' { Find-PackControl $Settings '安装 Hook' })
+        $null = Wait-IslandValue 'the installed Qoder Desktop Hook' {
+            (Test-Path -LiteralPath $config -PathType Leaf) -and (Find-PackControl $Settings '卸载 Hook')
+        }
+        $installedConfig = Get-Content -LiteralPath $config -Raw
+        if ($installedConfig -notmatch '--source qoder-desktop') { throw 'The fixture must have the Qoder Desktop Hook' }
+
+        Invoke-PackControl (Wait-IslandValue 'the Qoder Desktop rescan button' {
+            $button = Find-PackControl $Settings '重新扫描此 Agent'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        })
+        $null = Wait-IslandValue 'the shared Skill counted in the Qoder Desktop inventory' {
+            Test-PackVisibleText $Settings 'Scan complete: 0 managed, 1 unmanaged'
+        }
+        Invoke-PackControl (Wait-IslandValue 'the Agent program refresh button' { Find-PackControl $Settings '获取版本' })
+        Invoke-PackControl (Wait-IslandValue 'the Qoder Desktop cleanup button' {
+            $button = Find-PackControl $Settings 'Clean up AgentBro resources' ([Windows.Automation.ControlType]::Button)
+            if ($button -and $button.Current.IsEnabled) { $button }
+        })
+        Invoke-PackControl (Wait-IslandValue 'the reviewed shared Skills preservation' {
+            if (Test-PackVisibleText $Settings 'Shared Skills and their pack associations will be kept.') {
+                Find-PackControl $Settings 'Confirm cleanup' ([Windows.Automation.ControlType]::Button)
+            }
+        })
+        $null = Wait-IslandValue 'cleanup of the Qoder Desktop Hook' {
+            -not (Find-PackControl $Settings 'Confirm cleanup') -and
+                (Get-Content -LiteralPath $config -Raw) -notmatch '--source qoder-desktop'
+        }
+        if (-not (Test-Path -LiteralPath $skill -PathType Leaf) -or
+            (Get-Content -LiteralPath $skill -Raw) -cne $originalSkill) {
+            throw 'Cleaning up Qoder Desktop modified its shared Skill'
+        }
+        Write-Output 'Qoder Desktop cleanup removed its Hook and preserved the shared Skill on disk.'
+    } finally {
+        Remove-Item -LiteralPath $profileDir -Recurse -ErrorAction SilentlyContinue
+    }
+}
+
 function Test-InstalledRegisteredAgentApp(
     [Windows.Automation.AutomationElement]$Island,
     [string]$AgentName = 'Cursor',
@@ -450,6 +500,7 @@ function Test-InstalledRegisteredAgentApp(
                 }
             }
             Write-Output 'Agent Management kept Qoder IDE and CLI separate from the registered Qoder Desktop app.'
+            Test-InstalledQoderSharedSkillsCleanup $settings
         }
 
         Remove-Item -LiteralPath $executable

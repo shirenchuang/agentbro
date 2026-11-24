@@ -112,4 +112,8 @@ impl AgentAdapter for QoderCliAdapter {
     fn hook_config_paths(&self) -> Vec<PathBuf> {
         vec![self.settings_path()]
     }
+
+    fn hooks_installed(&self) -> bool {
+        profiles::is_installed_at(&profiles::qoder_cli_profile(), &self.settings_path())
+    }
 }

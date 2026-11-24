@@ -7869,6 +7869,54 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(uninstall).toHaveBeenCalledTimes(1)
   })
 
+  it.each([false, true])('preserves shared Qoder Skills during Agent cleanup (Windows: %s)', async (windows) => {
+    vi.spyOn(platform, 'isWindowsPlatform').mockReturnValue(windows)
+    const skillsDir = windows ? 'C:\\Users\\me\\.qoder\\skills' : '/Users/me/.qoder/skills'
+    const ide = makeProgram({
+      id: 'qoder', displayName: 'Qoder IDE', kind: 'app', binaryPath: null, skillsDir,
+      appPath: windows ? 'C:\\Apps\\Qoder IDE.exe' : '/Applications/Qoder IDE.app',
+      uninstallCommand: windows ? null : 'Move application to Trash', hooksInstalled: true,
+    })
+    const desktop = makeProgram({
+      id: 'qoder-desktop', displayName: 'Qoder Desktop', kind: 'app', binaryPath: null,
+      skillsDir: windows ? 'c:/users/me/.qoder/skills/' : skillsDir,
+    })
+    const unmanaged = makeSharedUnmanaged('local-qoder-skill', { agentId: ide.id, path: `${skillsDir}/local-qoder-skill` })
+    const qoderDetail: AgentDetail = {
+      ...agentDetail, id: ide.id, displayName: ide.displayName, skillsDir,
+      skills: [makeTarget({ agentId: ide.id, targetPath: `${skillsDir}/release-checklist` })],
+      appliedPacks: [{ packId: 'release-pack', packName: 'Release Pack', memberCount: 1 }],
+    }
+    useSkillStoreV2.setState({
+      selectedAgentId: ide.id, selectedAgentDetail: qoderDetail, unmanaged: [unmanaged],
+      agents: [makeSidebarAgent(ide.id, ide.displayName), makeSidebarAgent(desktop.id, desktop.displayName)],
+    })
+    const after = { ...ide, status: windows ? 'installed' as const : 'notInstalled' as const, hooksInstalled: false }
+    vi.spyOn(agentApi, 'refresh').mockResolvedValueOnce([ide, desktop]).mockResolvedValue([after, desktop])
+    vi.spyOn(agentApi, 'list').mockResolvedValue([after, desktop])
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
+    const removeManaged = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    const uninstallHook = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([unmanaged])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: windows ? '清理残留' : '卸载 Agent' }))
+    const confirmation = screen.getByRole('dialog').textContent
+    fireEvent.click(screen.getByRole('button', { name: windows ? '确认清理' : '确认卸载' }))
+
+    await waitFor(() => expect(uninstallHook).toHaveBeenCalledExactlyOnceWith(ide.id, LOCAL_RUNTIME_ENVIRONMENT_ID))
+    expect(uninstall).toHaveBeenCalledTimes(windows ? 0 : 1)
+    expect(removeManaged).not.toHaveBeenCalled()
+    expect(removeUnmanaged).not.toHaveBeenCalled()
+    expect(confirmation).toContain('共享 Skills')
+    expect(confirmation).not.toContain('技能包关联')
+    expect(confirmation).not.toContain('未管理 Skills')
+  })
+
   it('keeps an uninstall limited to the Skills shown before another Skill was discovered', async () => {
     const reviewed = makeSharedUnmanaged('reviewed', { agentId: 'claude-code' })
     const discovered = makeSharedUnmanaged('discovered', { agentId: 'claude-code' })

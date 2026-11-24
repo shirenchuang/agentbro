@@ -1290,6 +1290,8 @@
       "uninstallUnverified": "The uninstall command completed. AgentBro could not verify removal of {{agent}}.",
       "cleanupBusy": "Cleaning up",
       "cleanupDescription": "Clean up the Skills and AgentBro Hook detected for this Agent in the current runtime.",
+      "cleanupHookDescription": "This action removes the AgentBro Hook for this Agent in the current runtime.",
+      "cleanupSharedSkills": "Shared Skills and their pack associations will be kept.",
       "pathSettings": {
         "tab": "Paths & settings",
         "title": "Local resources and configuration",

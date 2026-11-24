@@ -1331,6 +1331,8 @@
       "uninstallUnverified": "卸载命令已执行，无法确认 {{agent}} 是否已卸载。",
       "cleanupBusy": "清理中",
       "cleanupDescription": "清理当前运行环境中为此 Agent 检测到的 Skills 和 AgentBro Hook。",
+      "cleanupHookDescription": "此操作会移除当前运行环境中这个 Agent 的 AgentBro Hook。",
+      "cleanupSharedSkills": "此操作会保留共享 Skills 及其关联的技能包。",
       "pathSettings": {
         "tab": "路径与设置",
         "title": "本地资源与配置",

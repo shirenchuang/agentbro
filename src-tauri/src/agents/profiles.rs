@@ -1277,6 +1277,12 @@ pub fn is_installed(profile: &AgentIntegrationProfile) -> bool {
 pub fn is_installed_at(profile: &AgentIntegrationProfile, path: &Path) -> bool {
     match profile.installation_kind {
         InstallationKind::JsonHooks { .. }
+            if matches!(profile.id, "qoder" | "qoder-cli" | "qoder-desktop") =>
+        {
+            read_json_health(path)
+                .is_ok_and(|settings| json_hook_contains_profile(&settings, profile))
+        }
+        InstallationKind::JsonHooks { .. }
         | InstallationKind::YamlHooks
         | InstallationKind::KiroAgentFile => hook_manager::has_agentbro_hooks(path),
         InstallationKind::AntigravityJsonHooks => {
@@ -4189,6 +4195,26 @@ name = "also keep"
 
         assert_eq!(commands.len(), 1);
         assert!(commands[0].contains("--source qoder-cli"));
+    }
+
+    #[test]
+    fn qoder_hook_presence_only_counts_entries_for_the_selected_edition() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("settings.json");
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"hooks": [{
+                    "type": "command",
+                    "command": "agentbro-bridge --source qoder-desktop"
+                }]}]
+            }
+        });
+        std::fs::write(&path, settings.to_string()).unwrap();
+
+        assert!(is_installed_at(&qoder_desktop_profile(), &path));
+        assert!(!is_installed_at(&qoder_profile(), &path));
+        assert!(!is_installed_at(&qoder_cli_profile(), &path));
     }
 
     #[test]
