@@ -260,6 +260,117 @@ function Test-InstalledPackManifest(
     Write-Output 'The installed app completed the Skill Pack round trip through native Windows file dialogs and Unicode paths.'
 }
 
+function Test-InstalledPackArchive(
+    [Windows.Automation.AutomationElement]$Island,
+    [string]$ManifestPath,
+    [string]$ArchivePath
+) {
+    $manifest = Get-Content -LiteralPath $ManifestPath -Encoding UTF8 -Raw | ConvertFrom-Json
+    $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+    $skillRoot = Join-Path $profileDirectory '.agentbro\skills'
+    $conflictingId = $manifest.skillIds[0]
+    $copyId = "$conflictingId-restored"
+    $missingIds = @($manifest.skillIds | Select-Object -Skip 1)
+    $attachment = '附件 示例.bin'
+    $attachmentPath = Join-Path $skillRoot "$($missingIds[0])\$attachment"
+    [IO.File]::WriteAllBytes($attachmentPath, [byte[]]@(0, 13, 10, 31, 255, 128))
+    $attachmentHash = (Get-FileHash -LiteralPath $attachmentPath -Algorithm SHA256).Hash
+    $sourceHashes = @{}
+    foreach ($id in $manifest.skillIds) {
+        $sourceHashes[$id] = (Get-FileHash -LiteralPath (Join-Path $skillRoot "$id\SKILL.md") -Algorithm SHA256).Hash
+    }
+
+    $settings = Open-InstalledAgentSkills $Island
+    $packs = Wait-IslandValue 'the Skill Packs navigation item' { Find-PackControl $settings '技能包' }
+    Invoke-PackControl $packs
+    Import-PackFixture $settings $ManifestPath $manifest.name
+    $menu = Wait-IslandValue 'the Pack actions menu for ZIP export' { Find-PackControl $settings '更多操作' }
+    Invoke-PackControl $menu
+    $export = Wait-IslandValue 'the Export with Skill files (ZIP) menu item' {
+        Find-PackControl $settings 'Export with Skill files (ZIP)'
+    }
+    Invoke-PackControl $export
+    Set-PackDialogFile 'Save' $ArchivePath
+    $null = Wait-IslandValue 'the ZIP file at the requested Unicode Save path' {
+        (Find-PackControl $settings 'Skill Pack and files exported.') -and
+            (Test-Path -LiteralPath $ArchivePath -PathType Leaf)
+    }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        $definition = $zip.GetEntry('agentbro-skill-pack.json')
+        if (-not $definition -or -not $zip.GetEntry("skills/$($missingIds[0])/$attachment")) {
+            throw 'The exported archive did not include the definition and the Unicode binary attachment.'
+        }
+        $reader = [IO.StreamReader]::new($definition.Open(), [Text.Encoding]::UTF8)
+        try {
+            $archived = $reader.ReadToEnd() | ConvertFrom-Json
+        } finally {
+            $reader.Dispose()
+        }
+        if ($archived.name -cne $manifest.name -or ($archived.skillIds -join ',') -cne ($manifest.skillIds -join ',')) {
+            throw 'The ZIP did not preserve the intended Skill Pack and member order.'
+        }
+    } finally {
+        $zip.Dispose()
+    }
+    Write-Output 'The installed app saved an ordered Skill Pack ZIP with a Unicode attachment.'
+
+    foreach ($id in $missingIds) {
+        Move-Item -LiteralPath (Join-Path $skillRoot $id) -Destination (Join-Path (Split-Path $ArchivePath) "sender-$id")
+    }
+    $localPath = Join-Path $skillRoot "$conflictingId\SKILL.md"
+    $localContent = "---`nname: $conflictingId`n---`nKeep the local edit.`n"
+    [IO.File]::WriteAllText($localPath, $localContent, [Text.UTF8Encoding]::new($false))
+
+    $open = Wait-IslandValue 'the enabled Import Skill Pack action for the ZIP' {
+        $button = Find-PackControl $settings 'Import Skill Pack'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Invoke-PackControl $open
+    Set-PackDialogFile 'Open' $ArchivePath
+    $batchAction = "Restore $($missingIds.Count) missing Skills"
+    $restore = Wait-IslandValue 'the batch restore action in the ZIP review' {
+        $button = Find-PackControl $settings $batchAction
+        if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings 'Included in ZIP')) { $button }
+    }
+    $create = Find-PackControl $settings 'Create Skill Pack'
+    if (-not $create -or $create.Current.IsEnabled -or (Test-Path -LiteralPath $attachmentPath)) {
+        throw 'The ZIP preview must wait for confirmation before writing Skills or creating the Pack.'
+    }
+    Invoke-PackControl $restore
+    $copy = Wait-IslandValue 'the ZIP copy action after restoring the missing members' {
+        if (Find-PackControl $settings $batchAction) { return }
+        $button = Find-PackControl $settings "Restore a copy of $conflictingId"
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Invoke-PackControl $copy
+    $confirmCopy = Wait-IslandValue 'the enabled Restore copy action for the archived Skill' {
+        $button = Find-PackControl $settings 'Restore copy'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Invoke-PackControl $confirmCopy
+    $create = Wait-IslandValue 'the enabled Create Skill Pack action after ZIP restore' {
+        $button = Find-PackControl $settings 'Create Skill Pack'
+        if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings "Manifest ID $conflictingId")) { $button }
+    }
+    if ([IO.File]::ReadAllText($localPath) -cne $localContent -or
+        (Get-FileHash -LiteralPath $attachmentPath -Algorithm SHA256).Hash -cne $attachmentHash) {
+        throw 'Restoring the ZIP changed the local conflict or the binary attachment.'
+    }
+    foreach ($id in $manifest.skillIds) {
+        $restoredId = if ($id -ceq $conflictingId) { $copyId } else { $id }
+        $hash = (Get-FileHash -LiteralPath (Join-Path $skillRoot "$restoredId\SKILL.md") -Algorithm SHA256).Hash
+        if ($hash -cne $sourceHashes[$id]) { throw "The restored files for $restoredId changed." }
+    }
+    Invoke-PackControl $create
+    $null = Wait-IslandValue 'the imported ZIP Skill Pack confirmation' {
+        Find-PackControl $settings "Imported $($manifest.name) as a new Skill Pack."
+    }
+    Write-Output 'The installed app opened the ZIP, restored the missing and conflicting Skills, and created the reviewed Pack.'
+}
+
 function Open-LinkedPackFixture(
     [Windows.Automation.AutomationElement]$Settings,
     [string]$Link,

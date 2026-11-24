@@ -9,6 +9,7 @@ param(
     [string]$Workspace,
     [string]$PackImportPath,
     [string]$PackExportPath,
+    [string]$PackArchivePath,
     [string]$PinnedPackImportPath,
     [string]$PinnedPackExportPath,
     [string]$PackManifestLink,
@@ -1158,8 +1159,11 @@ try {
     if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }
-    if ($PackImportPath) {
+    if ($PackExportPath) {
         Test-InstalledPackManifest $island $PackImportPath $PackExportPath
+    }
+    if ($PackArchivePath) {
+        Test-InstalledPackArchive $island $PackImportPath $PackArchivePath
     }
     if ($PinnedPackImportPath) {
         Test-InstalledPinnedPackManifest $island $PinnedPackImportPath $PinnedPackExportPath

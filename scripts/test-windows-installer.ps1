@@ -4,6 +4,7 @@ param(
     [switch]$VerifyIsland,
     [switch]$VerifyQwenWork,
     [switch]$VerifyPackManifest,
+    [switch]$VerifyPackArchive,
     [switch]$VerifyPinnedPackManifest,
     [string]$PackManifestLink,
     [switch]$TracePermissionUi,
@@ -234,6 +235,7 @@ $null = New-Item -ItemType Directory -Path $restoredWorkspace, $restoredProjects
 $packFixtures = @()
 $packImportPath = $null
 $packExportPath = $null
+$packArchivePath = $null
 $pinnedPackPath = $null
 $pinnedPackExportPath = $null
 if ($PackManifestLink) {
@@ -325,15 +327,20 @@ if ($VerifyPinnedPackManifest) {
         suggestedAgentIds = @('claude-code', 'unavailable-fixture')
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $pinnedPackPath -Encoding utf8
 }
-if ($VerifyPackManifest) {
+if ($VerifyPackManifest -or $VerifyPackArchive) {
     $manifestDirectory = Join-Path $stage '共享 技能'
     $packImportPath = Join-Path $manifestDirectory '导入 技能包.agentbro-pack.json'
-    $packExportPath = Join-Path $manifestDirectory '导出 技能包.agentbro-pack.json'
+    if ($VerifyPackManifest) { $packExportPath = Join-Path $manifestDirectory '导出 技能包.agentbro-pack.json' }
     $null = New-Item -ItemType Directory -Path $manifestDirectory
     $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
     $skillRoot = Join-Path $profileDirectory '.agentbro\skills'
     $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
     $skillIds = @("windows-smoke-zulu-$suffix", "windows-smoke-alpha-$suffix")
+    if ($VerifyPackArchive) {
+        $packArchivePath = Join-Path $manifestDirectory '迁移 技能包.agentbro-pack.zip'
+        $skillIds += "windows-smoke-extra-$suffix"
+        $packFixtures += Join-Path $skillRoot "$($skillIds[0])-restored"
+    }
     foreach ($skillId in $skillIds) {
         $skillDirectory = Join-Path $skillRoot $skillId
         $null = New-Item -ItemType Directory -Path $skillDirectory -Force
@@ -573,10 +580,18 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
             '-SessionId', $SessionId, '-Workspace', $Workspace)) {
         $start.ArgumentList.Add($argument)
     }
-    if ($VerifyPackManifest) {
-        foreach ($argument in @('-PackImportPath', $packImportPath, '-PackExportPath', $packExportPath)) {
+    if ($VerifyPackManifest -or $VerifyPackArchive) {
+        foreach ($argument in @('-PackImportPath', $packImportPath)) {
             $start.ArgumentList.Add($argument)
         }
+    }
+    if ($VerifyPackManifest) {
+        $start.ArgumentList.Add('-PackExportPath')
+        $start.ArgumentList.Add($packExportPath)
+    }
+    if ($VerifyPackArchive) {
+        $start.ArgumentList.Add('-PackArchivePath')
+        $start.ArgumentList.Add($packArchivePath)
     }
     if ($VerifyPinnedPackManifest) {
         foreach ($argument in @('-PinnedPackImportPath', $pinnedPackPath, '-PinnedPackExportPath', $pinnedPackExportPath)) {
@@ -604,7 +619,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     try {
         $output = $tester.StandardOutput.ReadToEndAsync()
         $errors = $tester.StandardError.ReadToEndAsync()
-        $desktopTimeout = if ($VerifyPackManifest -or $VerifyPinnedPackManifest -or $PackManifestLink -or
+        $desktopTimeout = if ($VerifyPackManifest -or $VerifyPackArchive -or $VerifyPinnedPackManifest -or $PackManifestLink -or
             $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) { 180000 } else { 120000 }
         if (-not $tester.WaitForExit($desktopTimeout)) {
             throw 'The installed desktop interaction check timed out'
@@ -690,7 +705,7 @@ try {
 
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
-    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyPinnedPackManifest -or $PackManifestLink -or
+    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyPackArchive -or $VerifyPinnedPackManifest -or $PackManifestLink -or
         $VerifyDrag -or $VerifyQwenWork -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
