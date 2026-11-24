@@ -274,10 +274,10 @@ function Test-InstalledPackArchive(
     $attachment = '附件 示例.bin'
     $attachmentPath = Join-Path $skillRoot "$($missingIds[0])\$attachment"
     [IO.File]::WriteAllBytes($attachmentPath, [byte[]]@(0, 13, 10, 31, 255, 128))
-    $attachmentHash = (Get-FileHash -LiteralPath $attachmentPath -Algorithm SHA256).Hash
-    $sourceHashes = @{}
+    $attachmentBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($attachmentPath))
+    $sourceBytes = @{}
     foreach ($id in $manifest.skillIds) {
-        $sourceHashes[$id] = (Get-FileHash -LiteralPath (Join-Path $skillRoot "$id\SKILL.md") -Algorithm SHA256).Hash
+        $sourceBytes[$id] = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $skillRoot "$id\SKILL.md")))
     }
 
     $settings = Open-InstalledAgentSkills $Island
@@ -356,13 +356,13 @@ function Test-InstalledPackArchive(
         if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings "Manifest ID $conflictingId")) { $button }
     }
     if ([IO.File]::ReadAllText($localPath) -cne $localContent -or
-        (Get-FileHash -LiteralPath $attachmentPath -Algorithm SHA256).Hash -cne $attachmentHash) {
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($attachmentPath)) -cne $attachmentBytes) {
         throw 'Restoring the ZIP changed the local conflict or the binary attachment.'
     }
     foreach ($id in $manifest.skillIds) {
         $restoredId = if ($id -ceq $conflictingId) { $copyId } else { $id }
-        $hash = (Get-FileHash -LiteralPath (Join-Path $skillRoot "$restoredId\SKILL.md") -Algorithm SHA256).Hash
-        if ($hash -cne $sourceHashes[$id]) { throw "The restored files for $restoredId changed." }
+        $bytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $skillRoot "$restoredId\SKILL.md")))
+        if ($bytes -cne $sourceBytes[$id]) { throw "The restored files for $restoredId changed." }
     }
     Invoke-PackControl $create
     $null = Wait-IslandValue 'the imported ZIP Skill Pack confirmation' {
