@@ -3,12 +3,14 @@ use super::models::{
 };
 use crate::data_dir::rename_path_if_absent;
 use crate::skills::installer::{self, TempInstallDir};
+use regex::Regex;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const LOCK_FILE: &str = "skills-lock.json";
 const LOCK_LIMIT: u64 = 2 * 1024 * 1024;
@@ -519,7 +521,7 @@ fn restore_with(
                 }
                 RestoreLocation::NodeModules(package) => select_node_module_skill(root, package)?,
             };
-            install_verified_skill(root, revision, &name, &skill, &source.hash)
+            install_verified_skill(root, revision, &name, &skill, &source)
         })();
         results.push(ProjectSkillRestoreResult {
             name,
@@ -648,7 +650,7 @@ fn install_verified_skill(
     revision: &str,
     name: &str,
     skill: &Path,
-    expected: &str,
+    source: &RestoreSource,
 ) -> Result<(), String> {
     let destination = checked_destination(root, false)?;
     let staging_parent = destination
@@ -657,13 +659,83 @@ fn install_verified_skill(
         .ok_or("The project Skill directory is unavailable")?;
     let temporary = TempInstallDir::create_in(staging_parent)?;
     let staged = temporary.path().join("skill");
-    if !stage_skill_copy(skill, &staged, true)?.eq_ignore_ascii_case(expected) {
-        return Err("Skill content does not match the lock file".to_string());
+    if !stage_skill_copy(skill, &staged, true)?.eq_ignore_ascii_case(&source.hash) {
+        // Older entries can match the source bytes even with a different destination name.
+        let renamed = matches!(
+            &source.location,
+            RestoreLocation::GitHub(github) if github.skill_name != name
+        );
+        if !renamed || !verify_staged_alias(&staged, name, &source.hash)? {
+            return Err("Skill content does not match the lock file".to_string());
+        }
     }
     lock_at_revision(root, revision)?;
     let destination = checked_destination(root, true)?;
     rename_path_if_absent(&staged, &destination.join(name))
         .map_err(|error| format!("Could not install the missing Skill: {error}"))
+}
+
+fn verify_staged_alias(staged: &Path, name: &str, expected: &str) -> Result<bool, String> {
+    let path = staged.join("SKILL.md");
+    let content = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let Some(renamed) = skills_sh_rename(&content, name) else {
+        return Ok(false);
+    };
+    fs::write(path, renamed).map_err(|error| error.to_string())?;
+    Ok(fingerprint_canonical_skill_directory(staged, true)?.eq_ignore_ascii_case(expected))
+}
+
+fn skills_sh_rename(content: &str, name: &str) -> Option<String> {
+    if !name
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte))
+    {
+        return None;
+    }
+    static FRONTMATTER: OnceLock<Regex> = OnceLock::new();
+    static YAML_NON_STRING: OnceLock<Regex> = OnceLock::new();
+    let frontmatter = FRONTMATTER.get_or_init(|| {
+        Regex::new(r"\A(\u{feff}?---(\r?\n))([\s\S]*?)(\r?\n---(?:\r?\n|\z))")
+            .expect("static Skill frontmatter regex")
+    });
+    let non_string = YAML_NON_STRING.get_or_init(|| {
+        // skills.sh emits bare strings unless the YAML 1.2 core schema requires quotes.
+        Regex::new(
+            r"(?x)\A(?:
+                null | true | false | - | -?\.inf | \.nan | 0o[0-7]+ | 0x[0-9a-f]+
+                | -?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:e-?[0-9]+)?
+            )\z",
+        )
+        .expect("static YAML scalar regex")
+    });
+    let captures = frontmatter.captures(content)?;
+    let name_line = if non_string.is_match(name) {
+        format!("name: \"{name}\"")
+    } else {
+        format!("name: {name}")
+    };
+    let fields = captures[3].replace("\r\n", "\n");
+    let mut lines: Vec<_> = fields.split('\n').collect();
+    if let Some(index) = lines.iter().position(|line| {
+        line.strip_prefix("name")
+            .is_some_and(|rest| rest.trim_start().starts_with(':'))
+    }) {
+        let continuation = lines[index + 1..]
+            .iter()
+            .take_while(|line| line.starts_with([' ', '\t']))
+            .count();
+        lines.splice(index..=index + continuation, [name_line.as_str()]);
+    } else {
+        lines.insert(0, name_line.as_str());
+    }
+    let end = captures.get(0)?.end();
+    Some(format!(
+        "{}{}{}{}",
+        &captures[1],
+        lines.join(&captures[2]),
+        &captures[4],
+        &content[end..]
+    ))
 }
 
 pub(super) fn stage_skill_copy(
@@ -1234,11 +1306,25 @@ mod tests {
         });
         let mut mismatch = entry.clone();
         mismatch["computedHash"] = "0".repeat(64).into();
+        // skills.sh hashes the installed SKILL.md with the alias already written.
+        let mut renamed = entry.clone();
+        renamed["computedHash"] =
+            "ddb178167edf5f0b7122a27abe4a16319ba1ca12e77f27dcf469641e9830370c".into();
+        let mut quoted = entry.clone();
+        quoted["computedHash"] =
+            "5cd9396c9b857a67d507e4d7873284156def649ff9fc0ba82958661c498b948a".into();
+        quoted.as_object_mut().unwrap().remove("skillPath");
         write_lock(
             &project,
             json!({
                 "version": 2,
-                "skills": { "alias": entry, "mismatch": mismatch, "existing": entry }
+                "skills": {
+                    "alias": entry,
+                    "existing": entry,
+                    "local-review": renamed,
+                    "mismatch": mismatch,
+                    "null": quoted
+                }
             }),
         );
         let target = project.join(".agents/skills");
@@ -1247,7 +1333,7 @@ mod tests {
         let lock = preview(&project).unwrap();
         assert_eq!(lock.skills[0].status, Ready);
         assert_eq!(lock.skills[1].status, Existing);
-        let names = vec!["alias".into(), "existing".into(), "mismatch".into()];
+        let names = lock.skills.iter().map(|skill| skill.name.clone()).collect();
         let fetch_path = repo.to_str().unwrap();
         #[cfg(windows)]
         let fetch_path = fetch_path.strip_prefix(r"\\?\").unwrap_or(fetch_path);
@@ -1265,11 +1351,13 @@ mod tests {
             results[1].error.as_deref(),
             Some("The destination already exists")
         );
-        assert!(results[2]
+        assert!(results[2].error.is_none(), "{:?}", results[2].error);
+        assert!(results[3]
             .error
             .as_ref()
             .unwrap()
             .contains("content does not match"));
+        assert!(results[4].error.is_none(), "{:?}", results[4].error);
         assert!(!target.join("mismatch").exists());
         assert!(target.join("alias").is_dir());
         assert_eq!(
@@ -1287,7 +1375,28 @@ mod tests {
             fs::read_to_string(target.join("existing/SKILL.md")).unwrap(),
             "local edit"
         );
+        let verified = verify_installed(&project, &lock.revision).unwrap();
+        for (name, scalar) in [("local-review", "local-review"), ("null", "\"null\"")] {
+            assert_eq!(
+                fs::read_to_string(target.join(name).join("SKILL.md"))
+                    .unwrap()
+                    .replace("\r\n", "\n"),
+                MANIFEST
+                    .replace("name: original", &format!("name: {scalar}"))
+                    .replace("\r\n", "\n")
+            );
+            assert_eq!(verified.get(name), Some(&Verified));
+        }
         assert_eq!(preview(&project).unwrap().revision, lock.revision);
+    }
+
+    #[test]
+    fn project_alias_preserves_bom_line_endings_and_other_fields() {
+        let source = "\u{feff}---\r\nmetadata:\r\n  name: keep\r\nname : >-\r\n  old name\r\n---\r\nBody\r\n---\r\n";
+        let expected =
+            "\u{feff}---\r\nmetadata:\r\n  name: keep\r\nname: \"1e-8\"\r\n---\r\nBody\r\n---\r\n";
+        assert_eq!(skills_sh_rename(source, "1e-8").as_deref(), Some(expected));
+        assert_eq!(skills_sh_rename("name: outside frontmatter", "alias"), None);
     }
 
     #[test]
