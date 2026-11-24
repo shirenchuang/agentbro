@@ -375,10 +375,10 @@ impl Service {
                 .unwrap_or_else(|| inferred_id.clone());
             let desc = fm.description().to_string();
             let skill_id = self.db.transaction(|tx| {
-                // Git updates can change the manifest name without changing the installed directory.
+                // Git updates and archived copies can retain an ID distinct from the manifest name.
                 let skill_id = tx.query_row(
                     "SELECT s.id FROM skills s JOIN skill_sources source ON source.skill_id = s.id
-                     WHERE s.center_path = ?1 AND source.source_type IN ('github', 'git', 'skillssh')
+                     WHERE s.center_path = ?1 AND source.source_type IN ('github', 'git', 'skillssh', 'archive')
                      ORDER BY s.id LIMIT 1",
                     params![path_string],
                     |row| row.get::<_, String>(0),
@@ -5262,14 +5262,101 @@ impl Service {
         self.restore_pack_skill_with(manifest, skill_id, installer::checkout_skill_lock_ref)
     }
 
+    pub fn write_pack_archive(
+        &self,
+        path: &Path,
+        manifest: SkillPackManifest,
+    ) -> Result<(), String> {
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        super::pack_archive::write(path, manifest, |id| {
+            self.skill_row(id)?
+                .map(|row| PathBuf::from(row.center_path))
+                .ok_or_else(|| format!("Skill '{id}' is missing from the center library."))
+        })
+    }
+
+    pub fn restore_archived_pack_skills(
+        &self,
+        path: &Path,
+        revision: &str,
+        members: &[SkillPackArchiveRestoreMember],
+    ) -> Result<BTreeMap<String, String>, String> {
+        let mut archive = super::pack_archive::Archive::open(path)?;
+        if archive.review.revision != revision {
+            return Err("The Skill Pack ZIP changed after preview. Open it again to review the new content.".into());
+        }
+        let mut ids = BTreeSet::new();
+        let mut destinations = BTreeSet::new();
+        if members.iter().any(|member| {
+            !archive
+                .review
+                .manifest
+                .skill_fingerprints
+                .contains_key(&member.skill_id)
+                || !super::project_lock::valid_skill_name(&member.destination_id)
+                || !ids.insert(member.skill_id.as_str())
+                || !destinations.insert(member.destination_id.to_lowercase())
+        }) {
+            return Err("Choose distinct Skills from the ZIP and valid destination IDs.".into());
+        }
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        self.scan_center_into_db()?;
+        let center = self.center_path()?;
+        std::fs::create_dir_all(&center).map_err(|error| error.to_string())?;
+        let mut errors = BTreeMap::new();
+        for member in members {
+            let result = (|| {
+                let id = &member.destination_id;
+                if self
+                    .read_skill_pack_fingerprints(std::slice::from_ref(id), false)?
+                    .iter()
+                    .any(|item| !item.missing)
+                {
+                    return Err("The Skill already exists in the selected library.".into());
+                }
+                let staging = TempInstallDir::create_hidden_in(&center)?;
+                let staged = staging.path().join("skill");
+                archive.stage_member(&member.skill_id, &staged)?;
+                let input = AddCenterSkillInput {
+                    source_path: path.display().to_string(),
+                    source_type: "archive".to_string(),
+                    source_uri: None,
+                    imported_from_agent: None,
+                    imported_from_path: None,
+                    multi: Some(false),
+                    import_mode: Some("copy".to_string()),
+                };
+                self.publish_restored_pack_skill(
+                    id,
+                    &staged,
+                    &center.join(id),
+                    &staged,
+                    &input,
+                    None,
+                )
+            })();
+            if let Err(error) = result {
+                errors.insert(member.skill_id.clone(), error);
+            }
+        }
+        if errors.len() < members.len() {
+            self.refresh_snapshot_best_effort();
+        }
+        Ok(errors)
+    }
+
     pub(super) fn restore_pack_skill_with(
         &self,
         manifest: &SkillPackManifest,
         skill_id: &str,
         fetch: impl FnOnce(&str, &str) -> Result<(PathBuf, TempInstallDir), String>,
     ) -> Result<(), String> {
-        use crate::data_dir::rename_path_if_absent;
-
         super::pack_manifest::validate(manifest)?;
         let source = manifest
             .skill_sources
@@ -5308,21 +5395,42 @@ impl Service {
             multi: Some(false),
             import_mode: Some("copy".to_string()),
         };
-        rename_path_if_absent(&staged, &destination)
-            .map_err(|error| format!("Could not restore the missing Skill: {error}"))?;
-        if let Err(error) = self.record_source_after_write(
+        self.publish_restored_pack_skill(
             skill_id,
+            &staged,
             &destination,
             &directory,
             &input,
             Some(&source.commit),
+        )?;
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
+    fn publish_restored_pack_skill(
+        &self,
+        skill_id: &str,
+        staged: &Path,
+        destination: &Path,
+        source_directory: &Path,
+        input: &AddCenterSkillInput,
+        source_ref: Option<&str>,
+    ) -> Result<(), String> {
+        use crate::data_dir::rename_path_if_absent;
+        rename_path_if_absent(staged, destination)
+            .map_err(|error| format!("Could not restore the missing Skill: {error}"))?;
+        if let Err(error) = self.record_source_after_write(
+            skill_id,
+            destination,
+            source_directory,
+            input,
+            source_ref,
         ) {
-            rename_path_if_absent(&destination, &staged).map_err(|rollback| {
+            rename_path_if_absent(destination, staged).map_err(|rollback| {
                 format!("{error}. Could not roll back the new Skill: {rollback}")
             })?;
             return Err(error);
         }
-        self.refresh_snapshot_best_effort();
         Ok(())
     }
 

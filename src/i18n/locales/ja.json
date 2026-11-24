@@ -699,6 +699,10 @@
   "skills": {
     "projectsTab": "プロジェクト",
     "packManifest": {
+      "exportArchive": "スキルファイル付きでエクスポート（ZIP）",
+      "exportedArchive": "スキルパックとファイルをエクスポートしました。",
+      "archiveReview": "この ZIP から不足しているスキルを復元し、パックを作成する前に内容の違いを確認します。",
+      "archiveMember": "ZIP に含まれています",
       "importFromLink": "リンクからインポート",
       "reviewLink": "スキルパックを確認",
       "readingLink": "GitHub ファイルを読み込み中…",
