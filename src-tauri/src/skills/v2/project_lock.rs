@@ -25,6 +25,7 @@ struct LockFile {
 #[serde(rename_all = "camelCase")]
 struct LockEntry {
     source: String,
+    source_url: Option<String>,
     computed_hash: String,
     #[serde(rename = "ref")]
     reference: Option<String>,
@@ -51,11 +52,11 @@ struct RestoreSource {
 }
 
 enum RestoreLocation {
-    GitHub(GitHubSkill),
+    Git(GitSkill),
     NodeModules(NodeModuleSkill),
 }
 
-struct GitHubSkill {
+struct GitSkill {
     repository: RepositoryRevision,
     commit: Option<String>,
     subpath: PathBuf,
@@ -117,13 +118,16 @@ pub(super) fn preview(root: &Path) -> Option<ProjectSkillLock> {
             .skills
             .iter()
             .map(|(name, entry)| {
-                let source = entry
-                    .get("source")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("");
-                let reference = if entry.get("sourceType").and_then(|value| value.as_str())
-                    == Some("node_modules")
-                {
+                let source_type = entry.get("sourceType").and_then(|value| value.as_str());
+                let source = match source_type {
+                    Some("git" | "gitlab") => entry
+                        .get("sourceUrl")
+                        .and_then(|value| value.as_str())
+                        .or_else(|| entry.get("source").and_then(|value| value.as_str())),
+                    _ => entry.get("source").and_then(|value| value.as_str()),
+                }
+                .unwrap_or("");
+                let reference = if source_type == Some("node_modules") {
                     entry.get("version").and_then(|value| value.as_str())
                 } else {
                     ["commit", "ref"]
@@ -153,8 +157,15 @@ pub(super) fn preview(root: &Path) -> Option<ProjectSkillLock> {
 
 fn safe_display_source(source: &str) -> String {
     if let Ok(url) = reqwest::Url::parse(source) {
-        if !url.username().is_empty() || url.password().is_some() || url.query().is_some() {
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
             return url.host_str().unwrap_or_default().to_string();
+        }
+        if url.scheme() == "https" {
+            return url.into();
         }
     }
     source.to_string()
@@ -223,10 +234,10 @@ fn restore_source(
     if version == 1 {
         return Err(Legacy);
     }
-    let source_type = raw.get("sourceType").and_then(|value| value.as_str());
-    if version != 2 || !matches!(source_type, Some("github" | "node_modules")) {
-        return Err(Unsupported);
-    }
+    let source_type = match raw.get("sourceType").and_then(|value| value.as_str()) {
+        Some(kind @ ("github" | "gitlab" | "git" | "node_modules")) if version == 2 => kind,
+        _ => return Err(Unsupported),
+    };
     let entry: LockEntry = serde_json::from_value(raw.clone()).map_err(|_| Invalid)?;
     if !is_hex(&entry.computed_hash, 64) {
         return Err(Invalid);
@@ -236,7 +247,7 @@ fn restore_source(
         .as_deref()
         .map(locked_skill_directory)
         .transpose()?;
-    let location = if source_type == Some("node_modules") {
+    let location = if source_type == "node_modules" {
         let hints: NodeModuleHints = serde_json::from_value(raw.clone()).map_err(|_| Invalid)?;
         RestoreLocation::NodeModules(NodeModuleSkill {
             package: npm_package_path(&entry.source)?,
@@ -250,7 +261,7 @@ fn restore_source(
             skill_path: skill_path.ok_or(Invalid)?,
         })
     } else {
-        RestoreLocation::GitHub(github_lock_source(&entry, name, skill_path)?)
+        RestoreLocation::Git(git_lock_source(&entry, source_type, name, skill_path)?)
     };
     Ok(RestoreSource {
         location,
@@ -291,17 +302,10 @@ fn npm_package_path(value: &str) -> Result<PathBuf, ProjectLockedSkillStatus> {
     }
 }
 
-fn github_lock_source(
-    entry: &LockEntry,
-    name: &str,
-    skill_path: Option<PathBuf>,
-) -> Result<GitHubSkill, ProjectLockedSkillStatus> {
+fn github_repository(source: &str) -> Result<(String, PathBuf), ProjectLockedSkillStatus> {
     use ProjectLockedSkillStatus::Invalid;
 
-    let source = entry
-        .source
-        .strip_prefix("https://github.com/")
-        .unwrap_or(&entry.source);
+    let source = source.strip_prefix("https://github.com/").unwrap_or(source);
     let mut parts = source.split('/');
     let owner = parts.next().ok_or(Invalid)?;
     let repository = parts.next().ok_or(Invalid)?.trim_end_matches(".git");
@@ -321,6 +325,50 @@ fn github_lock_source(
         }
         subpath.push(part);
     }
+    Ok((
+        format!("https://github.com/{owner}/{repository}.git"),
+        subpath,
+    ))
+}
+
+fn recorded_git_repository(source: &str) -> Result<String, ProjectLockedSkillStatus> {
+    use ProjectLockedSkillStatus::{Invalid, Unsupported};
+
+    if !source.starts_with("https://") {
+        return Err(Unsupported);
+    }
+    if source.chars().any(|ch| ch.is_control() || ch == '\\') {
+        return Err(Invalid);
+    }
+    let url = reqwest::Url::parse(source).map_err(|_| Invalid)?;
+    if url.host_str().is_none()
+        || url.path() == "/"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(Invalid);
+    }
+    Ok(url.into())
+}
+
+fn git_lock_source(
+    entry: &LockEntry,
+    source_type: &str,
+    name: &str,
+    skill_path: Option<PathBuf>,
+) -> Result<GitSkill, ProjectLockedSkillStatus> {
+    use ProjectLockedSkillStatus::Invalid;
+
+    let (url, subpath) = if source_type == "github" {
+        github_repository(&entry.source)?
+    } else {
+        (
+            recorded_git_repository(entry.source_url.as_deref().unwrap_or(&entry.source))?,
+            PathBuf::new(),
+        )
+    };
     if skill_path
         .as_ref()
         .is_some_and(|path| !path.starts_with(&subpath))
@@ -352,11 +400,8 @@ fn github_lock_source(
     if !valid_skill_name(skill_name) {
         return Err(Invalid);
     }
-    Ok(GitHubSkill {
-        repository: RepositoryRevision {
-            url: format!("https://github.com/{owner}/{repository}.git"),
-            reference,
-        },
+    Ok(GitSkill {
+        repository: RepositoryRevision { url, reference },
         commit: entry.commit.clone(),
         subpath,
         skill_path,
@@ -503,12 +548,12 @@ fn restore_with(
                 Err(error) => return Err(error.to_string()),
             }
             let skill = match &source.location {
-                RestoreLocation::GitHub(github) => {
+                RestoreLocation::Git(git) => {
                     let checkout = checkouts
-                        .entry(github.repository.clone())
-                        .or_insert_with(|| fetch(&github.repository));
+                        .entry(git.repository.clone())
+                        .or_insert_with(|| fetch(&git.repository));
                     let (checkout, _temporary) = checkout.as_ref().map_err(Clone::clone)?;
-                    if let Some(commit) = &github.commit {
+                    if let Some(commit) = &git.commit {
                         if !installer::read_checkout_commit(checkout)
                             .is_some_and(|actual| actual.eq_ignore_ascii_case(commit))
                         {
@@ -517,7 +562,7 @@ fn restore_with(
                             );
                         }
                     }
-                    select_github_skill(checkout, github)?
+                    select_git_skill(checkout, git)?
                 }
                 RestoreLocation::NodeModules(package) => select_node_module_skill(root, package)?,
             };
@@ -578,7 +623,7 @@ fn checked_destination(root: &Path, create: bool) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn select_github_skill(checkout: &Path, source: &GitHubSkill) -> Result<PathBuf, String> {
+fn select_git_skill(checkout: &Path, source: &GitSkill) -> Result<PathBuf, String> {
     let root = checkout.canonicalize().map_err(|error| error.to_string())?;
     let skill = if let Some(path) = &source.skill_path {
         root.join(path)
@@ -663,7 +708,7 @@ fn install_verified_skill(
         // Older entries can match the source bytes even with a different destination name.
         let renamed = matches!(
             &source.location,
-            RestoreLocation::GitHub(github) if github.skill_name != name
+            RestoreLocation::Git(git) if git.skill_name != name
         );
         if !renamed || !verify_staged_alias(&staged, name, &source.hash)? {
             return Err("Skill content does not match the lock file".to_string());
@@ -1277,6 +1322,103 @@ mod tests {
 
     #[test]
     fn restores_the_pinned_skill_and_preserves_other_entries() {
+        restore_pinned_fixture(
+            "github",
+            "example/skills",
+            None,
+            "https://github.com/example/skills.git",
+        );
+    }
+
+    #[test]
+    fn restores_pinned_gitlab_and_generic_https_skills() {
+        restore_pinned_fixture(
+            "gitlab",
+            "engineering/team/skills",
+            Some("https://gitlab.com/engineering/team/skills.git"),
+            "https://gitlab.com/engineering/team/skills.git",
+        );
+        restore_pinned_fixture(
+            "git",
+            "https://git.example.test:8443/team/_git/skills",
+            None,
+            "https://git.example.test:8443/team/_git/skills",
+        );
+    }
+
+    #[test]
+    fn refuses_ambiguous_sources_and_sensitive_https_urls_before_fetch() {
+        let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let cases = [
+            ("ambiguous", None, Unsupported, "team/skills"),
+            (
+                "credentials",
+                Some("https://user:example@git.example.test/team/skills.git"),
+                Invalid,
+                "git.example.test",
+            ),
+            (
+                "query",
+                Some("https://git.example.test/team/skills.git?token=example"),
+                Invalid,
+                "git.example.test",
+            ),
+            (
+                "fragment",
+                Some("https://git.example.test/team/skills.git#example"),
+                Invalid,
+                "git.example.test",
+            ),
+            (
+                "ssh",
+                Some("ssh://git@git.example.test/team/skills.git"),
+                Unsupported,
+                "git.example.test",
+            ),
+            (
+                "local",
+                Some("file:///local/team/skills.git"),
+                Unsupported,
+                "file:///local/team/skills.git",
+            ),
+        ];
+        let entries: BTreeMap<_, _> = cases
+            .iter()
+            .map(|(name, source_url, _, _)| {
+                (
+                    *name,
+                    json!({
+                        "source": "team/skills",
+                        "sourceType": "git",
+                        "sourceUrl": source_url,
+                        "computedHash": PORTABLE_HASH,
+                    }),
+                )
+            })
+            .collect();
+        write_lock(&root, json!({ "version": 2, "skills": entries }));
+        let lock = preview(&root).unwrap();
+        for (name, _, status, source) in cases {
+            let skill = lock.skills.iter().find(|skill| skill.name == name).unwrap();
+            assert_eq!(skill.source, source);
+            assert_eq!(skill.status, status);
+        }
+        let names = lock.skills.iter().map(|skill| skill.name.clone()).collect();
+        let results = restore_with(&root, &lock.revision, names, |_| {
+            panic!("a rejected HTTPS Git source must not fetch")
+        })
+        .unwrap();
+        assert!(results.iter().all(|result| result.error.is_some()));
+        assert!(!root.join(".agents").exists());
+    }
+
+    fn restore_pinned_fixture(
+        source_type: &str,
+        source: &str,
+        source_url: Option<&str>,
+        checkout_url: &str,
+    ) {
         let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
         let repo = temporary.path().join("source repository");
         let project = temporary.path().join("target project");
@@ -1296,8 +1438,9 @@ mod tests {
         run_git(&repo, &["commit", "-am", "newer release"]);
 
         let entry = json!({
-            "source": "example/skills",
-            "sourceType": "github",
+            "source": source,
+            "sourceType": source_type,
+            "sourceUrl": source_url,
             "commit": commit,
             "ref": "main",
             "skillName": "original",
@@ -1333,13 +1476,14 @@ mod tests {
         let lock = preview(&project).unwrap();
         assert_eq!(lock.skills[0].status, Ready);
         assert_eq!(lock.skills[1].status, Existing);
+        assert_eq!(lock.skills[0].source, source_url.unwrap_or(source));
         let names = lock.skills.iter().map(|skill| skill.name.clone()).collect();
         let fetch_path = repo.to_str().unwrap();
         #[cfg(windows)]
         let fetch_path = fetch_path.strip_prefix(r"\\?\").unwrap_or(fetch_path);
         let mut fetches = 0;
         let results = restore_with(&project, &lock.revision, names, |remote| {
-            assert_eq!(remote.url, "https://github.com/example/skills.git");
+            assert_eq!(remote.url, checkout_url);
             assert_eq!(remote.reference, commit);
             fetches += 1;
             installer::checkout_skill_lock_ref(fetch_path, &remote.reference)
