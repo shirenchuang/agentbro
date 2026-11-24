@@ -2113,23 +2113,117 @@ fn position_skill_pack_picker(window: &tauri::WebviewWindow) {
 }
 
 fn first_pending_permission(store: &SessionStore) -> Option<SessionState> {
-    let mut sessions: Vec<_> = store
+    store
         .get_all_sessions()
         .into_iter()
         .filter(|session| session.pending_permission.is_some())
-        .collect();
-    sessions.sort_by_key(|session| session.started_at);
-    sessions.into_iter().next()
+        .min_by_key(|session| {
+            (
+                session.pending_permission_order.unwrap_or(usize::MAX),
+                session.started_at,
+            )
+        })
 }
 
 fn first_pending_question(store: &SessionStore) -> Option<SessionState> {
-    let mut sessions: Vec<_> = store
+    store
         .get_all_sessions()
         .into_iter()
         .filter(|session| session.pending_question.is_some())
-        .collect();
-    sessions.sort_by_key(|session| session.started_at);
-    sessions.into_iter().next()
+        .min_by_key(|session| {
+            (
+                session.pending_question_order.unwrap_or(usize::MAX),
+                session.started_at,
+            )
+        })
+}
+
+#[cfg(test)]
+mod global_shortcut_order_tests {
+    use super::{first_pending_permission, first_pending_question, SessionStore};
+    use crate::hooks::session_store::{PendingPermission, PendingQuestion};
+
+    fn sessions() -> SessionStore {
+        let store = SessionStore::new();
+        for (id, started_at) in [("older-session", 1), ("newer-session", 2)] {
+            store.get_or_create_session(id, "claude-code", "fixture", "/fixture", "Terminal");
+            store.update_session(id, |session| session.started_at = started_at);
+        }
+        store
+    }
+
+    fn permission(id: &str) -> Option<PendingPermission> {
+        Some(PendingPermission {
+            tool_use_id: Some(id.to_string()),
+            tool_name: "Read".to_string(),
+            tool_input: String::new(),
+            diff: None,
+            options: None,
+        })
+    }
+
+    fn question(id: &str) -> Option<PendingQuestion> {
+        Some(PendingQuestion {
+            tool_use_id: Some(id.to_string()),
+            question: "Continue?".to_string(),
+            options: vec!["Continue".to_string()],
+            descriptions: Vec::new(),
+            header: None,
+            multi_select: false,
+            questions: Vec::new(),
+            source: None,
+            response_mode: None,
+        })
+    }
+
+    #[test]
+    fn permission_shortcuts_follow_request_arrival_and_replacement() {
+        let store = sessions();
+        store.set_pending_permission("newer-session", permission("first"));
+        store.set_pending_permission("older-session", permission("second"));
+        store.set_pending_permission("newer-session", permission("first"));
+        assert_eq!(
+            first_pending_permission(&store).unwrap().id,
+            "newer-session"
+        );
+
+        store.update_session("newer-session", |session| {
+            session.set_pending_permission(permission("replacement"));
+        });
+        store.clear_matching_permission("newer-session", Some("first"));
+        assert_eq!(
+            first_pending_permission(&store).unwrap().id,
+            "older-session"
+        );
+        store.clear_matching_permission("older-session", Some("second"));
+        assert_eq!(
+            first_pending_permission(&store)
+                .unwrap()
+                .pending_permission
+                .unwrap()
+                .tool_use_id
+                .as_deref(),
+            Some("replacement")
+        );
+    }
+
+    #[test]
+    fn question_shortcuts_follow_request_arrival_and_replacement() {
+        let store = sessions();
+        store.set_pending_question("newer-session", question("first"));
+        store.set_pending_question("older-session", question("second"));
+        store.set_pending_question("newer-session", question("first"));
+        assert_eq!(first_pending_question(&store).unwrap().id, "newer-session");
+
+        store.update_session("newer-session", |session| {
+            session.set_pending_question(question("replacement"));
+        });
+        assert_eq!(first_pending_question(&store).unwrap().id, "older-session");
+        store.clear_matching_question("older-session", Some("second"));
+        assert_eq!(first_pending_question(&store).unwrap().id, "newer-session");
+        store.clear_matching_question("newer-session", Some("replacement"));
+        assert!(first_pending_question(&store).is_none());
+    }
 }
 
 fn handle_permission_shortcut(app: tauri::AppHandle, allowed: bool) {
