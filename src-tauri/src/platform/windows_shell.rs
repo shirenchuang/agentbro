@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
-use std::ptr::null;
+use std::ptr::{null, null_mut};
 use windows::core::{HRESULT, PCWSTR};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_LOCAL_SERVER};
 use windows::Win32::UI::Shell::{
@@ -11,7 +11,8 @@ use windows_sys::Win32::System::Com::{
     CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
 };
 use windows_sys::Win32::UI::Shell::{
-    ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
+    AssocQueryStringW, ShellExecuteExW, ASSOCF_APP_TO_APP, ASSOCF_INIT_IGNOREUNKNOWN,
+    ASSOCF_IS_PROTOCOL, ASSOCSTR_PROGID, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
@@ -41,13 +42,61 @@ impl ShellApartment {
         Ok(())
     }
 
-    pub(crate) fn activate_packaged_app(&self, app_id: &str) -> windows::core::Result<u32> {
+    pub(crate) fn open_uri(&self, uri: &str) -> io::Result<()> {
+        let (scheme, _) = uri
+            .split_once(':')
+            .filter(|(scheme, _)| !scheme.is_empty())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Missing URI scheme"))?;
+        // The shell may report success after handing an unknown URI to the app picker.
+        if !has_protocol_handler(scheme) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("No app is registered for the {scheme} protocol"),
+            ));
+        }
+        self.open(OsStr::new(uri))
+    }
+
+    pub(crate) fn activate_packaged_app(&self, app_id: &str) -> Result<(), String> {
         let app_id: Vec<u16> = app_id.encode_utf16().chain([0]).collect();
         let manager: IApplicationActivationManager =
-            unsafe { CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER) }?;
-        unsafe {
+            unsafe { CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER) }
+                .map_err(|error| error.to_string())?;
+        let pid = unsafe {
             manager.ActivateApplication(PCWSTR(app_id.as_ptr()), PCWSTR::null(), AO_NOERRORUI)
         }
+        .map_err(|error| error.to_string())?;
+        if pid == 0 {
+            return Err("Windows did not return a process for the activated app".to_string());
+        }
+        Ok(())
+    }
+}
+
+fn has_protocol_handler(scheme: &str) -> bool {
+    let scheme: Vec<u16> = scheme.encode_utf16().chain([0]).collect();
+    let mut length = 0;
+    let result = unsafe {
+        AssocQueryStringW(
+            ASSOCF_IS_PROTOCOL | ASSOCF_INIT_IGNOREUNKNOWN | ASSOCF_APP_TO_APP,
+            ASSOCSTR_PROGID,
+            scheme.as_ptr(),
+            null(),
+            null_mut(),
+            &mut length,
+        )
+    };
+    HRESULT(result).is_ok() && length > 1
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn windows_shell_resolves_registered_protocols() {
+        assert!(super::has_protocol_handler("https"));
+        assert!(!super::has_protocol_handler(
+            "agentbro-fixture-unregistered-protocol"
+        ));
     }
 }
 

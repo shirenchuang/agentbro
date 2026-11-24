@@ -2994,13 +2994,12 @@ fn open_windows_codex_targets(
     app_paths: impl FnOnce() -> Vec<PathBuf>,
 ) -> Result<(), String> {
     use crate::platform::windows_shell::ShellApartment;
-    use std::ffi::OsStr;
 
     let mut errors = Vec::new();
     match ShellApartment::initialize() {
         Ok(shell) => {
             if let Some(target) = thread_uri {
-                match shell.open(OsStr::new(target)) {
+                match shell.open_uri(target) {
                     Ok(()) => return Ok(()),
                     Err(error) => errors.push(format!("{target}: {error}")),
                 }
@@ -3008,7 +3007,7 @@ fn open_windows_codex_targets(
 
             for app_id in app_ids() {
                 match shell.activate_packaged_app(&app_id) {
-                    Ok(_) => return Ok(()),
+                    Ok(()) => return Ok(()),
                     Err(error) => errors.push(format!("{app_id}: {error}")),
                 }
             }
