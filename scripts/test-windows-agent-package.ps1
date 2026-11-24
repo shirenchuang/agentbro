@@ -1,7 +1,19 @@
-﻿function Open-ManagedAgent([Windows.Automation.AutomationElement]$Island, [string]$AgentName) {
+﻿function Open-ManagedAgent(
+    [Windows.Automation.AutomationElement]$Island,
+    [string]$AgentName,
+    [switch]$RefreshPrograms,
+    [string]$SearchQuery = $AgentName
+) {
     $settings = Open-InstalledAgentSkills $Island
     $agents = Wait-IslandValue 'the Agent Management navigation item' { Find-PackControl $settings 'Agent 管理' }
     Invoke-PackControl $agents | Out-Host
+    if ($RefreshPrograms) {
+        $refresh = Wait-IslandValue 'the enabled Agent version refresh' {
+            $button = Find-PackControl $settings '获取版本'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        }
+        Invoke-PackControl $refresh
+    }
     $search = Wait-IslandValue 'the Agent search' {
         Find-PackControl $settings 'Search Agents' ([Windows.Automation.ControlType]::Edit)
     }
@@ -14,7 +26,7 @@
             [AgentBroSmokeInput]::PressKeyInWindow($handle, $key)
         }
     }
-    foreach ($character in $AgentName.ToCharArray()) {
+    foreach ($character in $SearchQuery.ToCharArray()) {
         if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $handle) {
             throw 'Agent Management lost focus before entering the Agent search'
         }
@@ -419,12 +431,8 @@ function Test-InstalledRegisteredAgentApp(
             $key.Dispose()
         }
 
-        $settings = Open-ManagedAgent $Island $AgentName
-        $refresh = Wait-IslandValue 'the enabled Agent version refresh' {
-            $button = Find-PackControl $settings '获取版本'
-            if ($button -and $button.Current.IsEnabled) { $button }
-        }
-        Invoke-PackControl $refresh
+        $searchQuery = if ($AgentName -eq 'Qoder Desktop') { 'Qoder' } else { $AgentName }
+        $settings = Open-ManagedAgent $Island $AgentName -RefreshPrograms -SearchQuery $searchQuery
         $paths = Wait-IslandValue 'the Paths & settings tab' { Find-PackControl $settings 'Paths & settings' }
         Invoke-PackControl $paths
         $null = Wait-IslandValue 'the installed Agent and its registered application path' {
@@ -435,12 +443,10 @@ function Test-InstalledRegisteredAgentApp(
         }
         Write-Output "Agent Management detected the registered $AgentName fixture and displayed its custom executable path."
         if ($AgentName -eq 'Qoder Desktop') {
-            $settings = Open-ManagedAgent $Island 'Qoder IDE'
-            $null = Wait-IslandValue 'Qoder IDE remaining uninstalled with Qoder Desktop registered' {
-                (Find-PackControl $settings '打开安装页') -and -not (Test-PackVisibleText $settings $executable)
+            if (Find-PackControl $settings 'Qoder IDE' ([Windows.Automation.ControlType]::Button)) {
+                throw 'Agent Management also counted the registered Qoder Desktop as an installed IDE'
             }
             Write-Output 'Agent Management kept Qoder IDE separate from the registered Qoder Desktop app.'
-            $settings = Open-ManagedAgent $Island $AgentName
         }
 
         Remove-Item -LiteralPath $executable
