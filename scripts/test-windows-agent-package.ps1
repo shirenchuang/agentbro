@@ -1,4 +1,21 @@
-﻿function Open-ManagedAgent(
+﻿function Invoke-ManagedAgentButton([Windows.Automation.AutomationElement]$Settings, [string]$Name) {
+    $null = Wait-IslandValue "invoking $Name in Agent Management" {
+        try {
+            $button = Find-PackControl $Settings $Name ([Windows.Automation.ControlType]::Button)
+            $invoke = $null
+            if ($button -and $button.Current.IsEnabled -and
+                $button.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
+                $invoke.Invoke()
+                return $true
+            }
+        } catch {
+            if ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
+                $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]) { throw }
+        }
+    }
+}
+
+function Open-ManagedAgent(
     [Windows.Automation.AutomationElement]$Island,
     [string]$AgentName,
     [switch]$RefreshPrograms,
@@ -32,19 +49,7 @@
         }
         [AgentBroSmokeInput]::AppendCharacter($character)
     }
-    $null = Wait-IslandValue "selecting $AgentName in Agent Management" {
-        try {
-            $agent = Find-PackControl $settings $AgentName ([Windows.Automation.ControlType]::Button)
-            $invoke = $null
-            if ($agent -and $agent.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
-                $invoke.Invoke()
-                return $true
-            }
-        } catch {
-            if ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
-                $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]) { throw }
-        }
-    }
+    Invoke-ManagedAgentButton $settings $AgentName
     Write-Host "Selected $AgentName through Windows UI Automation."
     $settings
 }
@@ -409,8 +414,8 @@ function Test-InstalledQoderSharedSkillsCleanup([Windows.Automation.AutomationEl
         @('---', 'name: qoder-cleanup-fixture', 'description: Shared Qoder Skill fixture', '---', 'Fixture content') |
             Set-Content -LiteralPath $skill -Encoding utf8
         $originalSkill = Get-Content -LiteralPath $skill -Raw
-        Invoke-PackControl (Wait-IslandValue 'the Hooks tab' { Find-PackControl $Settings 'Hooks' })
-        Invoke-PackControl (Wait-IslandValue 'the Qoder Desktop Hook install button' { Find-PackControl $Settings '安装 Hook' })
+        Invoke-ManagedAgentButton $Settings 'Hooks'
+        Invoke-ManagedAgentButton $Settings '安装 Hook'
         $null = Wait-IslandValue 'the installed Qoder Desktop Hook' {
             (Test-Path -LiteralPath $config -PathType Leaf) -and (Find-PackControl $Settings '卸载 Hook')
         }
@@ -483,8 +488,7 @@ function Test-InstalledRegisteredAgentApp(
 
         $searchQuery = if ($AgentName -eq 'Qoder Desktop') { 'Qoder' } else { $AgentName }
         $settings = Open-ManagedAgent $Island $AgentName -RefreshPrograms -SearchQuery $searchQuery
-        $paths = Wait-IslandValue 'the Paths & settings tab' { Find-PackControl $settings 'Paths & settings' }
-        Invoke-PackControl $paths
+        Invoke-ManagedAgentButton $settings 'Paths & settings'
         $null = Wait-IslandValue 'the installed Agent and its registered application path' {
             (Test-PackVisibleText $settings $executable) -and (Find-PackControl $settings '无需更新')
         }
