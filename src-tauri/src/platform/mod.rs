@@ -10,4 +10,6 @@ pub mod process;
 pub(crate) mod windows_environment;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_shell;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows_startup;
 pub mod wsl;
