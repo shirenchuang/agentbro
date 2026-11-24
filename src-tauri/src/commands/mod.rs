@@ -17,8 +17,8 @@ use crate::hooks::diagnostics::DiagnosticRingBuffer;
 use crate::hooks::file_watcher::ConversationWatcher;
 use crate::hooks::server::{HookServer, RawHookEvent};
 use crate::hooks::session_store::{
-    PendingQuestion, RateLimitInfo, SessionPhase, SessionState, SessionStore, SubagentInfo,
-    UsageRateWindow,
+    PendingQuestion, RateLimitInfo, SessionPhase, SessionState, SessionStore, SessionUpdatePayload,
+    SubagentInfo, UsageRateWindow,
 };
 use crate::network_monitor::NetworkMonitor;
 use crate::platform::display_controller::DisplayController;
@@ -266,11 +266,21 @@ enum CodexAppServerOutgoingRequest {
 
 #[tauri::command]
 pub async fn get_sessions(state: State<'_, AppState>) -> Result<Vec<SessionState>, String> {
-    let sessions = state.session_store.get_all_sessions();
-    for session in &sessions {
-        hydrate_subagents_for_session(&state.session_store, session);
+    Ok(snapshot_with_hydrated_subagents(&state.session_store).sessions)
+}
+
+#[tauri::command]
+pub async fn get_session_snapshot(
+    state: State<'_, AppState>,
+) -> Result<SessionUpdatePayload, String> {
+    Ok(snapshot_with_hydrated_subagents(&state.session_store))
+}
+
+fn snapshot_with_hydrated_subagents(store: &SessionStore) -> SessionUpdatePayload {
+    for session in &store.get_all_sessions() {
+        hydrate_subagents_for_session(store, session);
     }
-    Ok(state.session_store.get_all_sessions())
+    store.snapshot(false)
 }
 
 #[tauri::command]

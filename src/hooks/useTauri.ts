@@ -3,10 +3,10 @@
  */
 import { useEffect } from 'react'
 import i18n from 'i18next'
-import { isTauri, getSessions, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setSoundEventRule, getActiveThemeBundle, setLanguage, getAppStateFlags } from '../services/tauriApi'
+import { isTauri, getSessionSnapshot, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setSoundEventRule, getActiveThemeBundle, setLanguage, getAppStateFlags } from '../services/tauriApi'
 import { usePetStore } from '../stores/petStore'
 import { useMarketStore } from '../stores/marketStore'
-import type { BackendSession, BackendConfig, ParsedMessage, ParsedMessageBlock } from '../services/tauriApi'
+import type { BackendSession, BackendSessionSnapshot, BackendConfig, ParsedMessage, ParsedMessageBlock } from '../services/tauriApi'
 import { useSessionStore } from '../stores/sessionStore'
 import { useConfigStore } from '../stores/configStore'
 import { useThemeStore } from '../stores/themeStore'
@@ -513,7 +513,7 @@ export function useSessionEvents(mode: SessionSyncMode = 'full') {
     let unlisten: (() => void) | undefined
     let cancelled = false
     let lastSessionSnapshot = ''
-    let sessionEventVersion = 0
+    let latestRevision = -1
     let refreshInFlight = false
     const fullSync = mode === 'full'
     const usageRateLimitTimer = fullSync
@@ -526,21 +526,21 @@ export function useSessionEvents(mode: SessionSyncMode = 'full') {
       suppressed,
       sessions: [...sessions].sort((a, b) => a.id.localeCompare(b.id)),
     })
-    const applyBackendSessions = (
-      sessions: BackendSession[],
-      options: { suppressed?: boolean; force?: boolean } = {},
-    ) => {
-      const suppressed = options.suppressed === true
-      const snapshot = snapshotSessions(sessions, suppressed)
-      if (!options.force && snapshot === lastSessionSnapshot) return
-      lastSessionSnapshot = snapshot
+    const applyBackendSessions = (snapshot: BackendSessionSnapshot, force = false) => {
+      const { revision, sessions } = snapshot
+      if (revision <= latestRevision) return
+      latestRevision = revision
+      const suppressed = snapshot.suppressed === true
+      const serialized = snapshotSessions(sessions, suppressed)
+      if (!force && serialized === lastSessionSnapshot) return
+      lastSessionSnapshot = serialized
 
       const transformed = sessions.map(transformSession)
       const store = useSessionStore.getState()
       store.replaceAllSessions(transformed, { suppressed })
       const usageSnapshots = sessionUsageSnapshots(transformed)
       if (usageSnapshots.length > 0) store.setUsageSnapshots(usageSnapshots)
-      if (fullSync) refreshUsageRateLimits(options.force === true)
+      if (fullSync) refreshUsageRateLimits(force)
       if (suppressed) {
         const current = useSessionStore.getState().panelState
         if (current === 'expanded') {
@@ -551,15 +551,12 @@ export function useSessionEvents(mode: SessionSyncMode = 'full') {
 
     const refreshSessions = async (force = false) => {
       if (cancelled || refreshInFlight) return
-      const observedVersion = sessionEventVersion
       refreshInFlight = true
       try {
-        const sessions = await getSessions()
-        if (!cancelled && observedVersion === sessionEventVersion) {
-          applyBackendSessions(sessions, { force })
-        }
+        const snapshot = await getSessionSnapshot()
+        if (!cancelled) applyBackendSessions(snapshot, force)
       } catch (error) {
-        console.error('[tauri] getSessions:', error)
+        console.error('[tauri] getSessionSnapshot:', error)
       } finally {
         refreshInFlight = false
       }
@@ -570,12 +567,11 @@ export function useSessionEvents(mode: SessionSyncMode = 'full') {
       ? window.setInterval(() => { void refreshSessions() }, SESSION_REFRESH_FALLBACK_MS)
       : undefined
 
-    const listener = listenForTauriEvent<{ sessions: BackendSession[]; suppressed?: boolean }>(
+    const listener = listenForTauriEvent<BackendSessionSnapshot>(
       'session-update',
       (event) => {
         if (cancelled) return
-        sessionEventVersion += 1
-        applyBackendSessions(event.payload.sessions, { suppressed: event.payload.suppressed === true })
+        applyBackendSessions(event.payload)
       },
       (fn) => { unlisten = fn },
       () => cancelled,
