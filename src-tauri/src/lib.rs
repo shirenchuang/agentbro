@@ -5967,6 +5967,11 @@ pub fn run() {
         Err(error) => (None, Some(error)),
     };
 
+    #[cfg(target_os = "windows")]
+    let startup = Arc::new(platform::windows_startup::StartupRecovery::default());
+    #[cfg(target_os = "windows")]
+    let startup_setup = Arc::clone(&startup);
+
     let context = tauri::generate_context!();
     #[cfg(target_os = "windows")]
     let context = {
@@ -6007,6 +6012,10 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
+            #[cfg(target_os = "windows")]
+            if !startup_setup.windows_created() {
+                return Ok(());
+            }
             log::info!("Startup: configured windows created");
             #[cfg(target_os = "windows")]
             if let Some(error) = startup_lock_error {
@@ -6832,5 +6841,9 @@ pub fn run() {
         .build(context)
         .expect("error while building AgentBro");
     log::info!("Startup: creating configured windows");
+    #[cfg(target_os = "windows")]
+    if let Err(error) = startup.watch(platform::windows_startup::WINDOW_TIMEOUT) {
+        log::warn!("Could not start the Windows startup monitor: {error}");
+    }
     app.run(|_, _| {});
 }

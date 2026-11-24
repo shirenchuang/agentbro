@@ -94,6 +94,9 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::programs::tests'
       - name: Test Agent launcher discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::executable::tests'
+      - name: Test the native startup recovery dialog
+        timeout-minutes: 2
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE platform::windows_startup::tests'
       - name: Test native Codex Desktop jump fallback
         timeout-minutes: 2
         run: |
