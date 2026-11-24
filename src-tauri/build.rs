@@ -14,6 +14,9 @@ fn ensure_bridge_resource_placeholder() {
         return;
     }
     if std::fs::create_dir_all(&resource_dir).is_ok() {
-        let _ = std::fs::write(resource_path, []);
+        let _ = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(resource_path);
     }
 }

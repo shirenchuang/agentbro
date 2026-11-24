@@ -1,6 +1,7 @@
 // hook_manager.rs — Shared hook install/uninstall logic for JSON, YAML, and TOML configs
 // NEVER corrupts user's existing config: all operations are atomic read-modify-write.
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 const AGENTBRO_MARKER: &str = "agentbro";
@@ -250,8 +251,15 @@ pub fn bridge_binary_is_current() -> bool {
 }
 
 fn bridge_binary_is_current_at(dest: &Path, source: Option<&Path>) -> bool {
-    if !dest.exists() {
+    if !bridge_file_is_nonempty(dest) {
         return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if !std::fs::metadata(dest).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0) {
+            return false;
+        }
     }
 
     let Some(source) = source else {
@@ -314,34 +322,50 @@ pub fn bridge_command_parts(bridge: &Path, args: &[String]) -> Vec<String> {
 /// Ensure the bridge binary is deployed to ~/.agentbro/bin.
 pub fn ensure_bridge_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let dest = raw_bridge_binary_path();
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let source = find_source_bridge();
+    install_bridge_binary(&dest, source.as_deref())?;
+    Ok(dest)
+}
 
-    if let Some(source) = find_source_bridge() {
-        let should_copy = match (std::fs::read(&dest), std::fs::read(&source)) {
-            (Ok(dest_bytes), Ok(source_bytes)) => dest_bytes != source_bytes,
-            _ => true,
-        };
-        if should_copy {
-            std::fs::copy(source, &dest)?;
-        }
-    } else if !dest.exists() {
+fn install_bridge_binary(dest: &Path, source: Option<&Path>) -> io::Result<()> {
+    if bridge_binary_is_current_at(dest, source) {
+        return Ok(());
+    }
+    let Some(source) = source else {
         let searched = bridge_source_candidates()
             .into_iter()
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(format!("Bridge binary not found. Searched: {searched}").into());
-    }
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("No usable Bridge binary found. Searched: {searched}"),
+        ));
+    };
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-
-    Ok(dest)
+    let staged = dest.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        std::fs::copy(source, &staged)?;
+        if !bridge_file_is_nonempty(&staged) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Bridge source became empty during installation",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+        }
+        std::fs::rename(&staged, dest)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(staged);
+    }
+    result
 }
 
 fn find_source_bridge() -> Option<PathBuf> {
@@ -351,7 +375,13 @@ fn find_source_bridge() -> Option<PathBuf> {
 }
 
 fn bridge_candidate_is_usable(bridge: &Path) -> bool {
-    bridge.exists() && bridge_candidate_is_fresh(bridge) && bridge_candidate_can_run(bridge)
+    bridge_file_is_nonempty(bridge)
+        && bridge_candidate_is_fresh(bridge)
+        && bridge_candidate_can_run(bridge)
+}
+
+fn bridge_file_is_nonempty(bridge: &Path) -> bool {
+    std::fs::metadata(bridge).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
 }
 
 fn bridge_candidate_is_fresh(bridge: &Path) -> bool {
@@ -506,27 +536,39 @@ mod tests {
     }
 
     #[test]
-    fn current_bridge_accepts_runnable_dest_when_source_is_unavailable() {
-        let dir = std::env::temp_dir().join(format!(
-            "agentbro-bridge-current-test-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
+    fn installed_bridge_recovers_from_empty_file_and_survives_empty_source() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
         #[cfg(target_os = "windows")]
-        let bridge = {
-            let path = dir.join("agentbro-bridge.cmd");
-            std::fs::write(&path, "@echo off\r\nexit /b 0\r\n").expect("write bridge script");
-            path
-        };
+        let (name, contents) = ("agentbro-bridge.cmd", "@echo off\r\nexit /b 0\r\n");
         #[cfg(not(target_os = "windows"))]
-        let bridge = {
-            let path = dir.join("agentbro-bridge");
-            std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write bridge script");
-            path
-        };
+        let (name, contents) = ("agentbro-bridge", "#!/bin/sh\nexit 0\n");
+        let source = fixture.path().join(name);
+        let bridge = fixture.path().join("bin").join(name);
+        std::fs::create_dir(bridge.parent().unwrap()).unwrap();
+        std::fs::write(&source, []).unwrap();
+        std::fs::write(&bridge, []).unwrap();
 
+        assert!(!bridge_candidate_is_usable(&source));
+        assert!(!bridge_binary_is_current_at(&bridge, Some(&source)));
+        assert_eq!(
+            install_bridge_binary(&bridge, None).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+
+        std::fs::write(&source, contents).unwrap();
+        assert!(bridge_candidate_is_usable(&source));
+        install_bridge_binary(&bridge, Some(&source)).unwrap();
+        assert_eq!(std::fs::read_to_string(&bridge).unwrap(), contents);
+        assert!(bridge_binary_is_current_at(&bridge, Some(&source)));
+
+        std::fs::write(&source, []).unwrap();
+        assert!(install_bridge_binary(&bridge, Some(&source)).is_err());
         assert!(bridge_binary_is_current_at(&bridge, None));
-
-        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!(std::fs::read_to_string(&bridge).unwrap(), contents);
+        assert_eq!(
+            std::fs::read_dir(bridge.parent().unwrap()).unwrap().count(),
+            1
+        );
     }
 }

@@ -94,6 +94,10 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::programs::tests'
       - name: Test Agent launcher discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::executable::tests'
+      - name: Test Hook bridge repair
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::hook_manager::tests'
+      - name: Test Qoder sessions and permission responses
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::server::tests::qoder_'
       - name: Test the native startup recovery dialog
         timeout-minutes: 2
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE platform::windows_startup::tests'
