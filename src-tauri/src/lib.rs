@@ -1974,12 +1974,12 @@ fn toggle_notch_window(app: &tauri::AppHandle) {
     }
 }
 
-fn show_notch_window(app: &tauri::AppHandle) {
+fn show_notch_window(app: &tauri::AppHandle, source: &str) {
     if let Some(window) = app.get_webview_window("notch") {
         let _ = window.show();
         configure_notch_window_for_spaces(app);
         let _ = window.set_focus();
-        let _ = app.emit("tray-open-agentbro", ());
+        let _ = app.emit("tray-open-agentbro", source);
     }
 }
 
@@ -2321,7 +2321,7 @@ fn handle_question_skip_shortcut(app: tauri::AppHandle) {
         return;
     };
     let Some(answer) = question_shortcut_option(&question).map(str::to_owned) else {
-        show_notch_window(&app);
+        show_notch_window(&app, "question-shortcut");
         return;
     };
 
@@ -6344,7 +6344,7 @@ pub fn run() {
                     }
                     match menu_id {
                         "show" => {
-                            show_notch_window(app);
+                            show_notch_window(app, "tray");
                         }
                         "settings" => {
                             let _ = show_settings_window(app);

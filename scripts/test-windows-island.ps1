@@ -751,16 +751,25 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
         $null = Wait-IslandValue 'the native Island hidden before the global question shortcut' {
             -not [AgentBroSmokeInput]::IsWindowVisible($WindowHandle)
         }
+        $desktop = [Windows.Automation.AutomationElement]::RootElement.Current.BoundingRectangle
+        if (-not [AgentBroSmokeInput]::SetCursorPos([int]$desktop.Left + 24, [int]$desktop.Bottom - 48)) {
+            throw 'Could not move the pointer away before the global question shortcut'
+        }
         try { [AgentBroSmokeInput]::SetGlobalShortcutKey(0x79, $true) }
         finally { [AgentBroSmokeInput]::SetGlobalShortcutKey(0x79, $false) }
-        if ($multipart.Reply.Wait(600)) {
-            throw "The global shortcut completed the multipart Hook: $($multipart.Reply.GetAwaiter().GetResult())"
-        }
         $null = Wait-IslandValue 'the Island reopened with the unresolved multipart question' {
             $island = Find-VisibleIsland
             $island -and (Test-PackVisibleText $island.Element 'Pick an output?')
         }
-        Write-Output 'Ctrl+Alt+F10 reopened the Island and the original multipart Hook stayed pending.'
+        Write-Output 'Ctrl+Alt+F10 reopened the multipart question while the pointer was away.'
+        if ($multipart.Reply.Wait(1600)) {
+            throw "The global shortcut completed the multipart Hook: $($multipart.Reply.GetAwaiter().GetResult())"
+        }
+        $island = Find-VisibleIsland
+        if (-not ($island -and (Test-PackVisibleText $island.Element 'Pick an output?'))) {
+            throw 'The focused multipart question collapsed while the pointer was away'
+        }
+        Write-Output 'The keyboard-opened question remained visible beyond the automatic collapse delay.'
 
         $null = Wait-IslandValue 'the Island foreground window after the global question shortcut' {
             [AgentBroSmokeInput]::GetForegroundWindow() -eq $WindowHandle
