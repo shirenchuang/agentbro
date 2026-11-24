@@ -927,6 +927,7 @@ pub fn configuration_url(profile: &AgentIntegrationProfile) -> PathBuf {
     match profile.id {
         "claude-code" => crate::agents::claude_code::default_config_root().join("settings.json"),
         "kimi" => crate::skills::agent_paths::kimi_code_home().join("config.toml"),
+        "qoder-cli" => crate::skills::agent_paths::qoder_cli_home().join("settings.json"),
         "deepseek-harness" => DeepSeekHarnessAdapter::profile().join("package.json"),
         _ => resolve_home_path(profile.configuration_path),
     }

@@ -24,7 +24,7 @@ pub fn detect_installed_tools() -> Vec<DetectedTool> {
         detect_copilot(),
         detect_qoder_app("qoder-desktop", "Qoder Desktop"),
         detect_qoder_app("qoder", "Qoder IDE"),
-        detect_tool("qoder-cli", "Qoder CLI", &["qodercli", "qoder"], &[]),
+        detect_qoder_cli(),
         detect_tool("codebuddy", "CodeBuddy", &["codebuddy"], &[".codebuddy"]),
         detect_tool("qwen", "Qwen Coder", &["qwen-coder", "qwen"], &[".qwen"]),
         detect_tool("kimi", "Kimi Code", &["kimi"], &[".kimi-code", ".kimi"]),
@@ -37,6 +37,13 @@ pub fn detect_installed_tools() -> Vec<DetectedTool> {
             &[".config/opencode", ".opencode"],
         ),
     ]
+}
+
+fn detect_qoder_cli() -> DetectedTool {
+    let mut tool = detect_tool("qoder-cli", "Qoder CLI", &["qodercli", "qoder"], &[]);
+    let root = crate::skills::agent_paths::qoder_cli_home();
+    tool.config_dir = root.is_dir().then(|| root.display().to_string());
+    tool
 }
 
 fn detect_qoder_app(agent_id: &str, display_name: &str) -> DetectedTool {

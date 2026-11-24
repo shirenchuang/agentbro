@@ -6,18 +6,13 @@ use super::{AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::PathBuf;
 
 pub struct QoderCliAdapter {
-    config_root: PathBuf,
     status: AdapterStatus,
 }
 
 impl QoderCliAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        let config_root = home.join(".qoder");
-        let status = Self::detect_status();
         Self {
-            config_root,
-            status,
+            status: Self::detect_status(),
         }
     }
 
@@ -26,7 +21,7 @@ impl QoderCliAdapter {
     }
 
     fn settings_path(&self) -> PathBuf {
-        self.config_root.join("settings.json")
+        profiles::configuration_url(&profiles::qoder_cli_profile())
     }
 }
 
@@ -74,5 +69,102 @@ impl AgentAdapter for QoderCliAdapter {
 
     fn hooks_installed(&self) -> bool {
         profiles::is_installed_at(&profiles::qoder_cli_profile(), &self.settings_path())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::{agent_paths, installer::TempInstallDir, v2::service::Service};
+
+    #[test]
+    fn qoder_cli_uses_one_configured_root_for_hooks_and_skills() {
+        const PROBE: &str = "AGENTBRO_QODER_ROOT_PROBE";
+        const TEST: &str =
+            "agents::qoder_cli::tests::qoder_cli_uses_one_configured_root_for_hooks_and_skills";
+        if let Some(root) = std::env::var_os(PROBE).map(PathBuf::from) {
+            let home = dirs::home_dir().unwrap();
+            let settings = root.join("settings.json");
+            let skill_root = root.join("skills");
+            let adapter = QoderCliAdapter::new();
+            assert_eq!(adapter.hook_config_paths(), vec![settings.clone()]);
+            assert_eq!(
+                profiles::configuration_url(&profiles::qoder_cli_profile()),
+                settings
+            );
+            assert_eq!(
+                agent_paths::paths_for_agent("qoder-cli").skill_dirs,
+                vec![skill_root.clone()]
+            );
+            assert_eq!(
+                agent_paths::paths_for_agent("qoder-desktop").skill_dirs,
+                vec![home.join(".qoder/skills")]
+            );
+            assert_eq!(
+                profiles::configuration_url(&profiles::qoder_profile()),
+                home.join(".qoder/settings.json")
+            );
+
+            std::fs::write(&settings, r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"agentbro-bridge --source qoder-cli"},{"type":"command","command":"echo user-hook"}]}]}}"#).unwrap();
+            let skill = skill_root.join("location-probe");
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(
+                skill.join("SKILL.md"),
+                "---\nname: location-probe\ndescription: A configured Qoder Skill\n---\nFixture.\n",
+            )
+            .unwrap();
+            let database = root.join("inventory.sqlite");
+            std::fs::File::create(&database).unwrap();
+            let service = Service::new(&database, home).unwrap();
+            let scan = service.scan_one_agent_into_db("qoder-cli").unwrap();
+            assert_eq!(scan.unmanaged, 1);
+            let detail = service.get_agent_detail("qoder-cli").unwrap();
+            assert_eq!(detail.config_path.as_deref(), settings.to_str());
+            assert_eq!(detail.skills_dir.as_deref(), skill_root.to_str());
+            assert!(adapter.hooks_installed());
+            adapter.remove_hooks().unwrap();
+            assert!(!adapter.hooks_installed());
+            assert!(std::fs::read_to_string(&settings)
+                .unwrap()
+                .contains("echo user-hook"));
+            return;
+        }
+
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = fixture.path().join("Qoder 配置");
+        std::fs::create_dir(&root).unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", TEST, "--nocapture"])
+            .env(PROBE, &root)
+            .env("QODER_CONFIG_DIR", &root);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            std::fs::write(
+                fixture.path().join(".zshrc"),
+                r#"export QODER_CONFIG_DIR="$AGENTBRO_QODER_ROOT_PROBE""#,
+            )
+            .unwrap();
+            let output = command
+                .env_remove("QODER_CONFIG_DIR")
+                .env("SHELL", "/bin/zsh")
+                .env("ZDOTDIR", fixture.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 }

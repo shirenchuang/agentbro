@@ -5929,6 +5929,11 @@ impl Service {
             .as_ref()
             .map(|home| home.join("config.toml"))
             .or_else(|| {
+                (agent_id == "qoder-cli").then(|| {
+                    crate::skills::agent_paths::qoder_cli_home_for(&self.home).join("settings.json")
+                })
+            })
+            .or_else(|| {
                 crate::agents::profiles::profile_for_agent(agent_id).and_then(|profile| {
                     crate::agents::profiles::activation_url(&profile)
                         .or_else(|| Some(crate::agents::profiles::configuration_url(&profile)))
