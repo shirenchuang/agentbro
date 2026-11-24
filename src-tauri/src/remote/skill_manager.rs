@@ -1426,6 +1426,214 @@ os.replace = _agentbro_fail_link_activation
     }
 
     #[test]
+    fn remote_claude_pack_claims_and_removals_follow_the_reviewed_profile() {
+        let home =
+            std::env::temp_dir().join(format!("agentbro-remote-claude-{}", uuid::Uuid::new_v4()));
+        write_remote_skill(&home.join(".agentbro/skills/ship"), "ship", "center\n");
+        let home = home.canonicalize().expect("canonical test home");
+        let profile_a = home.join("Claude team A");
+        let profile_b = home.join("Claude team B");
+        std::fs::create_dir(&profile_a).expect("create configured profile");
+        std::fs::write(
+            profile_a.join("settings.json"),
+            r#"{"enabledPlugins":{"tools@team":true}}"#,
+        )
+        .expect("write profile settings");
+        write_remote_skill(
+            &home.join(".claude/skills/local-only"),
+            "local-only",
+            "default\n",
+        );
+        write_remote_skill(
+            &profile_b.join("skills/local-only"),
+            "local-only",
+            "team B\n",
+        );
+        write_remote_skill(&profile_b.join("skills/ship"), "ship", "center\n");
+
+        let a = profile_a.to_str();
+        let b = profile_b.to_str();
+        let request =
+            |profile, command, args| run_script_in_claude_profile(&home, profile, command, args);
+        let call = |profile, command, args| {
+            request(profile, command, args).expect("remote request succeeds")
+        };
+        let agent = serde_json::json!({"agentId": "claude-code"});
+        let pack = serde_json::json!({"packId": "team"});
+        let apply = serde_json::json!({"packId": "team", "targetAgents": ["claude-code"], "requestedMode": "copy"});
+        let revoke = serde_json::json!({"packId": "team", "agentId": "claude-code"});
+        let member =
+            serde_json::json!({"packId": "team", "skillId": "ship", "alsoRemoveTargets": true});
+        for id in ["team", "legacy"] {
+            call(
+                None,
+                "execute_upsert_skill_pack",
+                serde_json::json!({"pack": {"id": id, "skillIds": ["ship"]}}),
+            );
+        }
+        call(None, "execute_apply_skill_pack", apply.clone());
+        let state_path = home.join(".agentbro/skill-manager-remote.json");
+        let mut state: Value =
+            serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+        state["packs"]["legacy"]["appliedAgents"] = serde_json::json!(["claude-code"]);
+        std::fs::write(state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        let default = call(None, "get_agent_detail_v2", agent.clone());
+        assert_eq!(default["skills"][0]["id"], "claude-code::ship");
+        assert_eq!(default["skills"][0]["claims"].as_array().unwrap().len(), 2);
+
+        let detail_a = call(a, "get_agent_detail_v2", agent.clone());
+        assert_eq!(
+            detail_a["skillsDir"],
+            profile_a.join("skills").to_str().unwrap()
+        );
+        assert_eq!(
+            detail_a["configPath"],
+            profile_a.join("settings.json").to_str().unwrap()
+        );
+        assert_eq!(
+            detail_a["pluginDir"],
+            profile_a.join("plugins/cache").to_str().unwrap()
+        );
+        assert_eq!(
+            detail_a["mcpConfigPath"],
+            home.join(".claude.json").to_str().unwrap()
+        );
+        assert_eq!(detail_a["plugins"][0]["id"], "tools@team");
+        assert_eq!(detail_a["appliedPacks"], serde_json::json!([]));
+        let programs = call(a, "agent_list", serde_json::json!({}));
+        let claude = programs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == "claude-code")
+            .unwrap();
+        assert_eq!(claude["status"], "installed");
+        assert_eq!(claude["skillsDir"], detail_a["skillsDir"]);
+
+        let preview_a = call(a, "preview_apply_skill_pack", apply.clone());
+        assert_eq!(
+            preview_a["changes"][0]["targetPath"],
+            profile_a.join("skills/ship").to_str().unwrap()
+        );
+        let mut apply_a = apply.clone();
+        apply_a["reviewedPreview"] = preview_a;
+        let failure = request(b, "execute_apply_skill_pack", apply_a.clone()).unwrap_err();
+        assert!(failure.contains("Preview distribution again"), "{failure}");
+        call(a, "execute_apply_skill_pack", apply_a);
+        let applied_a = call(a, "get_agent_detail_v2", agent.clone());
+        let id_a = &applied_a["skills"][0]["id"];
+        assert_ne!(id_a, &default["skills"][0]["id"]);
+        assert_eq!(applied_a["appliedPacks"][0]["memberCount"], 1);
+        let alias = home.join("team alias");
+        std::os::unix::fs::symlink(&profile_a, &alias).unwrap();
+        let via_alias = call(alias.to_str(), "get_agent_detail_v2", agent.clone());
+        assert_eq!(via_alias["skills"][0]["id"], *id_a);
+        assert_eq!(via_alias["appliedPacks"], applied_a["appliedPacks"]);
+
+        let detail_b = call(b, "get_agent_detail_v2", agent.clone());
+        assert_eq!(detail_b["skills"][0]["claims"][0]["claimType"], "direct");
+        assert_eq!(detail_b["appliedPacks"], serde_json::json!([]));
+        let picker = call(b, "skill_pack_picker_data", serde_json::json!({}));
+        assert_eq!(
+            picker["appliedByAgent"]["claude-code"],
+            serde_json::json!([])
+        );
+        let failure = request(
+            b,
+            "delete_skill_target_distribution",
+            serde_json::json!({"targetId": id_a}),
+        )
+        .unwrap_err();
+        assert!(failure.contains("Target not found"), "{failure}");
+        let failure = request(
+            b,
+            "delete_unmanaged_agent_skill",
+            serde_json::json!({"agentId": "claude-code", "unmanagedId": "claude-code::local-only"}),
+        )
+        .unwrap_err();
+        assert!(failure.contains("Unmanaged Skill not found"), "{failure}");
+        call(b, "execute_apply_skill_pack", apply);
+
+        let mut revoke_a = revoke.clone();
+        revoke_a["reviewedPreview"] =
+            call(a, "preview_remove_skill_pack_from_agent", revoke.clone());
+        let failure = request(b, "execute_remove_skill_pack_from_agent", revoke_a).unwrap_err();
+        assert!(failure.contains("Preview the removal again"), "{failure}");
+        let mut stale_toggle = revoke.clone();
+        stale_toggle["reviewedPreview"] =
+            serde_json::json!({"targetScope": applied_a["targetScope"]});
+        let failure = request(b, "execute_remove_skill_pack_from_agent", stale_toggle).unwrap_err();
+        assert!(failure.contains("Preview the removal again"), "{failure}");
+        let mut stale_member = member.clone();
+        stale_member["reviewedPreview"] = call(a, "preview_remove_skill_from_pack", member);
+        let failure = request(b, "execute_remove_skill_from_pack", stale_member).unwrap_err();
+        assert!(failure.contains("Preview the removal again"), "{failure}");
+        let mut stale_delete = serde_json::json!({"skillId": "ship", "removeLinked": true});
+        stale_delete["reviewedPreview"] =
+            call(a, "preview_delete_center_skill", stale_delete.clone());
+        let failure = request(b, "execute_delete_center_skill", stale_delete).unwrap_err();
+        assert!(failure.contains("Preview the removal again"), "{failure}");
+        assert!(home.join(".agentbro/skills/ship/SKILL.md").is_file());
+        assert!(profile_b.join("skills/ship/SKILL.md").is_file());
+        assert!(profile_b.join("skills/local-only/SKILL.md").is_file());
+
+        let mut revoke_b = revoke.clone();
+        revoke_b["reviewedPreview"] = call(b, "preview_remove_skill_pack_from_agent", revoke);
+        let revoked = call(b, "execute_remove_skill_pack_from_agent", revoke_b);
+        assert_eq!(revoked["removedTargets"], 1);
+        assert!(!profile_b.join("skills/ship").exists());
+        assert!(profile_a.join("skills/ship/SKILL.md").is_file());
+        assert!(home.join(".claude/skills/ship/SKILL.md").is_file());
+        let pack_a = call(a, "get_skill_pack_detail", pack.clone());
+        assert_eq!(pack_a["appliedAgents"][0]["agentId"], "claude-code");
+        let pack_b = call(b, "get_skill_pack_detail", pack.clone());
+        assert_eq!(pack_b["appliedAgents"], serde_json::json!([]));
+        let pack_default = call(None, "get_skill_pack_detail", pack);
+        assert_eq!(pack_default["appliedAgents"][0]["memberCount"], 1);
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_claude_profile_requires_one_usable_directory() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-claude-input-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let home = home.canonicalize().unwrap();
+        let agent = serde_json::json!({"agentId": "claude-code"});
+        for profile in [" ", "relative/config", "/one,/two"] {
+            let detail = run_script_in_claude_profile(
+                &home,
+                Some(profile),
+                "get_agent_detail_v2",
+                agent.clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                detail["skillsDir"],
+                home.join(".claude/skills").to_str().unwrap()
+            );
+            assert_eq!(
+                detail["configPath"],
+                home.join(".claude/settings.json").to_str().unwrap()
+            );
+        }
+        let detail = run_script_in_claude_profile(
+            &home,
+            Some(" ~/Claude profile "),
+            "get_agent_detail_v2",
+            agent,
+        )
+        .unwrap();
+        assert_eq!(
+            detail["skillsDir"],
+            home.join("Claude profile/skills").to_str().unwrap()
+        );
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
     fn remote_direct_move_supports_the_builtin_pack_without_touching_other_skills() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-default-pack-move-{}",
@@ -3837,19 +4045,33 @@ try:
     }
 
     fn run_rendered_script(home: &Path, script: &str) -> Value {
-        let output = execute_rendered_script(home, script);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        parse_script_output(execute_rendered_script(home, script)).expect("remote script succeeds")
+    }
+
+    fn run_script_in_claude_profile(
+        home: &Path,
+        profile: Option<&str>,
+        command: &str,
+        args: Value,
+    ) -> Result<Value, String> {
+        let script = render_script(command, args).expect("render remote script");
+        let output = start_script_in_claude_profile(home, &script, profile)
+            .wait_with_output()
+            .expect("run remote script");
+        parse_script_output(output)
+    }
+
+    fn parse_script_output(output: std::process::Output) -> Result<Value, String> {
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let payload = stdout
             .lines()
             .rev()
             .find_map(|line| line.strip_prefix(RESPONSE_MARKER))
             .expect("marked response");
-        serde_json::from_str(payload).expect("response JSON")
+        Ok(serde_json::from_str(payload).expect("response JSON"))
     }
 
     fn execute_rendered_script(home: &Path, script: &str) -> std::process::Output {
@@ -3859,7 +4081,16 @@ try:
     }
 
     fn start_rendered_script(home: &Path, script: &str) -> std::process::Child {
-        let mut child = Command::new("python3")
+        start_script_in_claude_profile(home, script, None)
+    }
+
+    fn start_script_in_claude_profile(
+        home: &Path,
+        script: &str,
+        profile: Option<&str>,
+    ) -> std::process::Child {
+        let mut command = Command::new("python3");
+        command
             .arg("-")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -3867,9 +4098,12 @@ try:
             .env("HOME", home)
             .env("TMPDIR", home)
             .env_remove("XDG_CONFIG_HOME")
-            .env("PATH", "/usr/bin:/bin")
-            .spawn()
-            .expect("start remote script");
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env("PATH", "/usr/bin:/bin");
+        if let Some(profile) = profile {
+            command.env("CLAUDE_CONFIG_DIR", profile);
+        }
+        let mut child = command.spawn().expect("start remote script");
         child
             .stdin
             .take()

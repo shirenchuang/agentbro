@@ -469,6 +469,17 @@ def openclaw_state_path():
     return HOME / ".openclaw"
 
 
+def claude_config_root():
+    configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if configured and "," not in configured:
+        if configured == "~":
+            return HOME
+        path = HOME / configured[2:] if configured.startswith("~/") else pathlib.Path(configured)
+        if path.is_absolute():
+            return path
+    return HOME / ".claude"
+
+
 def agent_config_path(agent_id):
     spec = agent_spec(agent_id)
     if not spec:
@@ -478,8 +489,8 @@ def agent_config_path(agent_id):
         return expand_path(configured) if configured else openclaw_state_path() / "openclaw.json"
     if agent_id == "codex" and os.environ.get("CODEX_HOME"):
         return expand_path(os.environ["CODEX_HOME"]) / "config.toml"
-    if agent_id == "claude-code" and os.environ.get("CLAUDE_CONFIG_DIR"):
-        return expand_path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
+    if agent_id == "claude-code":
+        return claude_config_root() / "settings.json"
     return HOME / spec["config"]
 
 
@@ -523,6 +534,8 @@ def agent_skills_path(agent_id):
         raise ValueError("Unknown Agent: " + str(agent_id))
     if agent_id == "openclaw":
         return openclaw_workspace_path() / "skills"
+    if agent_id == "claude-code":
+        return claude_config_root() / "skills"
     return HOME / spec["skills"]
 
 
@@ -565,6 +578,8 @@ def agent_installed(spec, binary=None):
     if "configDir" in spec:
         return spec["configDir"].is_dir() or spec["skills"].parent.is_dir()
     if spec["id"] == "openclaw" and openclaw_state_path().exists():
+        return True
+    if spec["id"] == "claude-code" and agent_config_path(spec["id"]).is_file():
         return True
     return agent_skills_path(spec["id"]).exists()
 
@@ -1251,18 +1266,31 @@ def copy_or_link(source, target, mode):
     return "copy"
 
 
-def pack_applied_agent_ids(pack_id):
-    agents = set(STATE["packs"].get(pack_id, {}).get("appliedAgents", []))
-    agents.update(
+def skill_target_scope(agent_id, root):
+    if agent_id != "claude-code":
+        return agent_id
+    try:
+        resolved = root.resolve(strict=False)
+    except (OSError, RuntimeError):
+        resolved = None
+    # Existing IDs only describe the original default Skills directory.
+    if resolved == HOME / ".claude" / "skills":
+        return agent_id
+    return agent_id + "@" + hashlib.sha256(os.fsencode(resolved or root.absolute())).hexdigest()
+
+
+def pack_applied_scopes(pack_id):
+    scopes = set(STATE["packs"].get(pack_id, {}).get("appliedAgents", []))
+    scopes.update(
         target_id.partition("::")[0]
         for target_id in STATE["packTargetClaims"].get(pack_id, {})
     )
-    return sorted(agents)
+    return scopes
 
 
-def applied_pack_ids(agent_id):
+def applied_pack_ids(target_scope):
     pack_ids = dict.fromkeys(list(STATE["packs"]) + list(STATE["packTargetClaims"]))
-    return [pack_id for pack_id in pack_ids if agent_id in pack_applied_agent_ids(pack_id)]
+    return [pack_id for pack_id in pack_ids if target_scope in pack_applied_scopes(pack_id)]
 
 
 def add_pack_target_claims(pack_id, target_ids):
@@ -1281,17 +1309,17 @@ def filter_pack_target_claims(pack_id, keep):
     return remaining != claims
 
 
-def pack_claims(agent_id, skill_id):
+def pack_claims(target_id):
     claims = []
     stamp = now()
-    target_id = agent_id + "::" + skill_id
+    target_scope, _, skill_id = target_id.partition("::")
     for pack_id in dict.fromkeys(list(STATE["packs"]) + list(STATE["packTargetClaims"])):
         pack = STATE["packs"].get(pack_id, {})
         explicit = target_id in STATE["packTargetClaims"].get(pack_id, {})
-        legacy = agent_id in pack.get("appliedAgents", []) and skill_id in pack.get("skillIds", [])
+        legacy = target_scope in pack.get("appliedAgents", []) and skill_id in pack.get("skillIds", [])
         if explicit or legacy:
             claims.append({
-                "id": "pack::" + pack_id + "::" + agent_id + "::" + skill_id,
+                "id": "pack::" + pack_id + "::" + target_id,
                 "claimType": "pack",
                 "packId": pack_id,
                 "packName": DEFAULT_PACK_NAME if pack_id == "default" else pack.get("name", pack_id),
@@ -1299,7 +1327,7 @@ def pack_claims(agent_id, skill_id):
             })
     if not claims:
         claims.append({
-            "id": "direct::" + agent_id + "::" + skill_id,
+            "id": "direct::" + target_id,
             "claimType": "direct",
             "packId": None,
             "packName": None,
@@ -1332,11 +1360,13 @@ def inventory():
     targets = {}
     for spec in management_agent_specs():
         root = agent_skills_path(spec["id"])
+        target_scope = skill_target_scope(spec["id"], root)
         installed = agent_installed(spec, agent_binary(spec))
         managed_count = 0
         unmanaged_count = 0
         for path in skill_directories(root):
             skill_id = path.name
+            target_id = target_scope + "::" + skill_id
             if skill_id in skills:
                 actual_mode = "link" if path.is_symlink() else "copy"
                 source_hash = skills[skill_id]["currentHash"]
@@ -1350,7 +1380,7 @@ def inventory():
                     "status": status,
                 })
                 target = {
-                    "id": spec["id"] + "::" + skill_id,
+                    "id": target_id,
                     "skillId": skill_id,
                     "agentId": spec["id"],
                     "targetPath": str(path),
@@ -1362,14 +1392,13 @@ def inventory():
                     "status": status,
                     "createdAt": now(),
                     "updatedAt": now(),
-                    "claims": pack_claims(spec["id"], skill_id),
+                    "claims": pack_claims(target_id),
                 }
                 targets[target["id"]] = target
                 managed_count += 1
             else:
-                unmanaged_id = spec["id"] + "::" + skill_id
                 unmanaged.append({
-                    "id": unmanaged_id,
+                    "id": target_id,
                     "itemType": "skill",
                     "agentId": spec["id"],
                     "path": str(path),
@@ -1386,6 +1415,7 @@ def inventory():
             "isCustom": spec.get("isCustom", False),
             "enabled": True,
             "skillsDir": str(root),
+            "targetScope": target_scope,
             "version": None,
             "latestVersion": None,
             "installed": bool(installed),
@@ -1396,6 +1426,7 @@ def inventory():
     shared_root = shared_skills_path()
     for path in skill_directories(shared_root):
         skill_id = path.name
+        target_id = SHARED_SKILLS_AGENT_ID + "::" + skill_id
         if skill_id in skills:
             actual_mode = "link" if path.is_symlink() else "copy"
             source_hash = skills[skill_id]["currentHash"]
@@ -1409,7 +1440,7 @@ def inventory():
                 "status": status,
             })
             target = {
-                "id": SHARED_SKILLS_AGENT_ID + "::" + skill_id,
+                "id": target_id,
                 "skillId": skill_id,
                 "agentId": SHARED_SKILLS_AGENT_ID,
                 "targetPath": str(path),
@@ -1421,13 +1452,12 @@ def inventory():
                 "status": status,
                 "createdAt": now(),
                 "updatedAt": now(),
-                "claims": pack_claims(SHARED_SKILLS_AGENT_ID, skill_id),
+                "claims": pack_claims(target_id),
             }
             targets[target["id"]] = target
         else:
-            unmanaged_id = SHARED_SKILLS_AGENT_ID + "::" + skill_id
             unmanaged.append({
-                "id": unmanaged_id,
+                "id": target_id,
                 "itemType": "skill",
                 "agentId": SHARED_SKILLS_AGENT_ID,
                 "path": str(path),
@@ -1504,10 +1534,14 @@ def pack_detail(pack_id, skills=None, agents=None):
     applied = []
     claimed_targets = STATE["packTargetClaims"].get(pack_id, {})
     legacy_agents = set(data.get("appliedAgents", []))
-    for agent_id in pack_applied_agent_ids(pack_id):
-        agent = next((item for item in agents if item["id"] == agent_id), None)
-        member_count = len(members) if agent_id in legacy_agents else sum(
-            agent_id + "::" + item["skillId"] in claimed_targets for item in members
+    active_agents = {agent["targetScope"]: agent for agent in agents}
+    for scope in sorted(pack_applied_scopes(pack_id)):
+        agent = active_agents.get(scope)
+        if not agent and scope.partition("@")[0] == "claude-code":
+            continue
+        agent_id = agent["id"] if agent else scope
+        member_count = len(members) if scope in legacy_agents else sum(
+            scope + "::" + item["skillId"] in claimed_targets for item in members
         )
         applied.append({
             "packId": data["id"],
@@ -1638,8 +1672,17 @@ def targets_claimed_by_pack(pack_id, targets):
     )
 
 
-def preview_delete(skill_ids):
-    skills, agents, _, targets = inventory()
+def validate_removal_review(reviewed, **current):
+    if reviewed is None:
+        return
+    if not isinstance(reviewed, dict) or any(
+        key in reviewed and reviewed[key] != value for key, value in current.items()
+    ):
+        raise ValueError("The Skill removal changed on the remote host. Preview the removal again.")
+
+
+def preview_delete(skill_ids, snapshot=None):
+    skills, agents, _, targets = inventory() if snapshot is None else snapshot
     normalized = [safe_id(item) for item in skill_ids]
     affected = [
         affected_target(target, agents)
@@ -1706,6 +1749,7 @@ def distribution_preview(skill_ids, target_agents, requested_mode, skills):
         source_hash = None
         for agent_id in target_agents:
             target = agent_skills_path(agent_id) / skill_id
+            target_scope = skill_target_scope(agent_id, target.parent)
             target_fingerprint = distribution_fingerprint(target)
             change = {
                 "skillId": skill_id,
@@ -1713,6 +1757,7 @@ def distribution_preview(skill_ids, target_agents, requested_mode, skills):
                 "actualMode": mode,
                 "reason": None,
                 "targetPath": str(target),
+                "targetId": target_scope + "::" + skill_id,
                 "sourceFingerprint": source_fingerprint,
                 "targetFingerprint": target_fingerprint,
             }
@@ -1837,6 +1882,8 @@ def execute_distribution(preview, skills, confirmed_decisions):
             fingerprint = replaced_sources.get(skill_id, change["sourceFingerprint"])
             ensure_reviewed_distribution_path(source, fingerprint)
             ensure_reviewed_distribution_path(target, change["targetFingerprint"])
+            if agent_id == "claude-code" and change["targetId"] != skill_target_scope(agent_id, target.parent) + "::" + skill_id:
+                raise ValueError("The Claude Code Skills directory changed. Preview distribution again.")
 
         verify_paths()
         if decision == "agent_over_center":
@@ -1995,21 +2042,27 @@ def takeover_center_agent_skill(agent_id, unmanaged_id, skills, targets):
     return skill_id
 
 
-def remove_unmanaged_item(item, requested_agent_id):
-    owner = item.get("agentId")
-    if owner != requested_agent_id:
-        raise ValueError("Unmanaged Skill does not belong to this Agent")
-    if owner == SHARED_SKILLS_AGENT_ID:
-        remove_shared_skill_path(item["path"])
+def remove_agent_skill_path(agent_id, target_id, path):
+    if agent_id == SHARED_SKILLS_AGENT_ID:
+        remove_shared_skill_path(path)
         return
-    remove_path(pathlib.Path(item["path"]))
+    path = pathlib.Path(path)
+    if agent_id == "claude-code":
+        root = path.parent.resolve(strict=False)
+        if skill_target_scope(agent_id, root) + "::" + path.name != target_id:
+            raise ValueError("The Claude Code Skills directory changed. Refresh Agent Skills and try again.")
+        path = root / path.name
+    remove_path(path)
+
+
+def remove_unmanaged_item(item, requested_agent_id):
+    if item.get("agentId") != requested_agent_id:
+        raise ValueError("Unmanaged Skill does not belong to this Agent")
+    remove_agent_skill_path(requested_agent_id, item["id"], item["path"])
 
 
 def remove_target_distribution(target):
-    if target.get("agentId") == SHARED_SKILLS_AGENT_ID:
-        remove_shared_skill_path(target["targetPath"])
-    else:
-        remove_path(pathlib.Path(target["targetPath"]))
+    remove_agent_skill_path(target["agentId"], target["id"], target["targetPath"])
     changed = False
     for pack_id in list(STATE["packTargetClaims"]):
         if filter_pack_target_claims(pack_id, lambda target_id: target_id != target["id"]):
@@ -2410,7 +2463,7 @@ def apply_pack(pack_id, target_agents, requested_mode, decisions=None, reviewed=
         return preview
     result = execute_distribution(preview, skills, decisions or [])
     applied_targets = [
-        item["agentId"] + "::" + item["skillId"]
+        item["targetId"]
         for item in result["changes"] if item["action"] != "skip"
     ]
     if applied_targets:
@@ -2471,7 +2524,7 @@ def agent_detail_from_inventory(
         targets,
     )
     applied = []
-    for pack_id in applied_pack_ids(agent_id):
+    for pack_id in applied_pack_ids(agent["targetScope"]):
         detail = pack_detail(pack_id, skills, agents)
         applied.extend(item for item in detail["appliedAgents"] if item["agentId"] == agent_id)
     mcp_config_path = str(agent_mcp_path(agent_id))
@@ -2497,6 +2550,7 @@ def agent_detail_from_inventory(
         "version": agent["version"],
         "latestVersion": agent["latestVersion"],
         "skillsDir": agent["skillsDir"],
+        "targetScope": agent["targetScope"],
         "configPath": str(agent_config_path(agent_id)),
         "mcpConfigPath": mcp_config_path,
         "pluginDir": str(agent_plugin_path(agent_id)),
@@ -4320,7 +4374,7 @@ def dispatch():
             "agents": data["agents"],
             "packs": data["packs"],
             "appliedByAgent": {
-                agent["id"]: applied_pack_ids(agent["id"])
+                agent["id"]: applied_pack_ids(agent["targetScope"])
                 for agent in data["agents"]
             },
             "defaultDistributeMode": STATE["settings"]["defaultDistributeMode"],
@@ -4414,9 +4468,14 @@ def dispatch():
             else args.get("skillIds", [])
         )
         remove_linked = bool(args.get("removeLinked"))
-        _, _, _, targets = inventory()
-        for skill_id in skill_ids:
-            skill_id = safe_id(skill_id)
+        snapshot = inventory()
+        _, _, _, targets = snapshot
+        preview = preview_delete(skill_ids, snapshot)
+        validate_removal_review(
+            args.get("reviewedPreview"), skillId=preview["skillId"], skillIds=preview["skillIds"],
+            affectedTargets=preview["affectedTargets"],
+        )
+        for skill_id in preview["skillIds"]:
             if remove_linked:
                 for target in targets.values():
                     if target["skillId"] == skill_id:
@@ -4660,46 +4719,44 @@ def dispatch():
         )
     if command == "execute_sync_skill_pack_to_agents":
         return sync_pack_to_agents(args["packId"], args.get("targetAgents", []))
-    if command == "preview_remove_skill_pack_from_agent":
+    if command in ("preview_remove_skill_pack_from_agent", "execute_remove_skill_pack_from_agent"):
         pack_id = args["packId"]
         agent_id = args["agentId"]
         skills, agents, _, targets = inventory()
         detail = pack_detail(pack_id, skills, agents)
-        affected = [
-            affected_target(item, agents)
-            for item in targets_claimed_by_pack(pack_id, targets)
-            if item["agentId"] == agent_id
-        ]
-        removed = sum(item["claimCount"] == 1 for item in affected)
-        return {
-            "packId": detail["id"],
-            "packName": detail["name"],
-            "agentId": agent_id,
-            "displayName": agent_spec(agent_id)["displayName"],
-            "affectedTargets": affected,
-            "willRemoveTargets": removed,
-            "willPreserveTargets": len(affected) - removed,
-        }
-    if command == "execute_remove_skill_pack_from_agent":
-        pack_id = args["packId"]
-        agent_id = args["agentId"]
-        skills, agents, _, targets = inventory()
-        pack_detail(pack_id, skills, agents)
+        scope = next((item["targetScope"] for item in agents if item["id"] == agent_id), agent_id)
         agent_targets = [
             target for target in targets_claimed_by_pack(pack_id, targets)
             if target["agentId"] == agent_id
         ]
+        affected = [affected_target(target, agents) for target in agent_targets]
+        if command == "preview_remove_skill_pack_from_agent":
+            removed = sum(item["claimCount"] == 1 for item in affected)
+            return {
+                "packId": detail["id"],
+                "packName": detail["name"],
+                "agentId": agent_id,
+                "targetScope": scope,
+                "displayName": agent_spec(agent_id)["displayName"],
+                "affectedTargets": affected,
+                "willRemoveTargets": removed,
+                "willPreserveTargets": len(affected) - removed,
+            }
+        validate_removal_review(
+            args.get("reviewedPreview"), packId=pack_id, agentId=agent_id,
+            targetScope=scope, affectedTargets=affected,
+        )
         removed = 0
         for target in agent_targets:
             if len(target["claims"]) == 1:
                 remove_target_distribution(target)
                 removed += 1
-        if pack_id in STATE["packs"]:
+        if scope == agent_id and pack_id in STATE["packs"]:
             STATE["packs"][pack_id]["appliedAgents"] = [
                 item for item in STATE["packs"][pack_id].get("appliedAgents", [])
                 if item != agent_id
             ]
-        filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[0] != agent_id)
+        filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[0] != scope)
         save_state()
         return {
             "packId": pack_id,
@@ -4738,9 +4795,17 @@ def dispatch():
         if not pack:
             raise ValueError("Skill Pack not found")
         if args.get("alsoRemoveTargets"):
-            _, _, _, targets = inventory()
-            for target in targets_claimed_by_pack(pack_id, targets):
-                if target["skillId"] == skill_id and len(target["claims"]) == 1:
+            _, agents, _, targets = inventory()
+            member_targets = [
+                target for target in targets_claimed_by_pack(pack_id, targets)
+                if target["skillId"] == skill_id
+            ]
+            validate_removal_review(
+                args.get("reviewedPreview"), packId=pack_id, skillId=skill_id,
+                affectedTargets=[affected_target(target, agents) for target in member_targets],
+            )
+            for target in member_targets:
+                if len(target["claims"]) == 1:
                     remove_target_distribution(target)
         filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[2] != skill_id)
         pack["skillIds"] = [

@@ -171,6 +171,26 @@ describe('SkillPackPicker', () => {
     expect(items[1]).toHaveTextContent('前端开发')
   })
 
+  it('uses the displayed SSH profile when revoking a pack', async () => {
+    const targetScope = 'claude-code@profile-scope'
+    useRuntimeEnvironmentStore.setState({ selectedEnvironmentId: 'ubuntu' })
+    vi.mocked(skillApiV2.getSkillPackPickerData).mockResolvedValue({
+      ...pickerData,
+      agents: [{ ...claudeCode, targetScope }],
+      appliedByAgent: { 'claude-code': ['frontend'] },
+    })
+    const revoke = vi.spyOn(skillApiV2, 'removePackFromAgent').mockResolvedValue({
+      packId: 'frontend', agentId: 'claude-code', removedClaims: 1, removedTargets: 1, preservedTargets: 0,
+    })
+
+    render(<SkillPackPicker />)
+    const pack = await screen.findByRole('checkbox', { name: /前端开发/ })
+    expect(pack).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(pack)
+
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith('frontend', 'claude-code', 'ubuntu', { targetScope }))
+  })
+
   it('hides the picker when the done button is clicked', async () => {
     render(<SkillPackPicker />)
 
