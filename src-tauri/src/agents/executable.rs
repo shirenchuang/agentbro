@@ -623,11 +623,23 @@ fn candidate_dirs_with_path(inherited: Option<OsString>) -> Vec<PathBuf> {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    let saved_path = crate::platform::windows_environment::saved_path();
+    #[cfg(target_os = "windows")]
+    let saved_dirs = saved_path
+        .as_deref()
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .filter(|dir| dir.is_absolute());
+    #[cfg(not(target_os = "windows"))]
+    let saved_dirs = std::iter::empty();
+
     let mut seen = BTreeSet::new();
     inherited
         .as_deref()
         .into_iter()
         .flat_map(std::env::split_paths)
+        .chain(saved_dirs)
         .chain(dirs)
         .filter(|dir| seen.insert(dir.clone()))
         .collect()
