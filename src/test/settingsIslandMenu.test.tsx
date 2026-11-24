@@ -232,12 +232,11 @@ describe('settings island menu', () => {
 
     fireEvent.click(screen.getByText('settings.island.title'))
 
-    const tipsToggle = await screen.findByRole('switch', { name: 'settings.tipsEnabled' })
+    const tipsToggle = await screen.findByRole('switch', { name: 'settings.tipsEnabled', checked: true })
     expect(tipsToggle).toHaveAccessibleDescription('settings.tipsEnabledDesc')
-    expect(tipsToggle).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(tipsToggle)
-    expect(tipsToggle).toHaveAccessibleName('settings.tipsEnabled')
-    expect(tipsToggle).toHaveAttribute('aria-checked', 'false')
+    const disabledTipsToggle = await screen.findByRole('switch', { name: 'settings.tipsEnabled', checked: false })
+    expect(disabledTipsToggle).toHaveAccessibleDescription('settings.tipsEnabledDesc')
 
     expect(tauriMocks.setIslandFeatureFlags).toHaveBeenCalledWith(expect.objectContaining({
       tipsEnabled: false,
