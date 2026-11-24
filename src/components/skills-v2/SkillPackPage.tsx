@@ -545,10 +545,10 @@ export function SkillPackPage() {
           await skillApiV2.deletePack(packId, environmentId)
           break
         case 'member':
-          await skillApiV2.removeSkillFromPack(packId, review.preview.skillId, alsoRemoveTargets, environmentId)
+          await skillApiV2.removeSkillFromPack(packId, review.preview.skillId, alsoRemoveTargets, environmentId, review.preview)
           break
         case 'revoke':
-          await skillApiV2.removePackFromAgent(packId, review.preview.agentId, environmentId)
+          await skillApiV2.removePackFromAgent(packId, review.preview.agentId, environmentId, review.preview)
           break
       }
       if (!isPackRuntimeCurrent(runtime)) return
