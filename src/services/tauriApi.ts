@@ -397,9 +397,15 @@ export interface BackendAdapterInfo {
 
 // ── Session Commands ─────────────────────────────────────────────
 
-export async function getSessions(): Promise<BackendSession[]> {
-  if (!isTauri()) return []
-  return invoke<BackendSession[]>('get_sessions')
+export interface BackendSessionSnapshot {
+  revision: number
+  sessions: BackendSession[]
+  suppressed?: boolean
+}
+
+export async function getSessionSnapshot(): Promise<BackendSessionSnapshot> {
+  if (!isTauri()) return { revision: 0, sessions: [] }
+  return invoke<BackendSessionSnapshot>('get_session_snapshot')
 }
 
 export interface WslHookStatus {

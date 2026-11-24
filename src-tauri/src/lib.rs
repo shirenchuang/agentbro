@@ -6333,6 +6333,7 @@ pub fn run() {
             set_dock_visible,
             open_settings_window,
             commands::get_sessions,
+            commands::get_session_snapshot,
             commands::get_usage_rate_limits,
             commands::get_usage_snapshots,
             commands::get_app_state_flags,

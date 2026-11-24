@@ -32,11 +32,13 @@ export type QuestionIdentity = Pick<AskQuestion, 'question' | 'toolUseId' | 'mul
 type QuestionReply = { question: QuestionIdentity; error?: string }
 export type PlanIdentity = Pick<SessionState, 'planRequestId' | 'planTitle' | 'planContent'>
 type PlanReply = { plan: PlanIdentity; error?: string }
-const MAX_ACKNOWLEDGED_PERMISSIONS_PER_SESSION = 16
+type InteractionKind = 'permission' | 'question' | 'plan'
+type AcknowledgedIds = Partial<Record<InteractionKind, readonly string[]>>
+const MAX_ACKNOWLEDGED_IDS_PER_KIND = 16
 
 interface SessionStore {
   sessions: Record<string, SessionState>
-  acknowledgedPermissionIds: ReadonlyMap<string, readonly string[]>
+  acknowledgedInteractionIds: ReadonlyMap<string, AcknowledgedIds>
   permissionReplies: ReadonlyMap<string, PermissionReply>
   questionReplies: ReadonlyMap<string, QuestionReply>
   planReplies: ReadonlyMap<string, PlanReply>
@@ -87,6 +89,32 @@ interface SessionStore {
 
 function toList(sessions: Record<string, SessionState>, now = Date.now()): SessionState[] {
   return Object.values(sessions).filter((session) => isDisplayableSession(session, now))
+}
+
+function rememberAcknowledgedId(
+  history: SessionStore['acknowledgedInteractionIds'],
+  sessionId: string,
+  kind: InteractionKind,
+  requestId: string | undefined,
+) {
+  if (!requestId) return history
+  const acknowledged = history.get(sessionId)
+  const ids = acknowledged?.[kind] ?? []
+  if (ids.includes(requestId)) return history
+  return new Map(history).set(sessionId, {
+    ...acknowledged,
+    [kind]: [...ids, requestId].slice(-MAX_ACKNOWLEDGED_IDS_PER_KIND),
+  })
+}
+
+function hasAcknowledgedInteraction(session: SessionState, acknowledged: AcknowledgedIds | undefined): boolean {
+  if (!acknowledged) return false
+  const pendingIds = [
+    ['permission', session.pendingPermission?.toolUseId],
+    ['question', session.pendingQuestion?.toolUseId],
+    ['plan', session.planRequestId],
+  ] as const
+  return pendingIds.some(([kind, id]) => id && acknowledged[kind]?.includes(id))
 }
 
 function samePermission(first: PermissionIdentity | undefined, second: PermissionIdentity | undefined): boolean {
@@ -558,7 +586,7 @@ export const selectOverlayQueue = (s: SessionStore) => s.overlayQueue
 
 export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<SessionStore>((set) => ({
   sessions: {},
-  acknowledgedPermissionIds: new Map(),
+  acknowledgedInteractionIds: new Map(),
   permissionReplies: new Map(),
   questionReplies: new Map(),
   planReplies: new Map(),
@@ -964,8 +992,8 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     set((state) => {
       const sessions = { ...state.sessions }
       delete sessions[id]
-      const acknowledgedPermissionIds = new Map(state.acknowledgedPermissionIds)
-      acknowledgedPermissionIds.delete(id)
+      const acknowledgedInteractionIds = new Map(state.acknowledgedInteractionIds)
+      acknowledgedInteractionIds.delete(id)
       const permissionReplies = retainPermissionReplies(state.permissionReplies, sessions)
       const questionReplies = new Map(state.questionReplies)
       questionReplies.delete(id)
@@ -976,7 +1004,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         const ids = Object.keys(sessions)
         activeSessionId = ids[0] ?? null
       }
-      return { sessions, sessionList: toList(sessions), activeSessionId, acknowledgedPermissionIds, permissionReplies, questionReplies, planReplies }
+      return { sessions, sessionList: toList(sessions), activeSessionId, acknowledgedInteractionIds, permissionReplies, questionReplies, planReplies }
     })
     saveSessionsDebounced()
   },
@@ -993,8 +1021,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
       for (const incoming of newSessions) {
         const prev = prevState.sessions[incoming.id]
         const existing = state.sessions[incoming.id]
-        const toolUseId = incoming.pendingPermission?.toolUseId
-        if (existing && toolUseId && state.acknowledgedPermissionIds.get(incoming.id)?.includes(toolUseId)) {
+        if (existing && hasAcknowledgedInteraction(incoming, state.acknowledgedInteractionIds.get(incoming.id))) {
           sessions[incoming.id] = existing
           continue
         }
@@ -1196,9 +1223,9 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         if (overlay.type === 'compacting') return session.phase === 'compacting'
         return true
       })
-      const acknowledgedPermissionIds = state.acknowledgedPermissionIds.size
-        ? new Map([...state.acknowledgedPermissionIds].filter(([sessionId]) => Object.hasOwn(sessions, sessionId)))
-        : state.acknowledgedPermissionIds
+      const acknowledgedInteractionIds = state.acknowledgedInteractionIds.size
+        ? new Map([...state.acknowledgedInteractionIds].filter(([sessionId]) => Object.hasOwn(sessions, sessionId)))
+        : state.acknowledgedInteractionIds
       const permissionReplies = retainPermissionReplies(state.permissionReplies, sessions)
       const questionReplies = state.questionReplies.size
         ? new Map([...state.questionReplies].filter(([id, reply]) => sameQuestion(reply.question, sessions[id]?.pendingQuestion)))
@@ -1206,7 +1233,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
       const planReplies = state.planReplies.size
         ? new Map([...state.planReplies].filter(([id, reply]) => samePlan(reply.plan, sessions[id])))
         : state.planReplies
-      return { sessions, sessionList, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedPermissionIds, permissionReplies, questionReplies, planReplies }
+      return { sessions, sessionList, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedInteractionIds, permissionReplies, questionReplies, planReplies }
     })
     // Push new overlays after state update
     if (newOverlays.length > 0) {
@@ -1258,30 +1285,27 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     set((state) => {
       const session = state.sessions[sessionId]
       if (!session) return state
-      const toolUseId = permission?.toolUseId
-      const previousIds = state.acknowledgedPermissionIds.get(sessionId) ?? []
-      const acknowledgedPermissionIds = toolUseId && !previousIds.includes(toolUseId)
-        ? new Map(state.acknowledgedPermissionIds).set(
-            sessionId,
-            [...previousIds, toolUseId].slice(-MAX_ACKNOWLEDGED_PERMISSIONS_PER_SESSION),
-          )
-        : state.acknowledgedPermissionIds
+      const acknowledgedInteractionIds = rememberAcknowledgedId(state.acknowledgedInteractionIds, sessionId, 'permission', permission?.toolUseId)
       if (!session.pendingPermission || !samePermission(session.pendingPermission, permission)) {
-        return acknowledgedPermissionIds === state.acknowledgedPermissionIds ? state : { acknowledgedPermissionIds }
+        return acknowledgedInteractionIds === state.acknowledgedInteractionIds ? state : { acknowledgedInteractionIds }
       }
       const sessions = {
         ...state.sessions,
         [sessionId]: { ...session, phase: 'processing' as const, pendingPermission: undefined, unattendedSince: undefined },
       }
       const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'permission'))
-      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedPermissionIds }
+      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedInteractionIds }
     })
   },
 
   clearQuestion: (sessionId, question) => {
     set((state) => {
       const session = state.sessions[sessionId]
-      if (!session || !sameQuestion(session.pendingQuestion, question)) return state
+      if (!session) return state
+      const acknowledgedInteractionIds = rememberAcknowledgedId(state.acknowledgedInteractionIds, sessionId, 'question', question.toolUseId)
+      if (!sameQuestion(session.pendingQuestion, question)) {
+        return acknowledgedInteractionIds === state.acknowledgedInteractionIds ? state : { acknowledgedInteractionIds }
+      }
       let phase = session.phase
       if (phase === 'waiting_input') {
         phase = session.pendingPermission || session.planTitle || session.planContent ? 'waiting_approval' : 'processing'
@@ -1291,14 +1315,18 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         [sessionId]: { ...session, phase, pendingQuestion: undefined, unattendedSince: phase === 'processing' ? undefined : session.unattendedSince },
       }
       const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'question'))
-      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }
+      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedInteractionIds }
     })
   },
 
   clearPlan: (sessionId, plan) => {
     set((state) => {
       const session = state.sessions[sessionId]
-      if (!session || !samePlan(plan, session)) return state
+      if (!session) return state
+      const acknowledgedInteractionIds = rememberAcknowledgedId(state.acknowledgedInteractionIds, sessionId, 'plan', plan.planRequestId)
+      if (!samePlan(plan, session)) {
+        return acknowledgedInteractionIds === state.acknowledgedInteractionIds ? state : { acknowledgedInteractionIds }
+      }
       let phase = session.phase
       if (phase === 'waiting_approval' && !session.pendingPermission) {
         phase = session.pendingQuestion ? 'waiting_input' : 'processing'
@@ -1316,7 +1344,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         },
       }
       const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'plan'))
-      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }
+      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedInteractionIds }
     })
   },
 

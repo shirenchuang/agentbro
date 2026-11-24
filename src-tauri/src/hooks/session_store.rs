@@ -6,7 +6,6 @@ use chrono::Utc;
 use dashmap::{mapref::entry::Entry, DashMap};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-#[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -439,6 +438,7 @@ fn reconcile_pending_for_phase(session: &mut SessionState) {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionUpdatePayload {
+    pub revision: usize,
     pub sessions: Vec<SessionState>,
     /// When true, the event that triggered this update was suppressed
     /// because the agent's terminal is currently focused.
@@ -450,6 +450,7 @@ pub struct SessionUpdatePayload {
 #[derive(Clone)]
 pub struct SessionStore {
     sessions: Arc<DashMap<String, SessionState>>,
+    snapshot_revision: Arc<AtomicUsize>,
     app_handle: Option<AppHandle>,
     #[cfg(test)]
     update_requests: Arc<AtomicUsize>,
@@ -459,6 +460,7 @@ impl SessionStore {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(DashMap::new()),
+            snapshot_revision: Arc::new(AtomicUsize::new(0)),
             app_handle: None,
             #[cfg(test)]
             update_requests: Arc::new(AtomicUsize::new(0)),
@@ -994,6 +996,16 @@ impl SessionStore {
         })
     }
 
+    pub fn snapshot(&self, suppressed: bool) -> SessionUpdatePayload {
+        // Reserve the revision before reading so a slow snapshot cannot outrank a later one.
+        let revision = self.snapshot_revision.fetch_add(1, Ordering::Relaxed) + 1;
+        SessionUpdatePayload {
+            revision,
+            sessions: self.get_all_sessions(),
+            suppressed,
+        }
+    }
+
     /// Emit session update event to the frontend
     fn emit_update(&self) {
         self.emit_update_with_suppression(false);
@@ -1010,11 +1022,7 @@ impl SessionStore {
         #[cfg(test)]
         self.update_requests.fetch_add(1, Ordering::Relaxed);
         if let Some(ref handle) = self.app_handle {
-            let sessions = self.get_all_sessions();
-            let payload = SessionUpdatePayload {
-                sessions,
-                suppressed,
-            };
+            let payload = self.snapshot(suppressed);
             if let Err(e) = handle.emit("session-update", &payload) {
                 log::error!("Failed to emit session-update: {}", e);
             }
@@ -1036,6 +1044,23 @@ mod tests {
         let store = SessionStore::new();
         store.get_or_create_session("s1", "claude-code", "agentbro", "/tmp/agentbro", "iTerm");
         store
+    }
+
+    #[test]
+    fn pushed_and_polled_session_snapshots_share_revisions_across_store_clones() {
+        let store = seeded_store();
+        let clone = store.clone();
+        let pushed = store.snapshot(true);
+        clone.set_last_user_message("s1", Some("Next step".to_string()));
+        let polled = clone.snapshot(false);
+        assert!(polled.revision > pushed.revision);
+        assert!(pushed.suppressed);
+        assert!(!polled.suppressed);
+        assert_eq!(
+            polled.sessions[0].last_user_message.as_deref(),
+            Some("Next step")
+        );
+        assert!(store.snapshot(true).revision > polled.revision);
     }
 
     #[test]

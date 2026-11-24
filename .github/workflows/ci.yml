@@ -102,6 +102,8 @@ jobs:
           & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE --exact commands::tests::windows_codex_jump_falls_back_when_the_protocol_and_package_are_unavailable
       - name: Test native JSON Hook settings edits
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::profiles::tests::json_hook_'
+      - name: Test session snapshot ordering
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE --exact hooks::session_store::tests::pushed_and_polled_session_snapshots_share_revisions_across_store_clones'
       - name: Test Agent and Skill metadata writes
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::registry::tests'
       - name: Test OpenCode MCP configuration discovery

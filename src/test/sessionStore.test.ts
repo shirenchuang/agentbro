@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useConfigStore } from '../stores/configStore'
-import { useSessionStore } from '../stores/sessionStore'
+import { answerDisplayedPlan, answerDisplayedQuestion, useSessionStore } from '../stores/sessionStore'
 import type { SessionState } from '../types/agent'
 
 function session(overrides: Partial<SessionState>): SessionState {
@@ -25,7 +25,7 @@ describe('sessionStore backend overlays', () => {
     useConfigStore.setState({ idleTimeoutMinutes: 0, sessionTimeoutMinutes: 30, sessionSilenceRules: [], excludedHookCwdSubstrings: '' })
     useSessionStore.setState({
       sessions: {},
-      acknowledgedPermissionIds: new Map(),
+      acknowledgedInteractionIds: new Map(),
       sessionList: [],
       activeSessionId: null,
       panelState: 'collapsed',
@@ -144,6 +144,53 @@ describe('sessionStore backend overlays', () => {
       expect(useSessionStore.getState().activeOverlay?.data).toEqual(newer)
     },
   )
+
+  it.each([
+    ['question', 'reply before update'],
+    ['question', 'update before reply'],
+    ['plan', 'reply before update'],
+    ['plan', 'update before reply'],
+  ] as const)('keeps an acknowledged %s closed with %s', async (kind, order) => {
+    const question = { toolUseId: 'first', question: 'Continue?', options: ['Yes'] }
+    const stale = kind === 'question'
+      ? session({ phase: 'waiting_input', pendingQuestion: question })
+      : session({ phase: 'waiting_approval', planRequestId: 'first', planTitle: 'Review changes', planContent: 'Run the test.' })
+    const getRequest = (value: SessionState) => kind === 'question' ? value.pendingQuestion?.toolUseId : value.planRequestId
+    const next = kind === 'question'
+      ? { ...stale, pendingQuestion: { ...question, toolUseId: 'next' } }
+      : { ...stale, planRequestId: 'next' }
+
+    const store = useSessionStore.getState()
+    store.replaceAllSessions([stale])
+    const reply = kind === 'question'
+      ? answerDisplayedQuestion('s1', stale.pendingQuestion, 'Yes')
+      : answerDisplayedPlan('s1', stale, 'acceptEdits')
+    if (order === 'update before reply') store.replaceAllSessions([session({ phase: 'processing' })])
+    expect(await reply).toBe(true)
+
+    store.replaceAllSessions([stale])
+    expect(getRequest(useSessionStore.getState().sessions.s1)).toBeUndefined()
+    expect(useSessionStore.getState().sessions.s1.phase).toBe('processing')
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
+
+    store.replaceAllSessions([next])
+    store.replaceAllSessions([stale])
+    expect(getRequest(useSessionStore.getState().sessions.s1)).toBe('next')
+    expect(useSessionStore.getState().activeOverlay?.type).toBe(kind)
+  })
+
+  it('keeps acknowledged request IDs scoped to the session and interaction type', async () => {
+    const question = { toolUseId: 'shared-id', question: 'Continue?', options: ['Yes'] }
+    const store = useSessionStore.getState()
+    store.replaceAllSessions([session({ pendingQuestion: question, phase: 'waiting_input' })])
+    expect(await answerDisplayedQuestion('s1', question, 'Yes')).toBe(true)
+    store.replaceAllSessions([
+      session({ phase: 'waiting_approval', pendingPermission: { toolUseId: 'shared-id', toolName: 'Read', toolInput: 'test.txt' } }),
+      session({ id: 's2', phase: 'waiting_input', pendingQuestion: question }),
+    ])
+    expect(useSessionStore.getState().sessions.s1.pendingPermission?.toolUseId).toBe('shared-id')
+    expect(useSessionStore.getState().sessions.s2.pendingQuestion).toEqual(question)
+  })
 
   it('uses backend response text instead of generic completion text', () => {
     useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
