@@ -781,7 +781,16 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
                 [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)
                 Start-Sleep -Milliseconds 125
             }
-            $null = Wait-IslandValue "native Tab focus on $($target.Label)" $hasFocus 3
+            try {
+                $null = Wait-IslandValue "native Tab focus on $($target.Label)" $hasFocus 3
+            } catch {
+                $focused = [Windows.Automation.AutomationElement]::FocusedElement
+                if ($focused) {
+                    Write-Host "UI Automation focus: $($focused.Current.ControlType.ProgrammaticName) '$($focused.Current.Name)', PID $($focused.Current.ProcessId)."
+                }
+                Write-Host "Native focus: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+                throw
+            }
             [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, $target.Key)
             Write-Output "Sent native $($target.KeyName) to the focused $($target.Label) control."
         }

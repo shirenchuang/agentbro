@@ -175,6 +175,17 @@
   transition: border-color 0.15s, background 0.15s, transform 0.1s;
 }
 
+button.question-card__option-row {
+  width: 100%;
+  font: inherit;
+  text-align: start;
+}
+
+.question-card button:focus-visible {
+  outline: 2px solid var(--island-text);
+  outline-offset: -2px;
+}
+
 .question-card__option-row:hover {
   border-color: color-mix(in srgb, var(--question-accent) 42%, var(--question-border));
   background: color-mix(in srgb, var(--island-card-hover) 86%, var(--question-accent) 10%);
@@ -214,6 +225,7 @@
 }
 
 .question-card__option-label {
+  display: block;
   font-size: var(--approval-body-font-size);
   font-weight: 680;
   line-height: 1.22;
@@ -222,6 +234,7 @@
 }
 
 .question-card__option-desc {
+  display: block;
   font-size: var(--approval-caption-font-size);
   font-weight: 540;
   line-height: 1.22;
