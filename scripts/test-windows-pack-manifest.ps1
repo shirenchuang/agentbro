@@ -213,7 +213,7 @@ function Open-InstalledAgentSkills([Windows.Automation.AutomationElement]$Island
             $persisted.islandSurfaceMode -cne 'island') {
             throw 'First-run setup closed before the selected surface and completion were saved.'
         }
-        Write-Output 'First-run setup saved the selected surface and completion before opening Agent Skills.'
+        Write-Host 'First-run setup saved the selected surface and completion before opening Agent Skills.'
     }
     Click-IslandElement $null 'Agent Skills section' -FindElement {
         if (-not (Find-PackControl $settings 'Start AgentBro')) {
