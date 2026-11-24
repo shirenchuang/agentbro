@@ -646,7 +646,7 @@ function Test-InstalledGlobalShortcuts([IntPtr]$WindowHandle) {
     try {
         & $waitForPrompt $first
         $second = Open-GlobalPermissionFixture 'second' $SessionId
-        Click-IslandElement $null 'the global permission queue session list button' -CenterAfterLayout -FindElement {
+        $showSessions = Wait-IslandValue 'the global permission queue session list button' {
             $island = Find-VisibleIsland
             if ($island) {
                 Find-IslandButton $island.Element {
@@ -655,6 +655,7 @@ function Test-InstalledGlobalShortcuts([IntPtr]$WindowHandle) {
                 }
             }
         }
+        Click-IslandElement $showSessions 'Global permission queue session list button' -CenterAfterLayout
         & $waitForPrompt $first
         & $waitForPrompt $second
         Write-Output 'Both permission Hooks are waiting. The older session published its request second.'
@@ -663,6 +664,7 @@ function Test-InstalledGlobalShortcuts([IntPtr]$WindowHandle) {
             $replied = [System.Threading.Tasks.Task]::WaitAny(
                 [System.Threading.Tasks.Task[]]@($first.Reply, $second.Reply), 8000)
             if ($replied -eq 1) { throw 'Global keydown answered the older session instead of the first pending request' }
+            if ($replied -lt 0) { throw 'Global keydown did not answer either waiting permission' }
             & $readDenial $first
             if ($second.Reply.Wait(300)) { throw 'Holding the first shortcut replied to the second Hook' }
             Write-Output 'Global Ctrl+Alt+F9 denied the earliest pending Hook on keydown. The older session is still waiting.'
