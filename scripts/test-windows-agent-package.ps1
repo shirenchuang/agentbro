@@ -320,6 +320,12 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         throw 'The package update opened a visible Windows console'
     }
 
+    $fixtureSkills = Join-Path $env:CLAUDE_CONFIG_DIR 'skills\uninstall-fixture\SKILL.md'
+    $fixtureSettings = Join-Path $env:CLAUDE_CONFIG_DIR 'settings.json'
+    $reviewedSettings = Get-Content -LiteralPath $fixtureSettings -Raw
+    if ($reviewedSettings -notmatch 'agentbro-bridge') {
+        throw 'The uninstall fixture must have the installed AgentBro Hook'
+    }
     $uninstall = Wait-IslandValue 'the uninstall button for the installed Agent' {
         $button = Find-PackControl $settings '卸载 Agent'
         if ($button -and $button.Current.IsEnabled) { $button }
@@ -338,28 +344,42 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     }
     Write-Output 'The uninstall confirmation focused Cancel and restored focus after native Escape.'
     [AgentBroSmokeInput]::PressKeyInWindow($handle, 0x20)
-    $confirm = Wait-IslandValue 'the uninstall confirmation' { Find-PackControl $settings '确认卸载' }
-    Invoke-PackControl $confirm
-    $null = Wait-IslandValue 'the Agent still detected after the first uninstall' {
-        Test-PackVisibleText $settings 'The uninstall command completed. AgentBro still detects Claude Code.'
+    foreach ($issue in @('The uninstall command failed.', 'AgentBro still detects Claude Code.')) {
+        $confirm = Wait-IslandValue 'the uninstall confirmation reviewing unmanaged Skills and the Hook' {
+            $button = Find-PackControl $settings '确认卸载'
+            if ($button -and (Test-PackVisibleText $settings '未管理 Skills') -and
+                (Test-PackVisibleText $settings '移除 AgentBro Hook')) { $button }
+        }
+        Invoke-PackControl $confirm
+        $null = Wait-IslandValue "the preserved resources message after $issue" {
+            (Test-PackVisibleText $settings $issue) -and
+                (Test-PackVisibleText $settings 'AgentBro kept the Skills and Hooks.')
+        }
+        if (-not (Test-Path -LiteralPath $fixtureLauncher -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $fixtureSkills -PathType Leaf) -or
+            (Get-Content -LiteralPath $fixtureSettings -Raw) -cne $reviewedSettings) {
+            throw "The unsuccessful uninstall changed the launcher, unmanaged Skill, or Hook settings"
+        }
+        Write-Output "Verified that the launcher, unmanaged Skill, and Hook settings were preserved. $issue"
+        $retry = Wait-IslandValue 'the enabled uninstall after preserving the Agent resources' {
+            $button = Find-PackControl $settings '卸载 Agent'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        }
+        Invoke-PackControl $retry
     }
-    if (-not (Test-Path -LiteralPath $fixtureLauncher -PathType Leaf)) {
-        throw 'The first package uninstall unexpectedly removed the fixture launcher'
-    }
-    Write-Output 'The first uninstall exited successfully. Agent Management kept the detected Agent visible.'
 
-    $retry = Wait-IslandValue 'the enabled uninstall after detecting the remaining Agent' {
-        $button = Find-PackControl $settings '卸载 Agent'
-        if ($button -and $button.Current.IsEnabled) { $button }
-    }
-    Invoke-PackControl $retry
-    $confirm = Wait-IslandValue 'the second uninstall confirmation' { Find-PackControl $settings '确认卸载' }
+    $confirm = Wait-IslandValue 'the successful uninstall confirmation' { Find-PackControl $settings '确认卸载' }
     Invoke-PackControl $confirm
     $null = Wait-IslandValue 'the confirmed uninstall of the fixture launcher' {
         -not (Test-Path -LiteralPath $fixtureLauncher -PathType Leaf) -and
             (Test-PackVisibleText $settings 'Agent「Claude Code」已卸载')
     }
-    Write-Output 'Agent Management confirmed the uninstall after the fixture launcher was removed.'
+    $cleanedSettings = Get-Content -LiteralPath $fixtureSettings -Raw
+    if ((Test-Path -LiteralPath $fixtureSkills -PathType Leaf) -or
+        $cleanedSettings -match 'agentbro-bridge' -or $cleanedSettings -notmatch 'echo user-hook') {
+        throw 'The successful uninstall must remove the reviewed Skill and AgentBro Hook and keep the user Hook'
+    }
+    Write-Output 'Agent Management removed the reviewed Skill and AgentBro Hook after verifying that the fixture launcher was removed.'
     Test-InstalledAgentPackageAcrossSettingsWindows $settings $fixtureLauncher
 }
 
