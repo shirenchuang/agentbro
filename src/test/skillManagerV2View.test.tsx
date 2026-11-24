@@ -8658,51 +8658,56 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(fingerprints).not.toHaveBeenCalled()
   })
 
-  it('restores missing and conflicting archived Skills before creating the Pack in order', async () => {
+  it('restores missing archived Skills and offers a copy for an occupied case variant', async () => {
     const { pack, skill } = await renderPackPage()
     const hash = 'a'.repeat(64)
-    const skillIds = [skill.id, 'local-checklist', 'local-report']
+    const archivedId = 'Portable-Skill'
+    const localId = archivedId.toLowerCase()
+    act(() => useSkillStoreV2.setState({ skills: [{ ...skill, id: localId }] }))
+    const skillIds = [archivedId, 'local-checklist', 'local-report']
     const manifest: SkillPackManifest = {
       format: 'agentbro-skill-pack', version: 2, name: 'Offline review', description: '', tags: [],
       skillIds, skillFingerprints: Object.fromEntries(skillIds.map((id) => [id, hash])),
     }
-    const destinationId = `${skill.id}-restored`
+    const destinationId = `${archivedId}-restored`
     const restoredIds = [destinationId, ...skillIds.slice(1)]
     const reviewed = restoredIds.map((skillId) => ({ skillId, fingerprint: hash, missing: false }))
-    const differing = { skillId: skill.id, fingerprint: 'b'.repeat(64), missing: false }
+    const conflict = { skillId: archivedId, fingerprint: null, missing: false, occupiedBy: localId }
     const file = 'C:/Team Files/审阅技能包.ZIP'
     const revision = 'c'.repeat(64)
     vi.mocked(openDialog).mockResolvedValueOnce(file)
     vi.spyOn(skillApiV2, 'readPackArchive').mockResolvedValue({ manifest, revision })
-    vi.spyOn(skillApiV2, 'getPackFingerprints')
-      .mockResolvedValueOnce([differing, ...skillIds.slice(1).map((skillId) => ({ skillId, fingerprint: null, missing: true }))])
-      .mockResolvedValueOnce([differing, ...reviewed.slice(1)])
+    vi.spyOn(skillApiV2, 'getArchivePackFingerprints')
+      .mockResolvedValueOnce([conflict, ...skillIds.slice(1).map((skillId) => ({ skillId, fingerprint: null, missing: true }))])
+      .mockResolvedValueOnce([conflict, ...reviewed.slice(1)])
       .mockResolvedValueOnce(reviewed)
     const restore = vi.spyOn(skillApiV2, 'restoreArchivedPackMembers').mockResolvedValue({})
-    const create = vi.spyOn(skillApiV2, 'importReviewedPack').mockResolvedValue({ ...pack, id: 'offline-pack', name: manifest.name })
+    const create = vi.spyOn(skillApiV2, 'importReviewedArchivePack').mockResolvedValue({ ...pack, id: 'offline-pack', name: manifest.name })
 
     fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
     const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
     const confirm = dialog.getByRole('button', { name: '创建技能包' })
     expect(confirm).toBeDisabled()
+    expect(dialog.getByText(`ID 已被 ${localId} 占用`)).toBeInTheDocument()
+    expect(dialog.queryByRole('button', { name: `恢复 ${archivedId}` })).not.toBeInTheDocument()
     expect(dialog.getAllByText('ZIP 中包含此技能')).toHaveLength(3)
     const restoreMissing = dialog.getByRole('button', { name: '恢复 2 个缺失技能' })
     fireEvent.click(restoreMissing)
     await waitFor(() => expect(restoreMissing).not.toBeInTheDocument())
     expect(restore).toHaveBeenNthCalledWith(1, file, revision, skillIds.slice(1).map((skillId) => ({ skillId, destinationId: skillId })))
 
-    fireEvent.click(dialog.getByRole('button', { name: `将 ${skill.id} 恢复为副本` }))
+    fireEvent.click(dialog.getByRole('button', { name: `将 ${archivedId} 恢复为副本` }))
     expect(dialog.getByLabelText('新技能 ID')).toHaveValue(destinationId)
     fireEvent.click(dialog.getByRole('button', { name: '恢复副本' }))
     await waitFor(() => expect(confirm).toBeEnabled())
-    expect(restore).toHaveBeenNthCalledWith(2, file, revision, [{ skillId: skill.id, destinationId }])
+    expect(restore).toHaveBeenNthCalledWith(2, file, revision, [{ skillId: archivedId, destinationId }])
     fireEvent.click(confirm)
     await waitFor(() => expect(create).toHaveBeenCalledWith({
       ...manifest,
       skillIds: restoredIds,
       skillFingerprints: Object.fromEntries(restoredIds.map((id) => [id, hash])),
       skillSources: {},
-    }, reviewed, false, LOCAL_RUNTIME_ENVIRONMENT_ID))
+    }, reviewed, false))
   })
 
   it('exports the verified GitHub sources and keeps fingerprints for edited Skills', async () => {

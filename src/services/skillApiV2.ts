@@ -225,6 +225,7 @@ export interface SkillPackFingerprint {
   skillId: string
   missing: boolean
   fingerprint: string | null
+  occupiedBy?: string
   source?: SkillPackGitHubSource
 }
 
@@ -1383,6 +1384,8 @@ export const skillApiV2 = {
   ) => tauriInvoke<Record<string, string>>('restore_archived_skill_pack_members', { path, revision, members }),
   getPackFingerprints: (skillIds: string[], environmentId: string, includeSources?: boolean) =>
     invoke<SkillPackFingerprint[]>('get_skill_pack_fingerprints', { skillIds, includeSources }, environmentId),
+  getArchivePackFingerprints: (skillIds: string[]) =>
+    tauriInvoke<SkillPackFingerprint[]>('get_skill_pack_fingerprints', { skillIds, archiveReview: true }),
   restorePackMember: (manifest: SkillPackManifest, skillId: string, environmentId: string) =>
     invoke<void>('restore_skill_pack_member', { manifest, skillId }, environmentId),
   importReviewedPack: (
@@ -1391,6 +1394,8 @@ export const skillApiV2 = {
     acceptLocalCopies: boolean,
     environmentId: string,
   ) => invoke<SkillPackDetail>('execute_import_skill_pack_manifest', { manifest, reviewed, acceptLocalCopies }, environmentId),
+  importReviewedArchivePack: (manifest: SkillPackManifest, reviewed: SkillPackFingerprint[], acceptLocalCopies: boolean) =>
+    tauriInvoke<SkillPackDetail>('execute_import_skill_pack_manifest', { manifest, reviewed, acceptLocalCopies, archiveReview: true }),
   upsertPack: (pack: UpsertPackInput, options: { deferSync?: boolean; environmentId?: string } = {}) =>
     isTauriRuntime()
       ? invoke<SkillPackDetail>('execute_upsert_skill_pack', { pack, deferSync: options.deferSync ?? false }, options.environmentId)

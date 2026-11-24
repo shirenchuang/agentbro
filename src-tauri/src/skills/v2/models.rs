@@ -446,6 +446,8 @@ pub struct SkillPackFingerprint {
     pub missing: bool,
     pub fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occupied_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SkillPackGitHubSource>,
 }
 

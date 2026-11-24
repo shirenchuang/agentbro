@@ -5188,6 +5188,7 @@ impl Service {
                         skill_id: id.clone(),
                         missing: true,
                         fingerprint: None,
+                        occupied_by: None,
                         source: None,
                     });
                 };
@@ -5223,10 +5224,52 @@ impl Service {
                     skill_id: id.clone(),
                     missing,
                     fingerprint,
+                    occupied_by: None,
                     source,
                 })
             })
             .collect()
+    }
+
+    pub fn archive_skill_pack_fingerprints(
+        &self,
+        skill_ids: &[String],
+    ) -> Result<Vec<SkillPackFingerprint>, String> {
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        self.read_archive_skill_pack_fingerprints(skill_ids)
+    }
+
+    fn read_archive_skill_pack_fingerprints(
+        &self,
+        skill_ids: &[String],
+    ) -> Result<Vec<SkillPackFingerprint>, String> {
+        let mut current = self.read_skill_pack_fingerprints(skill_ids, false)?;
+        let mut live_ids = BTreeMap::new();
+        if current.iter().any(|member| member.missing) {
+            for id in self.scan_center_into_db()? {
+                live_ids.insert(id.to_lowercase(), id);
+            }
+            current = self.read_skill_pack_fingerprints(skill_ids, false)?;
+        }
+        let names = archive_destination_names(&self.center_path()?)?;
+        for member in &mut current {
+            let id = &member.skill_id;
+            let key = id.to_lowercase();
+            let occupied = names
+                .get(&key)
+                .filter(|spellings| member.missing || !spellings.contains(id))
+                .and_then(BTreeSet::first)
+                .or_else(|| live_ids.get(&key).filter(|_| member.missing));
+            if let Some(occupied) = occupied {
+                member.missing = false;
+                member.fingerprint = None;
+                member.occupied_by = Some(occupied.clone());
+            }
+        }
+        Ok(current)
     }
 
     pub fn import_reviewed_skill_pack(
@@ -5234,6 +5277,7 @@ impl Service {
         manifest: SkillPackManifest,
         reviewed: &[SkillPackFingerprint],
         accept_local_copies: bool,
+        archive_review: bool,
     ) -> Result<SkillPackDetail, String> {
         super::pack_manifest::validate(&manifest)?;
         if manifest.version < 2 {
@@ -5243,7 +5287,11 @@ impl Service {
             .center_import_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let current = self.read_skill_pack_fingerprints(&manifest.skill_ids, false)?;
+        let current = if archive_review {
+            self.read_archive_skill_pack_fingerprints(&manifest.skill_ids)?
+        } else {
+            self.read_skill_pack_fingerprints(&manifest.skill_ids, false)?
+        };
         super::pack_manifest::validate_review(&manifest, reviewed, &current, accept_local_copies)?;
         self.upsert_skill_pack_deferred(UpsertPackInput {
             id: String::new(),
@@ -5306,13 +5354,28 @@ impl Service {
             .center_import_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        self.scan_center_into_db()?;
+        let live_ids = self
+            .scan_center_into_db()?
+            .into_iter()
+            .map(|id| (id.to_lowercase(), id))
+            .collect::<BTreeMap<_, _>>();
         let center = self.center_path()?;
         std::fs::create_dir_all(&center).map_err(|error| error.to_string())?;
+        let names = archive_destination_names(&center)?;
         let mut errors = BTreeMap::new();
         for member in members {
             let result = (|| {
                 let id = &member.destination_id;
+                let key = id.to_lowercase();
+                if let Some(occupied) = names
+                    .get(&key)
+                    .and_then(BTreeSet::first)
+                    .or_else(|| live_ids.get(&key))
+                {
+                    return Err(format!(
+                        "The destination for '{id}' is occupied by '{occupied}'."
+                    ));
+                }
                 if self
                     .read_skill_pack_fingerprints(std::slice::from_ref(id), false)?
                     .iter()
@@ -6840,6 +6903,22 @@ fn read_relative_file(root: &Path, rel: &Path) -> Result<Option<Vec<u8>>, String
     std::fs::read(&path)
         .map(Some)
         .map_err(|e| format!("read {}: {}", path.display(), e))
+}
+
+fn archive_destination_names(center: &Path) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let entries = match std::fs::read_dir(center) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(names),
+        Err(error) => return Err(format!("Could not read the center library: {error}")),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if let Ok(name) = entry.file_name().into_string() {
+            names.entry(name.to_lowercase()).or_default().insert(name);
+        }
+    }
+    Ok(names)
 }
 
 fn fixed_center_path(home: &Path) -> PathBuf {

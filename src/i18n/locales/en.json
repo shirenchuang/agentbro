@@ -698,6 +698,7 @@
   "skills": {
     "projectsTab": "Projects",
     "packManifest": {
+      "occupiedBy": "ID is occupied by {{id}}",
       "exportArchive": "Export with Skill files (ZIP)",
       "exportedArchive": "Skill Pack and files exported.",
       "archiveReview": "Restore missing Skills from this ZIP and review any content differences before creating the Pack.",
