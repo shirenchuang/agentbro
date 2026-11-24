@@ -1766,10 +1766,12 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(useSessionStore.getState().panelState).toBe('hover'))
 
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'hover')
-    expect(document.querySelector('.notch-panel__alert-content')).not.toBeInTheDocument()
-    expect(document.querySelector('.hover-list')).toBeInTheDocument()
-    expect(screen.getByText('agentbro · Port dynamic island')).toBeInTheDocument()
-    expect(document.querySelector('.hover-list__inline-perm')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(document.querySelector('.notch-panel__alert-content')).not.toBeInTheDocument()
+      expect(document.querySelector('.hover-list')).toBeInTheDocument()
+      expect(screen.getByText('agentbro · Port dynamic island')).toBeInTheDocument()
+      expect(document.querySelector('.hover-list__inline-perm')).toBeInTheDocument()
+    })
   })
 
   it('keeps suppressed blocking overlays queued without auto-expanding the island', async () => {
