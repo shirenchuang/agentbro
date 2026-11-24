@@ -762,19 +762,49 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
         }
         Write-Output 'Ctrl+Alt+F10 reopened the Island and the original multipart Hook stayed pending.'
 
-        foreach ($label in @('Production region', 'Detailed output', 'Submit All')) {
-            Click-IslandElement $null "multipart question control $label" -FindElement {
+        $null = Wait-IslandValue 'the Island foreground window after the global question shortcut' {
+            [AgentBroSmokeInput]::GetForegroundWindow() -eq $WindowHandle
+        } 5
+        foreach ($target in @(
+            @{ Label = 'Production region'; Key = 0x20; KeyName = 'Space' },
+            @{ Label = 'Detailed output'; Key = 0x0D; KeyName = 'Enter' },
+            @{ Label = 'Submit All'; Key = 0x20; KeyName = 'Space' }
+        )) {
+            $button = Wait-IslandValue "$($target.Label) button in the Island" {
                 $island = Find-VisibleIsland
-                if ($island) { Find-IslandButton $island.Element { param($Name) $Name.EndsWith($label) } }
+                if ($island -and $island.Handle -eq $WindowHandle) {
+                    Find-IslandButton $island.Element { param($Name) $Name.EndsWith($target.Label) }
+                }
             }
+            $hasFocus = {
+                $focused = [Windows.Automation.AutomationElement]::FocusedElement
+                $focused -and $button.Current.HasKeyboardFocus -and
+                    [Windows.Automation.Automation]::Compare($focused.GetRuntimeId(), $button.GetRuntimeId())
+            }
+            for ($tabs = 0; $tabs -lt 24 -and -not (& $hasFocus); $tabs++) {
+                [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)
+                Start-Sleep -Milliseconds 125
+            }
+            try {
+                $null = Wait-IslandValue "native Tab focus on $($target.Label)" $hasFocus 3
+            } catch {
+                $focused = [Windows.Automation.AutomationElement]::FocusedElement
+                if ($focused) {
+                    Write-Host "UI Automation focus: $($focused.Current.ControlType.ProgrammaticName) '$($focused.Current.Name)', PID $($focused.Current.ProcessId)."
+                }
+                Write-Host "Native focus: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+                throw
+            }
+            [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, $target.Key)
+            Write-Output "Sent native $($target.KeyName) to the focused $($target.Label) control."
         }
-        if (-not $multipart.Reply.Wait(8000)) { throw 'The multipart Hook did not receive the manual answer' }
+        if (-not $multipart.Reply.Wait(8000)) { throw 'The multipart Hook did not receive the keyboard answer' }
         $response = $multipart.Reply.GetAwaiter().GetResult() | ConvertFrom-Json
         $answers = $response.answer | ConvertFrom-Json
         if ($answers.'Pick a region?' -ne 'Production region' -or $answers.'Pick an output?' -ne 'Detailed output') {
             throw 'The manual reply did not include both selected answers'
         }
-        Write-Output 'The original multipart Hook received both manually selected answers.'
+        Write-Output 'The original multipart Hook received both answers selected and submitted with the native keyboard.'
     } finally {
         $multipart.Connection.Dispose()
     }
