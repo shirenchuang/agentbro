@@ -185,6 +185,20 @@ impl AgentAdapter for QoderAdapter {
         &self,
         raw: &serde_json::Value,
     ) -> Result<AgentEvent, Box<dyn std::error::Error>> {
+        Ok(Self::parse_hook_event(self.source, raw))
+    }
+
+    fn hook_config_paths(&self) -> Vec<PathBuf> {
+        vec![self.settings_path()]
+    }
+
+    fn hooks_installed(&self) -> bool {
+        profiles::is_installed_at(&self.profile(), &self.settings_path())
+    }
+}
+
+impl QoderAdapter {
+    pub(super) fn parse_hook_event(source: &str, raw: &serde_json::Value) -> AgentEvent {
         let session_id = string_field(raw, &["session_id", "sessionId"])
             .unwrap_or("unknown")
             .to_string();
@@ -206,76 +220,76 @@ impl AgentAdapter for QoderAdapter {
             .unwrap_or_default();
 
         match event {
-            "session_start" | "SessionStart" => Ok(AgentEvent::SessionStart {
+            "session_start" | "SessionStart" => AgentEvent::SessionStart {
                 session_id,
                 project,
                 cwd,
                 terminal,
-                agent_type: self.source.to_string(),
-            }),
-            "session_end" | "SessionEnd" => Ok(AgentEvent::SessionEnd { session_id }),
-            "user_prompt_submit" | "UserPromptSubmit" => Ok(AgentEvent::Processing {
+                agent_type: source.to_string(),
+            },
+            "session_end" | "SessionEnd" => AgentEvent::SessionEnd { session_id },
+            "user_prompt_submit" | "UserPromptSubmit" => AgentEvent::Processing {
                 session_id,
                 description: user_prompt_description(raw),
-            }),
-            "pre_tool_use" | "PreToolUse" => Ok(AgentEvent::ToolUse {
+            },
+            "pre_tool_use" | "PreToolUse" => AgentEvent::ToolUse {
                 session_id,
                 tool_name,
                 tool_input,
                 tool_target: None,
                 status: "running".to_string(),
-            }),
-            "post_tool_use" | "PostToolUse" => Ok(AgentEvent::ToolUse {
+            },
+            "post_tool_use" | "PostToolUse" => AgentEvent::ToolUse {
                 session_id,
                 tool_name,
                 tool_input,
                 tool_target: None,
                 status: "success".to_string(),
-            }),
-            "post_tool_use_failure" | "PostToolUseFailure" => Ok(AgentEvent::ToolUse {
+            },
+            "post_tool_use_failure" | "PostToolUseFailure" => AgentEvent::ToolUse {
                 session_id,
                 tool_name,
                 tool_input,
                 tool_target: None,
                 status: "error".to_string(),
-            }),
-            "permission_request" | "PermissionRequest" => Ok(AgentEvent::PermissionRequest {
+            },
+            "permission_request" | "PermissionRequest" => AgentEvent::PermissionRequest {
                 session_id,
                 tool_name,
                 diff: None,
                 options: None,
-            }),
-            "notification" | "Notification" => Ok(AgentEvent::Notification {
+            },
+            "notification" | "Notification" => AgentEvent::Notification {
                 session_id,
                 message: string_field(raw, &["message", "notification"])
                     .unwrap_or("")
                     .to_string(),
                 status: string_field(raw, &["status"]).map(ToString::to_string),
-            }),
-            "stop" | "Stop" => Ok(AgentEvent::AssistantResponseComplete {
+            },
+            "stop" | "Stop" => AgentEvent::AssistantResponseComplete {
                 session_id,
                 text: string_field(raw, &["summary", "last_assistant_message", "message"])
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or("Task completed")
                     .to_string(),
-            }),
-            "StopFailure" | "stop_failure" => Ok(AgentEvent::AssistantResponseComplete {
+            },
+            "StopFailure" | "stop_failure" => AgentEvent::AssistantResponseComplete {
                 session_id,
                 text: string_field(raw, &["error_message", "error", "message"])
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or("Task failed")
                     .to_string(),
-            }),
+            },
             "PreCompact" | "PostCompact" | "pre_compact" | "post_compact" => {
-                Ok(AgentEvent::Processing {
+                AgentEvent::Processing {
                     session_id,
                     description: string_field(raw, &["message", "description"])
                         .filter(|value| !value.trim().is_empty())
                         .unwrap_or("Compacting context")
                         .to_string(),
-                })
+                }
             }
-            "SubagentStart" | "subagent_start" => Ok(AgentEvent::SubagentStart {
+            "SubagentStart" | "subagent_start" => AgentEvent::SubagentStart {
                 session_id,
                 agent_id: string_field(raw, &["agent_id", "agentId", "tool_use_id", "toolUseId"])
                     .unwrap_or("unknown")
@@ -289,8 +303,8 @@ impl AgentAdapter for QoderAdapter {
                     .map(ToString::to_string),
                 transcript_path: string_field(raw, &["transcript_path", "transcriptPath"])
                     .map(ToString::to_string),
-            }),
-            "SubagentStop" | "subagent_stop" => Ok(AgentEvent::SubagentStop {
+            },
+            "SubagentStop" | "subagent_stop" => AgentEvent::SubagentStop {
                 session_id,
                 agent_id: string_field(raw, &["agent_id", "agentId", "tool_use_id", "toolUseId"])
                     .unwrap_or("unknown")
@@ -314,20 +328,12 @@ impl AgentAdapter for QoderAdapter {
                     &["last_assistant_message", "lastAssistantMessage", "message"],
                 )
                 .map(ToString::to_string),
-            }),
-            _ => Ok(AgentEvent::Processing {
+            },
+            _ => AgentEvent::Processing {
                 session_id,
                 description: format!("Event: {}", event),
-            }),
+            },
         }
-    }
-
-    fn hook_config_paths(&self) -> Vec<PathBuf> {
-        vec![self.settings_path()]
-    }
-
-    fn hooks_installed(&self) -> bool {
-        profiles::is_installed_at(&self.profile(), &self.settings_path())
     }
 }
 

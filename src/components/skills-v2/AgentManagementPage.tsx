@@ -4382,12 +4382,13 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
   disabled: boolean
   runHookMutation: RunHookMutation
 }) {
+  const { t } = useTranslation()
   const agentId = detail.id
   const [hook, setHook] = useState<HookStatus | null>(null)
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<'install' | 'uninstall' | 'configure' | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const actionsDisabled = disabled || busy
+  const actionsDisabled = disabled || busy !== null
 
   const load = async () => {
     if (!isCurrentAgentSkillScope(scope)) return
@@ -4409,7 +4410,7 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
   }, [agentId])
 
   const install = async () => {
-    setBusy(true)
+    setBusy('install')
     setError(null)
     try {
       await runHookMutation(agentId, () => installAgentHook(hook?.toolId || agentId))
@@ -4417,13 +4418,13 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
     } catch (e) {
       setError(String(e))
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
   const toggleEvent = async (eventName: string, enabled: boolean) => {
     if (!hook?.events) return
-    setBusy(true)
+    setBusy('configure')
     setError(null)
     try {
       const next = hook.events
@@ -4434,13 +4435,13 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
     } catch (e) {
       setError(String(e))
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
   const uninstall = async () => {
     if (!confirm(`移除 ${agentId} 的 Hook？`)) return
-    setBusy(true)
+    setBusy('uninstall')
     setError(null)
     try {
       await runHookMutation(agentId, () => uninstallAgentHook(hook?.toolId || agentId))
@@ -4448,7 +4449,7 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
     } catch (e) {
       setError(String(e))
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
@@ -4475,19 +4476,22 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
         </div>
         <div className="sm2__btn-row sm2__hook-actions">
           {hook.configPath && (
-            <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => skillApiV2.openPath(hook.configPath!)}>
+            <button className="sm2__btn sm2__btn--ghost" disabled={actionsDisabled} onClick={() => skillApiV2.openPath(hook.configPath!)}>
               打开配置
             </button>
           )}
           {hook.configDir && (
-            <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => skillApiV2.openPath(hook.configDir!)}>
+            <button className="sm2__btn sm2__btn--ghost" disabled={actionsDisabled} onClick={() => skillApiV2.openPath(hook.configDir!)}>
               打开目录
             </button>
           )}
-          {hook.installed ? (
-            <ActionButton className="sm2__btn sm2__btn--danger" disabled={actionsDisabled} busy={busy} busyLabel="正在卸载" onClick={uninstall}>卸载 Hook</ActionButton>
-          ) : (
-            <ActionButton className="sm2__btn sm2__btn--primary" disabled={actionsDisabled} busy={busy} busyLabel="正在安装" onClick={install}>安装 Hook</ActionButton>
+          {hook.installed && (
+            <ActionButton className="sm2__btn sm2__btn--danger" disabled={actionsDisabled} busy={busy === 'uninstall'} busyLabel="正在卸载" onClick={uninstall}>卸载 Hook</ActionButton>
+          )}
+          {(!hook.installed || hook.installStatus === 'needs_reinstall') && (
+            <ActionButton className="sm2__btn sm2__btn--primary" disabled={actionsDisabled} busy={busy === 'install'} busyLabel="正在安装" onClick={install}>
+              {hook.installStatus === 'needs_reinstall' ? t('settings.reinstall') : '安装 Hook'}
+            </ActionButton>
           )}
         </div>
       </section>
@@ -4496,7 +4500,7 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
           <div className="sm2__panel-head">
             <h3>桥接命令</h3>
             {hook.bridgePath && (
-              <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => skillApiV2.openPath(hook.bridgePath!)}>
+              <button className="sm2__btn sm2__btn--ghost" disabled={actionsDisabled} onClick={() => skillApiV2.openPath(hook.bridgePath!)}>
                 打开脚本
               </button>
             )}

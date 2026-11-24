@@ -1,6 +1,7 @@
 // QoderCliAdapter — Agent adapter for Qoder CLI (separate from IDE)
 
 use super::profiles;
+use super::qoder::QoderAdapter;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::PathBuf;
 
@@ -64,49 +65,7 @@ impl AgentAdapter for QoderCliAdapter {
         &self,
         raw: &serde_json::Value,
     ) -> Result<AgentEvent, Box<dyn std::error::Error>> {
-        let session_id = raw
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let event = raw.get("event").and_then(|v| v.as_str()).unwrap_or("");
-        match event {
-            "session_start" | "SessionStart" => Ok(AgentEvent::SessionStart {
-                session_id,
-                project: raw
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .map(super::project_name_from_path)
-                    .unwrap_or_default(),
-                cwd: raw
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                terminal: raw
-                    .get("tty")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                agent_type: "qoder-cli".to_string(),
-            }),
-            "session_end" => Ok(AgentEvent::SessionEnd { session_id }),
-            "Stop" => Ok(AgentEvent::AssistantResponseComplete {
-                session_id,
-                text: raw
-                    .get("summary")
-                    .or_else(|| raw.get("last_assistant_message"))
-                    .or_else(|| raw.get("message"))
-                    .and_then(|v| v.as_str())
-                    .filter(|v| !v.trim().is_empty())
-                    .unwrap_or("Task completed")
-                    .to_string(),
-            }),
-            _ => Ok(AgentEvent::Processing {
-                session_id,
-                description: format!("Event: {}", event),
-            }),
-        }
+        Ok(QoderAdapter::parse_hook_event(self.name(), raw))
     }
 
     fn hook_config_paths(&self) -> Vec<PathBuf> {

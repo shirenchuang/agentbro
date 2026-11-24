@@ -115,6 +115,12 @@ describe('getComposerCapability', () => {
     expect(supportsPersistentPermissionActions(desktop.agentType)).toBe(false)
   })
 
+  it('offers per-request decisions for Qoder CLI while keeping terminal replies', () => {
+    const cli = session({ agentType: 'qoder-cli', tty: '/dev/ttys001' })
+    expect(getComposerCapability(cli).kind).toBe('sendable')
+    expect(supportsPersistentPermissionActions(cli.agentType)).toBe(false)
+  })
+
   it('keeps Qoder.app locked even when the Codex app-server bridge is live', () => {
     const s = session({
       agentType: 'qoder',

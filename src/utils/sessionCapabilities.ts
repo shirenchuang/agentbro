@@ -25,7 +25,7 @@ export interface ComposerCapabilityOptions {
 }
 
 export function supportsPersistentPermissionActions(agentType: SessionState['agentType']): boolean {
-  return !['codex', 'deepseek-harness', 'qoder', 'qoder-desktop'].includes(agentType)
+  return !['codex', 'deepseek-harness', 'qoder', 'qoder-desktop', 'qoder-cli'].includes(agentType)
 }
 
 function bundleIdMatchesCodexApp(termBundleId: string | undefined): boolean {

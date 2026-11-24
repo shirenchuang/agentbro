@@ -715,10 +715,14 @@ pub fn qoder_profile() -> AgentIntegrationProfile {
 }
 
 pub fn qoder_cli_profile() -> AgentIntegrationProfile {
-    json_profile("qoder-cli", ".qoder/settings.json", BASIC_AGENT_EVENTS)
+    AgentIntegrationProfile {
+        id: "qoder-cli",
+        source: "qoder-cli",
+        ..qoder_desktop_profile()
+    }
 }
 
-const QODER_DESKTOP_EVENTS: &[HookEventDescriptor] = &[
+const QODER_DESKTOP_AND_CLI_EVENTS: &[HookEventDescriptor] = &[
     plain_event("SessionStart"),
     plain_event("UserPromptSubmit"),
     matcher_event("PreToolUse", "*", None),
@@ -740,7 +744,7 @@ pub fn qoder_desktop_profile() -> AgentIntegrationProfile {
     AgentIntegrationProfile {
         id: "qoder-desktop",
         source: "qoder-desktop",
-        events: QODER_DESKTOP_EVENTS,
+        events: QODER_DESKTOP_AND_CLI_EVENTS,
         ..qoder_profile()
     }
 }
@@ -1420,6 +1424,20 @@ fn json_hooks_health(
 
     if !json_hook_contains_profile(&settings, profile) {
         return HookInstallHealth::NotInstalled;
+    }
+    if profile.id == "qoder-cli"
+        && hooks
+            .values()
+            .filter_map(Value::as_array)
+            .flatten()
+            .any(|entry| {
+                entry
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|command| agentbro_command_matches_profile(profile, command))
+            })
+    {
+        return HookInstallHealth::NeedsReinstall;
     }
     if let Some(status) = bridge_health() {
         return status;
@@ -4215,6 +4233,42 @@ name = "also keep"
         assert!(is_installed_at(&qoder_desktop_profile(), &path));
         assert!(!is_installed_at(&qoder_profile(), &path));
         assert!(!is_installed_at(&qoder_cli_profile(), &path));
+    }
+
+    #[test]
+    fn qoder_cli_repair_replaces_flat_hooks_and_preserves_other_commands() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("settings.json");
+        let old_cli = "agentbro-bridge --source qoder-cli";
+        let other_hooks = serde_json::json!({"matcher": "Read", "hooks": [
+            {"type": "command", "command": "echo user-hook"},
+            {"type": "command", "command": "agentbro-bridge --source qoder"},
+            {"type": "command", "command": "agentbro-bridge --source qoder-desktop"}
+        ]});
+        let settings = serde_json::json!({
+            "hooks": {"PreToolUse": [{"type": "command", "command": old_cli}, other_hooks]}
+        });
+        std::fs::write(&path, settings.to_string()).unwrap();
+
+        let profile = qoder_cli_profile();
+        assert_eq!(
+            install_health(&profile, &path),
+            HookInstallHealth::NeedsReinstall
+        );
+        let updated = update_nested_json_hooks(&profile, &path, old_cli).unwrap();
+        let hooks = &updated["hooks"];
+        assert_eq!(hooks["PreToolUse"].as_array().unwrap().len(), 2);
+        assert_eq!(hooks["PreToolUse"][0], other_hooks);
+        for event in [
+            "SessionStart",
+            "SessionEnd",
+            "UserPromptSubmit",
+            "PermissionRequest",
+        ] {
+            assert_eq!(hooks[event][0]["hooks"][0]["command"], old_cli);
+        }
+        assert_eq!(hooks["PermissionRequest"][0]["hooks"][0]["timeout"], 600);
     }
 
     #[test]
