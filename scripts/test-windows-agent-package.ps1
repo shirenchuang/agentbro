@@ -424,7 +424,6 @@ function Test-InstalledQoderSharedSkillsCleanup([Windows.Automation.AutomationEl
         $null = Wait-IslandValue 'the shared Skill counted in the Qoder Desktop inventory' {
             Test-PackVisibleText $Settings 'Scan complete: 0 managed, 1 unmanaged'
         }
-        Invoke-PackControl (Wait-IslandValue 'the Agent program refresh button' { Find-PackControl $Settings '获取版本' })
         Invoke-PackControl (Wait-IslandValue 'the Qoder Desktop cleanup button' {
             $button = Find-PackControl $Settings 'Clean up AgentBro resources' ([Windows.Automation.ControlType]::Button)
             if ($button -and $button.Current.IsEnabled) { $button }
@@ -436,6 +435,7 @@ function Test-InstalledQoderSharedSkillsCleanup([Windows.Automation.AutomationEl
         })
         $null = Wait-IslandValue 'cleanup of the Qoder Desktop Hook' {
             -not (Find-PackControl $Settings 'Confirm cleanup') -and
+                (Find-PackControl $Settings '安装 Hook') -and
                 (Get-Content -LiteralPath $config -Raw) -notmatch '--source qoder-desktop'
         }
         if (-not (Test-Path -LiteralPath $skill -PathType Leaf) -or

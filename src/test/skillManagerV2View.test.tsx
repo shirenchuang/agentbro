@@ -7423,6 +7423,58 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(openPath).toHaveBeenCalledWith('/Users/me/Library/Application Support/com.vibetunnel.agentbro/agentbro-bridge')
   })
 
+  it('keeps local Hook actions and the Agent cleanup entry synchronized', async () => {
+    const id = 'qoder-desktop'
+    const name = 'Qoder Desktop'
+    const program = makeProgram({
+      id, displayName: name, kind: 'app', binaryPath: null, uninstallCommand: null,
+      status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '1.1.0',
+    })
+    useSkillStoreV2.setState({
+      selectedAgentId: id,
+      selectedAgentDetail: { ...agentDetail, id, displayName: name, skills: [] },
+      agents: [makeSidebarAgent(id, name)],
+      unmanaged: [],
+    })
+    let installed = false
+    vi.spyOn(agentApi, 'refresh').mockImplementation(async () => [{ ...program, hooksInstalled: installed }])
+    vi.spyOn(agentApi, 'list').mockImplementation(async () => [{
+      ...program, status: 'installed', latestVersion: null, hooksInstalled: installed,
+    }])
+    vi.spyOn(tauriApi, 'getAllHookStatus').mockImplementation(async () => [{
+      toolId: id, name: id, displayName: name, installed, status: 'Installed',
+      installStatus: installed ? 'installed' : 'not_installed',
+    }])
+    vi.spyOn(tauriApi, 'installAgentHook').mockImplementation(async () => { installed = true })
+    const removeFromTab = vi.spyOn(tauriApi, 'uninstallAgentHook').mockImplementation(async () => { installed = false })
+    const removeFromCleanup = vi.spyOn(agentApi, 'uninstallHook').mockImplementation(async () => { installed = false })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    fireEvent.click(await screen.findByRole('button', { name: '安装 Hook' }))
+    expect(await screen.findByRole('button', { name: '卸载 Hook' })).toBeEnabled()
+    expect(useSkillStoreV2.getState().agentProgramSnapshot?.programs[id]).toMatchObject({
+      status: 'updateAvailable', latestVersion: '1.1.0', hooksInstalled: true,
+    })
+    fireEvent.click(await screen.findByRole('button', { name: '清理残留' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('移除 AgentBro Hook')
+    fireEvent.click(screen.getByRole('button', { name: '确认清理' }))
+    expect(await screen.findByRole('button', { name: '安装 Hook' })).toBeEnabled()
+    expect(removeFromCleanup).toHaveBeenCalledExactlyOnceWith(id, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(screen.queryByRole('button', { name: '清理残留' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '安装 Hook' }))
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Hook' }))
+    expect(await screen.findByRole('button', { name: '安装 Hook' })).toBeEnabled()
+    expect(removeFromTab).toHaveBeenCalledExactlyOnceWith(id)
+    expect(screen.queryByRole('button', { name: '清理残留' })).not.toBeInTheDocument()
+  })
+
   it('does not read the local Hook settings from Agent Management on an SSH host', async () => {
     const localStatus = vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([{
       toolId: 'claude-code',
@@ -7445,12 +7497,15 @@ describe('Skill detail slider + agent page render without crashing', () => {
   })
 
   it('installs and removes a Hook on the SSH host shown in Agent Management', async () => {
+    let installed = false
+    vi.spyOn(agentApi, 'refresh').mockImplementation(async () => [makeProgram({ hooksInstalled: installed })])
+    vi.spyOn(agentApi, 'list').mockImplementation(async () => [makeProgram({ hooksInstalled: installed })])
     const remoteStatus = vi.spyOn(agentApi, 'remoteHookStatus')
       .mockResolvedValueOnce('notInstalled')
       .mockResolvedValueOnce('installed')
       .mockResolvedValueOnce('notInstalled')
-    const install = vi.spyOn(agentApi, 'installHook').mockResolvedValue()
-    const uninstall = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue()
+    const install = vi.spyOn(agentApi, 'installHook').mockImplementation(async () => { installed = true })
+    const uninstall = vi.spyOn(agentApi, 'uninstallHook').mockImplementation(async () => { installed = false })
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     useRuntimeEnvironmentStore.getState().selectEnvironment('build-host')
     useSkillStoreV2.setState({ runtimeEnvironmentId: 'build-host' })
@@ -7461,10 +7516,13 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(await screen.findByText(i18n.t('skills.runtimeEnvironment.currentLabel', { name: 'build-host' }))).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.installHooks') }))
     expect(install).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
-    fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.uninstallHooks') }))
+    const removeHook = await screen.findByRole('button', { name: i18n.t('settings.uninstallHooks') })
+    expect(useSkillStoreV2.getState().agentProgramSnapshot?.programs['claude-code']?.hooksInstalled).toBe(true)
+    fireEvent.click(removeHook)
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('build-host'))
     expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
     expect(await screen.findByRole('button', { name: i18n.t('settings.installHooks') })).toBeEnabled()
+    expect(useSkillStoreV2.getState().agentProgramSnapshot?.programs['claude-code']?.hooksInstalled).toBe(false)
     expect(remoteStatus.mock.calls).toEqual(Array.from({ length: 3 }, () => ['claude-code', 'build-host']))
   })
 

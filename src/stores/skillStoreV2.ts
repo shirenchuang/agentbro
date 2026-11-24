@@ -66,7 +66,7 @@ interface AgentProgramOperation {
   agentId: string
   environmentId: string
   selectionRevision: number
-  operation: 'install' | 'update' | 'uninstall'
+  operation: 'install' | 'update' | 'uninstall' | 'hook'
 }
 
 interface SkillV2State {

@@ -46,6 +46,7 @@ type AgentRuntimeSelection = {
   environmentId: string
   selectionRevision: number
 }
+type RunHookMutation = (agentId: string, mutate: () => Promise<void>) => Promise<void>
 type AgentSkillDetailTarget = AgentRuntimeSelection & {
   skillId: string
   fallback: SkillDetailFallback | null
@@ -153,7 +154,7 @@ function hasSharedSkillsDirectory(program: AgentProgramInfo, programs: AgentProg
 export function AgentManagementPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
-  const { setError, loadOverview, loadAgentDetail } = state
+  const { setError, loadOverview, loadAgentDetail, beginAgentProgramOperation, finishAgentProgramOperation } = state
   const allSessions = useSessionStore((s) => s.sessionList)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const { selectedEnvironmentId: runtimeEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
@@ -171,6 +172,7 @@ export function AgentManagementPage() {
   ), [agentUsageScores, state.agents])
   const detail = state.selectedAgentDetail?.id === SHARED_SKILLS_AGENT_ID ? null : state.selectedAgentDetail
   const [tab, setTab] = useState<DetailTab>('overview')
+  const [hookCleanupRevision, setHookCleanupRevision] = useState(0)
   const [adopt, setAdopt] = useState<AdoptDialogState | null>(null)
   const [skillDetailTarget, setSkillDetailTarget] = useState<AgentSkillDetailTarget | null>(null)
   const currentSkillDetail = skillDetailTarget && isAgentRuntimeSelection(skillDetailTarget) ? skillDetailTarget : null
@@ -205,7 +207,7 @@ export function AgentManagementPage() {
   const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || operation !== null || openingAgentId !== null || deletingAgentId !== null || adoptingUnmanagedId !== null
   const isCurrentRuntime = () => isAgentRuntimeSelection(runtimeSelection)
 
-  const loadPrograms = useCallback(async (runtime: AgentRuntimeSelection) => {
+  const loadPrograms = useCallback(async (runtime: AgentRuntimeSelection, hooksOnly = false) => {
     if (!isAgentRuntimeSelection(runtime)) return
     const request = ++latestAgentProgramRequest
     programRequestRef.current = request
@@ -214,9 +216,16 @@ export function AgentManagementPage() {
       && isAgentRuntimeSelection(runtime)
     setSettledProgramRuntime(null)
     try {
-      const next = await agentApi.refresh(runtime.environmentId)
+      const next = await (hooksOnly ? agentApi.list(runtime.environmentId) : agentApi.refresh(runtime.environmentId))
       if (!isAgentRuntimeSelection(runtime)) return
-      const programs = Object.fromEntries(next.map((agent) => [agent.id, agent]))
+      const snapshot = useSkillStoreV2.getState().agentProgramSnapshot
+      const previous = hooksOnly && snapshot?.environmentId === runtime.environmentId
+        && snapshot.selectionRevision === runtime.selectionRevision ? snapshot.programs : undefined
+      const programs = { ...previous }
+      for (const agent of next) {
+        const existing = previous?.[agent.id]
+        programs[agent.id] = existing ? { ...existing, hooksInstalled: agent.hooksInstalled } : agent
+      }
       if (isLatest()) useSkillStoreV2.setState({ agentProgramSnapshot: { ...runtime, programs } })
       return programs
     } catch (e) {
@@ -225,6 +234,18 @@ export function AgentManagementPage() {
       if (request === programRequestRef.current && isAgentRuntimeSelection(runtime)) setSettledProgramRuntime(runtime)
     }
   }, [setError, t])
+
+  const runHookMutation = useCallback<RunHookMutation>(async (agentId, mutate) => {
+    const active = { agentId, environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision, operation: 'hook' } as const
+    if (!isAgentRuntimeSelection(active) || useSkillStoreV2.getState().selectedAgentId !== agentId) return
+    if (!beginAgentProgramOperation(active)) return
+    try {
+      await mutate()
+      await loadPrograms(active, true)
+    } finally {
+      finishAgentProgramOperation(active)
+    }
+  }, [beginAgentProgramOperation, finishAgentProgramOperation, loadPrograms, runtimeEnvironmentId, runtimeSelectionRevision])
 
   useEffect(() => {
     if (state.initialized && !state.startupScanInFlight) void state.loadOverview()
@@ -669,6 +690,9 @@ export function AgentManagementPage() {
         if (program.hooksInstalled) {
           try {
             await agentApi.uninstallHook(agent.id, environmentId)
+            if (isCurrent() && useSkillStoreV2.getState().selectedAgentId === agent.id) {
+              setHookCleanupRevision((revision) => revision + 1)
+            }
           } catch (error) {
             failures.push(`Hook：${skillErrorMessage(t, error)}`)
           }
@@ -896,6 +920,8 @@ export function AgentManagementPage() {
             opening={openingAgentId === detail.id}
             adoptingUnmanagedId={adoptingUnmanagedId}
             program={programs[detail.id] || null}
+            hookCleanupRevision={hookCleanupRevision}
+            runHookMutation={runHookMutation}
             agentInstalled={agents.find((agent) => agent.id === detail.id)?.installed ?? Boolean(detail.version || detail.skillsDir)}
             programLoading={programLoading}
             agentOutput={agentOutput}
@@ -1343,6 +1369,8 @@ function AgentDetailView({
   opening,
   adoptingUnmanagedId,
   program,
+  hookCleanupRevision,
+  runHookMutation,
   agentInstalled,
   programLoading,
   agentOutput,
@@ -1367,6 +1395,8 @@ function AgentDetailView({
   opening: boolean
   adoptingUnmanagedId: string | null
   program: AgentProgramInfo | null
+  hookCleanupRevision: number
+  runHookMutation: RunHookMutation
   agentInstalled: boolean
   programLoading: boolean
   agentOutput: string[]
@@ -1528,7 +1558,9 @@ function AgentDetailView({
         )}
         {tab === 'mcp' && <McpTab detail={detail} />}
         {tab === 'plugins' && <PluginManagementTab detail={detail} />}
-        {tab === 'hooks' && <HooksTab detail={detail} />}
+        {tab === 'hooks' && (
+          <HooksTab key={hookCleanupRevision} detail={detail} disabled={busy || programLoading} runHookMutation={runHookMutation} />
+        )}
         {tab === 'config' && <ConfigTab detail={detail} program={program} />}
       </div>
     </div>
@@ -4309,12 +4341,26 @@ function McpTab({ detail }: { detail: AgentDetail }) {
   return <McpManagementTab detail={detail} />
 }
 
-function HooksTab({ detail }: { detail: AgentDetail }) {
+function HooksTab({ detail, disabled, runHookMutation }: {
+  detail: AgentDetail
+  disabled: boolean
+  runHookMutation: RunHookMutation
+}) {
   const { selectedEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
   const runtimeRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
   const agentRevision = useSkillStoreV2((state) => state.agentSelectionRevision)
   const key = `${selectedEnvironmentId}:${runtimeRevision}:${agentRevision}:${detail.id}`
-  if (isLocal) return <LocalHooksTab key={key} detail={detail} />
+  if (isLocal) {
+    return (
+      <LocalHooksTab
+        key={key}
+        detail={detail}
+        scope={{ agentId: detail.id, environmentId: selectedEnvironmentId, runtimeSelectionRevision: runtimeRevision, agentSelectionRevision: agentRevision }}
+        disabled={disabled}
+        runHookMutation={runHookMutation}
+      />
+    )
+  }
   return (
     <RemoteAgentHooksTab
       key={key}
@@ -4324,27 +4370,36 @@ function HooksTab({ detail }: { detail: AgentDetail }) {
       environmentId={selectedEnvironmentId}
       runtimeRevision={runtimeRevision}
       hostName={remoteHost?.name || selectedEnvironmentId}
+      disabled={disabled}
+      runHookMutation={runHookMutation}
     />
   )
 }
 
-function LocalHooksTab({ detail }: { detail: AgentDetail }) {
+function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
+  detail: AgentDetail
+  scope: AgentSkillScope
+  disabled: boolean
+  runHookMutation: RunHookMutation
+}) {
   const agentId = detail.id
   const [hook, setHook] = useState<HookStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const actionsDisabled = disabled || busy
 
   const load = async () => {
+    if (!isCurrentAgentSkillScope(scope)) return
     setLoading(true)
     try {
       const all = await getAllHookStatus()
       const found = await findAgentHookStatus(all, detail)
-      setHook(found || null)
+      if (isCurrentAgentSkillScope(scope)) setHook(found || null)
     } catch (e) {
-      setError(String(e))
+      if (isCurrentAgentSkillScope(scope)) setError(String(e))
     } finally {
-      setLoading(false)
+      if (isCurrentAgentSkillScope(scope)) setLoading(false)
     }
   }
 
@@ -4357,7 +4412,7 @@ function LocalHooksTab({ detail }: { detail: AgentDetail }) {
     setBusy(true)
     setError(null)
     try {
-      await installAgentHook(hook?.toolId || agentId)
+      await runHookMutation(agentId, () => installAgentHook(hook?.toolId || agentId))
       await load()
     } catch (e) {
       setError(String(e))
@@ -4374,7 +4429,7 @@ function LocalHooksTab({ detail }: { detail: AgentDetail }) {
       const next = hook.events
         .filter((event) => (event.name === eventName ? enabled : event.enabled))
         .map((event) => event.name)
-      await configureAgentHookEvents(hook.toolId || agentId, next)
+      await runHookMutation(agentId, () => configureAgentHookEvents(hook.toolId || agentId, next))
       await load()
     } catch (e) {
       setError(String(e))
@@ -4388,7 +4443,7 @@ function LocalHooksTab({ detail }: { detail: AgentDetail }) {
     setBusy(true)
     setError(null)
     try {
-      await uninstallAgentHook(hook?.toolId || agentId)
+      await runHookMutation(agentId, () => uninstallAgentHook(hook?.toolId || agentId))
       await load()
     } catch (e) {
       setError(String(e))
@@ -4430,9 +4485,9 @@ function LocalHooksTab({ detail }: { detail: AgentDetail }) {
             </button>
           )}
           {hook.installed ? (
-            <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy} busy={busy} busyLabel="正在卸载" onClick={uninstall}>卸载 Hook</ActionButton>
+            <ActionButton className="sm2__btn sm2__btn--danger" disabled={actionsDisabled} busy={busy} busyLabel="正在卸载" onClick={uninstall}>卸载 Hook</ActionButton>
           ) : (
-            <ActionButton className="sm2__btn sm2__btn--primary" disabled={busy} busy={busy} busyLabel="正在安装" onClick={install}>安装 Hook</ActionButton>
+            <ActionButton className="sm2__btn sm2__btn--primary" disabled={actionsDisabled} busy={busy} busyLabel="正在安装" onClick={install}>安装 Hook</ActionButton>
           )}
         </div>
       </section>
@@ -4467,7 +4522,7 @@ function LocalHooksTab({ detail }: { detail: AgentDetail }) {
                   event={event}
                   installed={hook.installed}
                   configPath={hook.configPath}
-                  busy={busy}
+                  busy={actionsDisabled}
                   onToggle={toggleEvent}
                 />
               ))}
