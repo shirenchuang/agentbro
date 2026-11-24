@@ -279,7 +279,13 @@ fn is_local_port_listening(port: u16) -> bool {
 fn codex_desktop_app_path() -> Option<PathBuf> {
     super::executable::codex_desktop_app_candidates()
         .into_iter()
-        .find(|path| path.exists())
+        .find(|path| {
+            if cfg!(target_os = "windows") {
+                path.is_file()
+            } else {
+                path.exists()
+            }
+        })
 }
 
 impl CodexAdapter {

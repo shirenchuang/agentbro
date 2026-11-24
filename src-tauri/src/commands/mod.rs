@@ -2979,31 +2979,46 @@ fn open_codex_desktop_session_macos(session: &SessionState) -> Result<(), String
 
 #[cfg(target_os = "windows")]
 fn open_codex_desktop_session_windows(session: &SessionState) -> Result<(), String> {
+    let thread_uri = is_uuid_like(&session.id).then(|| format!("codex://threads/{}", session.id));
+    open_windows_codex_targets(
+        thread_uri.as_deref(),
+        crate::agents::executable::codex_desktop_app_user_model_ids,
+        crate::agents::executable::codex_desktop_app_candidates,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_codex_targets(
+    thread_uri: Option<&str>,
+    app_ids: impl FnOnce() -> Vec<String>,
+    app_paths: impl FnOnce() -> Vec<PathBuf>,
+) -> Result<(), String> {
+    use crate::platform::windows_shell::ShellApartment;
+
     let mut errors = Vec::new();
+    match ShellApartment::initialize() {
+        Ok(shell) => {
+            if let Some(target) = thread_uri {
+                match shell.open_uri(target) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => errors.push(format!("{target}: {error}")),
+                }
+            }
 
-    if is_uuid_like(&session.id) {
-        let target = format!("codex://threads/{}", session.id);
-        match open_windows_shell_target(&target) {
-            Ok(()) => return Ok(()),
-            Err(err) => errors.push(format!("{target}: {err}")),
+            for app_id in app_ids() {
+                match shell.activate_packaged_app(&app_id) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => errors.push(format!("{app_id}: {error}")),
+                }
+            }
         }
+        Err(error) => errors.push(error),
     }
 
-    for app_id in crate::agents::executable::codex_desktop_app_user_model_ids() {
-        match open_windows_app_user_model_id(&app_id) {
-            Ok(()) => return Ok(()),
-            Err(err) => errors.push(format!("{app_id}: {err}")),
-        }
-    }
-
-    for path in crate::agents::executable::codex_desktop_app_candidates()
-        .into_iter()
-        .filter(|path| path.exists())
-    {
-        let target = path.to_string_lossy().to_string();
-        match open_windows_shell_target(&target) {
-            Ok(()) => return Ok(()),
-            Err(err) => errors.push(format!("{target}: {err}")),
+    for path in app_paths().into_iter().filter(|path| path.is_file()) {
+        match std::process::Command::new(&path).spawn() {
+            Ok(_) => return Ok(()),
+            Err(error) => errors.push(format!("{}: {error}", path.display())),
         }
     }
 
@@ -3015,163 +3030,8 @@ fn open_codex_desktop_session_windows(session: &SessionState) -> Result<(), Stri
 }
 
 #[cfg(target_os = "windows")]
-fn open_windows_app_user_model_id(app_id: &str) -> Result<(), String> {
-    let app_id = clean_windows_app_user_model_id(app_id)
-        .ok_or_else(|| format!("Invalid Windows app id: {app_id}"))?;
-    let script = format!(
-        r#"$ErrorActionPreference = 'Stop'
-$shell = New-Object -ComObject Shell.Application
-$folder = $shell.Namespace('shell:AppsFolder')
-if ($null -eq $folder) {{ throw 'AppsFolder is unavailable' }}
-$item = $folder.ParseName({})
-if ($null -eq $item) {{ throw 'App is not installed' }}
-$item.InvokeVerb('open')
-"#,
-        powershell_string_literal(&app_id)
-    );
-
-    match run_windows_powershell(&script) {
-        Ok(()) => Ok(()),
-        Err(primary) => {
-            let target = format!("shell:AppsFolder\\{app_id}");
-            open_windows_explorer_target(&target)
-                .map_err(|fallback| format!("{primary}; explorer fallback failed: {fallback}"))
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn clean_windows_app_user_model_id(value: &str) -> Option<String> {
-    let trimmed = value
-        .split(['?', '&', '#'])
-        .next()
-        .unwrap_or(value)
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'');
-    if trimmed.is_empty()
-        || trimmed.contains('\\')
-        || trimmed.contains('/')
-        || !trimmed.contains('!')
-    {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn run_windows_powershell(script: &str) -> Result<(), String> {
-    let output = std::process::Command::new(crate::agents::executable::command_path("powershell"))
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ])
-        .output()
-        .map_err(|err| format!("Failed to run PowerShell app activation: {err}"))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Err(if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("powershell exited with status {}", output.status)
-        })
-    }
-}
-
-#[cfg(target_os = "windows")]
 fn powershell_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
-}
-
-#[cfg(target_os = "windows")]
-fn open_windows_explorer_target(target: &str) -> Result<(), String> {
-    let output = std::process::Command::new(crate::agents::executable::command_path("explorer"))
-        .arg(target)
-        .output()
-        .map_err(|err| format!("Failed to open {target}: {err}"))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Err(if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("explorer exited with status {}", output.status)
-        })
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn open_windows_shell_target(target: &str) -> Result<(), String> {
-    let target = target.trim();
-    if target.is_empty() {
-        return Err("Target is empty".to_string());
-    }
-
-    let path = Path::new(target);
-    let mut command = if is_windows_protocol_target(target) {
-        let mut command =
-            std::process::Command::new(crate::agents::executable::command_path("rundll32"));
-        command.args(["url.dll,FileProtocolHandler", target]);
-        command
-    } else if path.exists() && path.is_file() {
-        std::process::Command::new(path)
-    } else {
-        let mut command =
-            std::process::Command::new(crate::agents::executable::command_path("explorer"));
-        command.arg(target);
-        command
-    };
-
-    let output = command
-        .output()
-        .map_err(|err| format!("Failed to open {target}: {err}"))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Err(if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("open target exited with status {}", output.status)
-        })
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn is_windows_protocol_target(target: &str) -> bool {
-    if target.starts_with("\\\\") {
-        return false;
-    }
-    let Some((scheme, rest)) = target.split_once(':') else {
-        return false;
-    };
-    if scheme.len() == 1 && (rest.starts_with('\\') || rest.starts_with('/')) {
-        return false;
-    }
-    !scheme.is_empty()
-        && scheme
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
 }
 
 #[cfg(target_os = "macos")]
@@ -7011,9 +6871,8 @@ mod tests {
     };
     #[cfg(target_os = "windows")]
     use super::{
-        clean_windows_app_user_model_id, codex_desktop_windows_message_error,
-        is_windows_protocol_target, powershell_string_literal, windows_terminal_command_args,
-        windows_terminal_launch_order, WindowsTerminalLauncher,
+        codex_desktop_windows_message_error, open_windows_codex_targets, powershell_string_literal,
+        windows_terminal_command_args, windows_terminal_launch_order, WindowsTerminalLauncher,
     };
     use crate::energy::EnergyMode;
     use crate::hooks::conversation_parser::{ChatRole, MessageBlock};
@@ -7511,16 +7370,53 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_app_user_model_id_strips_notification_query() {
-        assert_eq!(
-            clean_windows_app_user_model_id("OpenAI.Codex_2p2nqsd0c76g0!App?type=click&tag=123")
-                .as_deref(),
-            Some("OpenAI.Codex_2p2nqsd0c76g0!App")
+    fn windows_codex_jump_falls_back_when_the_protocol_and_package_are_unavailable() {
+        let thread_uri = format!(
+            "agentbro-missing-{}://threads/fixture",
+            uuid::Uuid::new_v4()
         );
-        assert_eq!(
-            clean_windows_app_user_model_id(r"C:\Program Files\WindowsApps\OpenAI.Codex\App"),
-            None
+        let app_id = "AgentBro.DoesNotExist_2p2nqsd0c76g0!App";
+        let packages = || vec![app_id.to_string()];
+        let error = open_windows_codex_targets(Some(&thread_uri), packages, Vec::new)
+            .expect_err("the shell and app activation must both report failure");
+        assert!(error.contains(&thread_uri), "{error}");
+        assert!(error.contains(app_id), "{error}");
+
+        let root =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let launcher = root.path().join("Codex 测试 launcher.cmd");
+        std::fs::write(
+            &launcher,
+            concat!(
+                "@echo off\r\n",
+                "> \"%~dp0launched\" echo launched\r\n",
+                "for /l %%i in (1,1,20) do (\r\n",
+                "  if exist \"%~dp0continue\" goto done\r\n",
+                "  \"%SystemRoot%\\System32\\ping.exe\" -n 2 127.0.0.1 >nul\r\n",
+                ")\r\n",
+                ":done\r\n",
+                "> \"%~dp0finished\" echo finished\r\n",
+            ),
+        )
+        .unwrap();
+        open_windows_codex_targets(Some(&thread_uri), packages, || vec![launcher])
+            .expect("try the standalone path after both failed activations");
+
+        let wait_for = |name| {
+            let marker = root.path().join(name);
+            let start = std::time::Instant::now();
+            while !marker.is_file() && start.elapsed() < std::time::Duration::from_secs(5) {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            assert!(marker.is_file(), "missing fixture marker {name}");
+        };
+        wait_for("launched");
+        assert!(
+            !root.path().join("finished").exists(),
+            "the jump should return while the desktop process is still running"
         );
+        std::fs::write(root.path().join("continue"), []).unwrap();
+        wait_for("finished");
     }
 
     #[cfg(target_os = "windows")]
@@ -7531,22 +7427,6 @@ mod tests {
             "'OpenAI.Codex_abc!App'"
         );
         assert_eq!(powershell_string_literal("A'B"), "'A''B'");
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_shell_target_detects_protocols_without_treating_paths_as_urls() {
-        assert!(is_windows_protocol_target(
-            "codex://threads/123e4567-e89b-12d3-a456-426614174000"
-        ));
-        assert!(is_windows_protocol_target(
-            "https://github.com/shirenchuang/agentbro"
-        ));
-        assert!(is_windows_protocol_target("ccswitch://provider"));
-        assert!(!is_windows_protocol_target(
-            r"C:\Users\admin\Documents\agentbro"
-        ));
-        assert!(!is_windows_protocol_target(r"\\server\share\agentbro"));
     }
 
     #[cfg(target_os = "windows")]
