@@ -387,23 +387,33 @@ pub(super) fn verify_installed(
             continue;
         }
         let skill = destination.join(&name);
-        let is_directory = match fs::symlink_metadata(&skill) {
-            Ok(metadata) => metadata.is_dir(),
+        let file_type = match fs::symlink_metadata(&skill) {
+            Ok(metadata) => Some(metadata.file_type()),
             Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(_) => false,
+            Err(_) => None,
         };
         let expected = entry
             .get("computedHash")
             .and_then(|hash| hash.as_str())
             .filter(|hash| lock.version == 2 && is_hex(hash, 64));
-        let status = match expected {
-            Some(hash) if is_directory => match hash_installed_skill(&destination, &skill) {
-                Ok(actual) if actual.eq_ignore_ascii_case(hash) => Verified,
-                Ok(_) => Modified,
-                Err(_) => Unverified,
-            },
-            _ => Unverified,
-        };
+        let status = expected
+            .and_then(|expected| {
+                let file_type = file_type?;
+                let actual = if file_type.is_dir() {
+                    hash_installed_skill(&destination, &skill).ok()?
+                } else if file_type.is_symlink() {
+                    let source = restore_source(lock.version, &name, &entry).ok()?;
+                    hash_linked_npm_skill(root, &skill, &source.location)?
+                } else {
+                    return None;
+                };
+                Some(if actual.eq_ignore_ascii_case(expected) {
+                    Verified
+                } else {
+                    Modified
+                })
+            })
+            .unwrap_or(Unverified);
         results.insert(name, status);
     }
     lock_at_revision(root, revision)?;
@@ -416,6 +426,18 @@ fn hash_installed_skill(destination: &Path, skill: &Path) -> Result<String, Stri
         return Err("The installed path is not a Skill directory".to_string());
     }
     fingerprint_canonical_skill_directory(&skill, true)
+}
+
+fn hash_linked_npm_skill(root: &Path, skill: &Path, location: &RestoreLocation) -> Option<String> {
+    let RestoreLocation::NodeModules(package) = location else {
+        return None;
+    };
+    let target = skill.canonicalize().ok()?;
+    if !target.starts_with(root) || target != select_node_module_skill(root, package).ok()? {
+        return None;
+    }
+    let actual = fingerprint_canonical_skill_directory(&target, true).ok()?;
+    (skill.canonicalize().ok()? == target).then_some(actual)
 }
 
 pub(super) fn fingerprint_canonical_skill_directory(
@@ -1062,20 +1084,25 @@ mod tests {
         let declaring = store.join("declaring-package");
         let package = store.join("skill-package");
         let outside = temp.path().join("outside-package");
+        let unrelated = root.join("unrelated-skill");
         fs::create_dir_all(&declaring).unwrap();
-        fs::create_dir_all(package.join("scripts")).unwrap();
-        fs::create_dir_all(outside.join("scripts")).unwrap();
         fs::write(declaring.join("package.json"), "{}").unwrap();
-        for directory in [&package, &outside] {
+        for directory in [&package, &outside, &unrelated] {
+            fs::create_dir_all(directory.join("scripts")).unwrap();
             fs::write(directory.join("package.json"), br#"{"version":"2.0.0"}"#).unwrap();
             fs::write(directory.join("SKILL.md"), MANIFEST).unwrap();
             fs::write(directory.join("scripts/data.bin"), b"\0\r\n").unwrap();
         }
-        for (source, name) in [
-            (&declaring, "declaring-package"),
-            (&outside, "outside-package"),
+        let destination = root.join(".agents/skills");
+        fs::create_dir_all(&destination).unwrap();
+        for (source, link) in [
+            (&declaring, root.join("node_modules/declaring-package")),
+            (&outside, root.join("node_modules/outside-package")),
+            (&package, destination.join("linked")),
+            (&package, destination.join("wrong-version")),
+            (&outside, destination.join("escaped-link")),
+            (&unrelated, destination.join("wrong-target")),
         ] {
-            let link = root.join("node_modules").join(name);
             #[cfg(unix)]
             std::os::unix::fs::symlink(source, link).unwrap();
             #[cfg(windows)]
@@ -1108,9 +1135,21 @@ mod tests {
         });
         let mut escaped = entry.clone();
         escaped["source"] = "outside-package".into();
+        let mut wrong_version = entry.clone();
+        wrong_version["version"] = "3.0.0".into();
         write_lock(
             &root,
-            json!({ "version": 2, "skills": { "inside": entry, "outside": escaped } }),
+            json!({
+                "version": 2,
+                "skills": {
+                    "inside": entry,
+                    "outside": escaped,
+                    "linked": entry,
+                    "escaped-link": entry,
+                    "wrong-target": entry,
+                    "wrong-version": wrong_version
+                }
+            }),
         );
         let root = root.canonicalize().unwrap();
         let lock = preview(&root).unwrap();
@@ -1124,6 +1163,24 @@ mod tests {
         assert!(results[1].error.is_some());
         assert!(root.join(".agents/skills/inside/SKILL.md").is_file());
         assert!(!root.join(".agents/skills/outside").exists());
+
+        let verified = verify_installed(&root, &lock.revision).unwrap();
+        assert_eq!(verified.get("inside"), Some(&Verified));
+        assert_eq!(verified.get("linked"), Some(&Verified));
+        assert_eq!(verified.get("escaped-link"), Some(&Unverified));
+        assert_eq!(verified.get("wrong-target"), Some(&Unverified));
+        assert_eq!(verified.get("wrong-version"), Some(&Unverified));
+        assert!(!verified.contains_key("outside"));
+
+        fs::write(package.join("SKILL.md"), "locally edited").unwrap();
+        let verified = verify_installed(&root, &lock.revision).unwrap();
+        assert_eq!(verified.get("inside"), Some(&Verified));
+        assert_eq!(verified.get("linked"), Some(&Modified));
+        assert_eq!(preview(&root).unwrap().revision, lock.revision);
+        assert_eq!(
+            destination.join("linked").canonicalize().unwrap(),
+            package.canonicalize().unwrap()
+        );
     }
 
     #[test]

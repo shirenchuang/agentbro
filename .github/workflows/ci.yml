@@ -106,5 +106,7 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE --exact hooks::session_store::tests::pushed_and_polled_session_snapshots_share_revisions_across_store_clones'
       - name: Test Agent and Skill metadata writes
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::registry::tests'
+      - name: Test verification and restore of locked project Skills
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::project_lock::tests'
       - name: Test OpenCode MCP configuration discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::mcp_management::opencode::tests'
