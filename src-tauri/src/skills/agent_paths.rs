@@ -138,7 +138,7 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             settings_file: None,
         },
         "opencode" => basic_skill_paths(&h, ".opencode/skills"),
-        "qoder" | "qoder-cli" => basic_skill_paths(&h, ".qoder/skills"),
+        "qoder" | "qoder-cli" | "qoder-desktop" => basic_skill_paths(&h, ".qoder/skills"),
         "qwen" => basic_skill_paths(&h, ".qwen/skills"),
         "qwenwork-cn" => basic_skill_paths(&h, ".qwenworkcn/skills"),
         "kimi" | "kimi-code-cli" => {
@@ -306,6 +306,7 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "opencode",
         "qoder",
         "qoder-cli",
+        "qoder-desktop",
         "copilot",
         "agents",
         "antigravity",

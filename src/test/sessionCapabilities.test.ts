@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getComposerCapability } from '../utils/sessionCapabilities'
+import { getComposerCapability, supportsPersistentPermissionActions } from '../utils/sessionCapabilities'
 import type { SessionState } from '../types/agent'
 
 function session(overrides: Partial<SessionState> = {}): SessionState {
@@ -107,6 +107,12 @@ describe('getComposerCapability', () => {
       terminal: 'Qoder',
     })
     expect(getComposerCapability(s)).toEqual({ kind: 'locked', reason: 'qoder-app' })
+  })
+
+  it('opens Qoder Desktop for replies and offers per-request permission decisions', () => {
+    const desktop = session({ agentType: 'qoder-desktop', termBundleId: 'com.qoder.app' })
+    expect(getComposerCapability(desktop)).toEqual({ kind: 'locked', reason: 'qoder-app' })
+    expect(supportsPersistentPermissionActions(desktop.agentType)).toBe(false)
   })
 
   it('keeps Qoder.app locked even when the Codex app-server bridge is live', () => {

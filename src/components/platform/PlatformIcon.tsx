@@ -64,6 +64,7 @@ const imageIcons: Record<string, string> = {
   qclaw: qclawIcon,
   qoder: qoderCliIcon,
   'qoder-cli': qoderCliIcon,
+  'qoder-desktop': qoderCliIcon,
   qwen: qwenCliIcon,
   'qwenwork-cn': qwenCliIcon,
   stepfun: stepfunCliIcon,

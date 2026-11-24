@@ -386,31 +386,40 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     Test-InstalledAgentPackageAcrossSettingsWindows $settings $fixtureLauncher
 }
 
-function Test-InstalledRegisteredAgentApp([Windows.Automation.AutomationElement]$Island) {
+function Test-InstalledRegisteredAgentApp(
+    [Windows.Automation.AutomationElement]$Island,
+    [string]$AgentName = 'Cursor',
+    [string]$ExeName = 'Cursor.exe'
+) {
     if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
         throw 'The App Paths fixture requires an isolated GitHub-hosted runner'
     }
-    $registration = 'Software\Microsoft\Windows\CurrentVersion\App Paths\Cursor.exe'
+    $registration = "Software\Microsoft\Windows\CurrentVersion\App Paths\$ExeName"
     $registry = [Microsoft.Win32.Registry]::CurrentUser
     $existing = $registry.OpenSubKey($registration)
     if ($existing) {
         $existing.Dispose()
-        throw 'The runner already has a Cursor App Paths registration'
+        throw "The runner already has a $ExeName App Paths registration"
     }
     $folderName = "AgentBro 应用 $([Guid]::NewGuid().ToString('N'))"
     $directory = Join-Path $env:TEMP $folderName
-    $executable = Join-Path $directory 'Cursor.exe'
+    $executable = Join-Path $directory $ExeName
     try {
         $null = New-Item -ItemType Directory -Path $directory
         Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\where.exe') -Destination $executable
+        if ($AgentName -eq 'Qoder Desktop') {
+            $resources = Join-Path $directory 'resources'
+            $null = New-Item -ItemType Directory -Path $resources
+            $null = New-Item -ItemType File -Path (Join-Path $resources 'app.asar')
+        }
         $key = $registry.CreateSubKey($registration)
         try {
-            $key.SetValue('', ('"%TEMP%\' + $folderName + '\Cursor.exe"'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            $key.SetValue('', ('"%TEMP%\' + $folderName + '\' + $ExeName + '"'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
         } finally {
             $key.Dispose()
         }
 
-        $settings = Open-ManagedAgent $Island 'Cursor'
+        $settings = Open-ManagedAgent $Island $AgentName
         $refresh = Wait-IslandValue 'the enabled Agent version refresh' {
             $button = Find-PackControl $settings '获取版本'
             if ($button -and $button.Current.IsEnabled) { $button }
@@ -424,7 +433,15 @@ function Test-InstalledRegisteredAgentApp([Windows.Automation.AutomationElement]
         if (Find-PackControl $settings '卸载 Agent') {
             throw 'The registered Windows desktop Agent offered automatic uninstall'
         }
-        Write-Output 'Agent Management detected the registered Cursor fixture and displayed its custom executable path.'
+        Write-Output "Agent Management detected the registered $AgentName fixture and displayed its custom executable path."
+        if ($AgentName -eq 'Qoder Desktop') {
+            $settings = Open-ManagedAgent $Island 'Qoder IDE'
+            $null = Wait-IslandValue 'Qoder IDE remaining uninstalled with Qoder Desktop registered' {
+                (Find-PackControl $settings '打开安装页') -and -not (Test-PackVisibleText $settings $executable)
+            }
+            Write-Output 'Agent Management kept Qoder IDE separate from the registered Qoder Desktop app.'
+            $settings = Open-ManagedAgent $Island $AgentName
+        }
 
         Remove-Item -LiteralPath $executable
         $refresh = Wait-IslandValue 'the Agent refresh after removing the registered executable' {

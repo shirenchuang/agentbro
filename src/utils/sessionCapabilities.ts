@@ -25,7 +25,7 @@ export interface ComposerCapabilityOptions {
 }
 
 export function supportsPersistentPermissionActions(agentType: SessionState['agentType']): boolean {
-  return agentType !== 'codex' && agentType !== 'deepseek-harness'
+  return !['codex', 'deepseek-harness', 'qoder', 'qoder-desktop'].includes(agentType)
 }
 
 function bundleIdMatchesCodexApp(termBundleId: string | undefined): boolean {
@@ -95,7 +95,7 @@ export function getComposerCapability(
       : { kind: 'locked', reason: 'codex-app' }
   }
 
-  if (isQoderAppSession(session)) {
+  if (session.agentType === 'qoder-desktop' || isQoderAppSession(session)) {
     return { kind: 'locked', reason: 'qoder-app' }
   }
 

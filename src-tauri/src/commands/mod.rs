@@ -2642,6 +2642,9 @@ pub async fn send_message(
     if is_qoder_app_session(&session) {
         return send_message_to_qoder_app(&session, &message, activate_before_send.unwrap_or(true));
     }
+    if session.agent_type == "qoder-desktop" {
+        return Err("Open Qoder Desktop to continue the conversation.".to_string());
+    }
 
     if let Some(err) = app_host_message_unsupported_error(&session) {
         return Err(err);
@@ -4210,6 +4213,9 @@ pub async fn jump_to_terminal(
     #[cfg(target_os = "windows")]
     if let Some(distribution) = &session.wsl_distribution {
         return crate::platform::wsl::open_workspace(distribution, &session.cwd);
+    }
+    if session.agent_type == "qoder-desktop" {
+        return crate::agents::programs::open_agent_app(&session.agent_type);
     }
     #[cfg(target_os = "windows")]
     if matches!(

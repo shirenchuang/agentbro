@@ -46,6 +46,7 @@ const MASCOT_ASSETS: Record<string, MascotAsset> = {
   'cursor-cli': { src: cursorIcon, inset: 3 },
   'qoder': { src: qoderIcon, inset: 3 },
   'qoder-cli': { src: qoderIcon, inset: 3 },
+  'qoder-desktop': { src: qoderIcon, inset: 3 },
   'codebuddy': { src: codebuddyIcon, inset: 3 },
   'codebuddycn': { src: codebuddyIcon, inset: 3 },
   'codybuddycn': { src: codebuddyIcon, inset: 3 },
