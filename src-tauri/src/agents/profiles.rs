@@ -1098,7 +1098,7 @@ pub fn install_at(
             DeepSeekHarnessAdapter::new().install_hooks()?;
         }
         InstallationKind::TomlHooks => {
-            update_toml_hooks(profile, path)?;
+            update_toml_hooks(profile, path, || managed_bridge_command(profile))?;
         }
     }
     Ok(())
@@ -1736,7 +1736,7 @@ fn bridge_path_for_command(profile: &AgentIntegrationProfile, bridge: &Path) -> 
     }
 }
 
-fn bridge_command_for(
+pub(super) fn bridge_command_for(
     profile: &AgentIntegrationProfile,
     bridge: &Path,
     engine_label: Option<&str>,
@@ -2903,6 +2903,7 @@ fn build_managed_hook_entries(
 fn update_toml_hooks(
     profile: &AgentIntegrationProfile,
     path: &Path,
+    command: impl FnOnce() -> Result<String, Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let existing_raw = std::fs::read_to_string(path).unwrap_or_default();
     let pre_cleaned = strip_legacy_sentinel_block(&existing_raw);
@@ -2918,7 +2919,7 @@ fn update_toml_hooks(
         .into());
     }
 
-    let command = managed_bridge_command(profile)?;
+    let command = command()?;
     let managed = build_managed_hook_entries(profile, &command);
     let segments = super::toml_hooks::parse_segments(&pre_cleaned);
     let output = super::toml_hooks::rebuild(&segments, &managed, &marker(profile));
@@ -4749,7 +4750,7 @@ name = "also keep"
         std::fs::write(&tmp, original).expect("write fixture");
 
         let profile = kimi_profile();
-        let result = update_toml_hooks(&profile, &tmp);
+        let result = update_toml_hooks(&profile, &tmp, || panic!("unexpected bridge lookup"));
         assert!(result.is_err(), "expected conflict error");
         let err = result.unwrap_err().to_string();
         assert!(err.contains("[hooks]"));
@@ -4776,11 +4777,12 @@ name = "also keep"
         std::fs::write(&tmp, "default_model = \"x\"\n").expect("write fixture");
 
         let profile = kimi_profile();
-        update_toml_hooks(&profile, &tmp).expect("first install");
+        let command = || Ok("/tmp/agentbro-bridge --source kimi".to_string());
+        update_toml_hooks(&profile, &tmp, command).expect("first install");
         let after_first = std::fs::read_to_string(&tmp).expect("read after first");
 
         // Second install with identical state should produce identical bytes.
-        update_toml_hooks(&profile, &tmp).expect("second install");
+        update_toml_hooks(&profile, &tmp, command).expect("second install");
         let after_second = std::fs::read_to_string(&tmp).expect("read after second");
         assert_eq!(after_first, after_second);
 
