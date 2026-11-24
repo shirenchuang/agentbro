@@ -698,6 +698,10 @@
   "skills": {
     "projectsTab": "Projects",
     "packManifest": {
+      "exportArchive": "Export with Skill files (ZIP)",
+      "exportedArchive": "Skill Pack and files exported.",
+      "archiveReview": "Restore missing Skills from this ZIP and review any content differences before creating the Pack.",
+      "archiveMember": "Included in ZIP",
       "importFromLink": "Import from link",
       "reviewLink": "Review Skill Pack",
       "readingLink": "Loading GitHub file…",

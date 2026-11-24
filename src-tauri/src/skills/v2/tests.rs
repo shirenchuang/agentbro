@@ -95,6 +95,113 @@ fn add_center_test_skill(svc: &Service, source_dir: &str, skill_id: &str) -> Pat
 }
 
 #[test]
+fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills() {
+    let transfer =
+        crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+    let path = transfer.path().join("技能包.agentbro-pack.zip");
+    let swapped = transfer.path().join("other.zip");
+    let manifest = SkillPackManifest {
+        format: "agentbro-skill-pack".into(),
+        version: 4,
+        name: "Portable local Skills".into(),
+        description: "Includes the author’s files".into(),
+        tags: vec!["migration".into()],
+        skill_ids: vec!["portable-clash".into(), "portable-missing".into()],
+        skill_fingerprints: Default::default(),
+        skill_sources: Default::default(),
+        suggested_agent_ids: vec!["claude-code".into(), "qoder-desktop".into()],
+    };
+    {
+        let (_home, sender, _lock) = fresh_service("pack-zip-sender");
+        let clash = add_center_test_skill(&sender, "bundle-clash", "portable-clash");
+        fs::write(clash.join("reference.md"), b"sender content\r\n").unwrap();
+        let missing = add_center_test_skill(&sender, "bundle-missing", "portable-missing");
+        fs::create_dir(missing.join("resources")).unwrap();
+        fs::write(missing.join("resources/示例.bin"), b"\0\r\n").unwrap();
+        sender.write_pack_archive(&path, manifest.clone()).unwrap();
+        let original = fs::read(&path).unwrap();
+        let mut changed = manifest.clone();
+        changed.description.push('!');
+        sender.write_pack_archive(&swapped, changed).unwrap();
+        let mut incomplete = manifest.clone();
+        incomplete.skill_ids.push("no-longer-in-library".into());
+        assert!(sender.write_pack_archive(&path, incomplete).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    let review = super::pack_archive::Archive::open(&path).unwrap().review;
+    assert_eq!(review.manifest.skill_ids, manifest.skill_ids);
+    assert_eq!(
+        review.manifest.suggested_agent_ids,
+        manifest.suggested_agent_ids
+    );
+    assert_eq!(review.manifest.skill_fingerprints.len(), 2);
+    let (_home, target, _lock) = fresh_service("pack-zip-target");
+    let local = add_center_test_skill(&target, "target-local", "portable-clash");
+    let restore = |skill_id: &str, destination_id: &str| SkillPackArchiveRestoreMember {
+        skill_id: skill_id.into(),
+        destination_id: destination_id.into(),
+    };
+    let requested = [
+        restore("portable-clash", "portable-clash"),
+        restore("portable-missing", "portable-missing"),
+    ];
+    assert!(target
+        .restore_archived_pack_skills(&swapped, &review.revision, &requested)
+        .unwrap_err()
+        .contains("changed after preview"));
+    assert!(!target
+        .center_path()
+        .unwrap()
+        .join("portable-missing")
+        .exists());
+    let errors = target
+        .restore_archived_pack_skills(&path, &review.revision, &requested)
+        .unwrap();
+    assert_eq!(errors.keys().collect::<Vec<_>>(), vec!["portable-clash"]);
+    assert_eq!(fs::read(local.join("reference.md")).unwrap(), b"center");
+    let names = [restore("portable-clash", "portable-clash-restored")];
+    assert!(target
+        .restore_archived_pack_skills(&path, &review.revision, &names)
+        .unwrap()
+        .is_empty());
+    target.scan_center_into_db().unwrap();
+    let center = target.center_path().unwrap();
+    assert_eq!(
+        fs::read(center.join("portable-missing/resources/示例.bin")).unwrap(),
+        b"\0\r\n"
+    );
+    assert_eq!(
+        fs::read(center.join("portable-clash-restored/reference.md")).unwrap(),
+        b"sender content\r\n"
+    );
+    assert_eq!(fs::read(local.join("reference.md")).unwrap(), b"center");
+    let mut imported = review.manifest;
+    imported.skill_ids[0] = "portable-clash-restored".into();
+    let hash = imported
+        .skill_fingerprints
+        .remove("portable-clash")
+        .unwrap();
+    imported
+        .skill_fingerprints
+        .insert(imported.skill_ids[0].clone(), hash);
+    let reviewed = target
+        .skill_pack_fingerprints(&imported.skill_ids, false)
+        .unwrap();
+    let detail = target
+        .import_reviewed_skill_pack(imported.clone(), &reviewed, false)
+        .unwrap();
+    assert_eq!(
+        detail
+            .members
+            .into_iter()
+            .map(|member| member.skill_id)
+            .collect::<Vec<_>>(),
+        imported.skill_ids
+    );
+}
+
+#[test]
 fn pack_manifest_verifies_live_skill_files_before_import() {
     let (_home, svc, _lock) = fresh_service("pack-content-review");
     let directory = add_center_test_skill(&svc, "sender-folder", "review");

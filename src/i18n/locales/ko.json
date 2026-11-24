@@ -699,6 +699,10 @@
   "skills": {
     "projectsTab": "프로젝트",
     "packManifest": {
+      "exportArchive": "스킬 파일과 함께 내보내기 (ZIP)",
+      "exportedArchive": "스킬 팩과 파일을 내보냈습니다.",
+      "archiveReview": "이 ZIP에서 누락된 스킬을 복원하고 팩을 만들기 전에 내용 차이를 검토하세요.",
+      "archiveMember": "ZIP에 포함됨",
       "importFromLink": "링크에서 가져오기",
       "reviewLink": "스킬 팩 검토",
       "readingLink": "GitHub 파일을 불러오는 중…",

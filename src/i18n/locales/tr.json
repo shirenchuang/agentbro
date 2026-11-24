@@ -593,6 +593,10 @@
   "skills": {
     "projectsTab": "Projeler",
     "packManifest": {
+      "exportArchive": "Beceri dosyalarıyla dışa aktar (ZIP)",
+      "exportedArchive": "Beceri Paketi ve dosyaları dışa aktarıldı.",
+      "archiveReview": "Eksik becerileri bu ZIP dosyasından geri yükleyin ve paketi oluşturmadan önce içerik farklarını inceleyin.",
+      "archiveMember": "ZIP dosyasına dahil",
       "importFromLink": "Bağlantıdan içe aktar",
       "reviewLink": "Beceri paketini incele",
       "readingLink": "GitHub dosyası yükleniyor…",

@@ -12,7 +12,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const MAX_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_BYTES: usize = 1024 * 1024;
 const FORMAT: &str = "agentbro-skill-pack";
 
 pub(super) fn read(path: &Path) -> Result<SkillPackManifest, String> {
@@ -27,7 +27,7 @@ pub(super) fn read(path: &Path) -> Result<SkillPackManifest, String> {
     decode(&bytes)
 }
 
-fn decode(bytes: &[u8]) -> Result<SkillPackManifest, String> {
+pub(super) fn decode(bytes: &[u8]) -> Result<SkillPackManifest, String> {
     check_size(bytes.len())?;
     let manifest = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
         .map_err(|error| format!("Invalid Skill Pack JSON. {error}"))?;
@@ -114,10 +114,7 @@ async fn read_link_response(mut response: reqwest::Response) -> Result<SkillPack
 }
 
 pub(super) fn write(path: &Path, manifest: &SkillPackManifest) -> Result<(), String> {
-    validate(manifest)?;
-    let mut bytes = serde_json::to_vec_pretty(manifest).map_err(|error| error.to_string())?;
-    bytes.push(b'\n');
-    check_size(bytes.len())?;
+    let bytes = encode(manifest)?;
     let parent = path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -126,6 +123,14 @@ pub(super) fn write(path: &Path, manifest: &SkillPackManifest) -> Result<(), Str
     let staged = staging.path().join("pack.json");
     fs::write(&staged, bytes).map_err(|error| error.to_string())?;
     fs::rename(&staged, path).map_err(|error| error.to_string())
+}
+
+pub(super) fn encode(manifest: &SkillPackManifest) -> Result<Vec<u8>, String> {
+    validate(manifest)?;
+    let mut bytes = serde_json::to_vec_pretty(manifest).map_err(|error| error.to_string())?;
+    bytes.push(b'\n');
+    check_size(bytes.len())?;
+    Ok(bytes)
 }
 
 fn check_size(bytes: usize) -> Result<(), String> {

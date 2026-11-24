@@ -8630,6 +8630,81 @@ describe('Skill detail slider + agent page render without crashing', () => {
     })
   })
 
+  it('exports Skill Pack files and Agent suggestions to a local ZIP', async () => {
+    const { pack, skill, overview } = await renderPackPage()
+    const agent = { ...overview.agents[0], isCustom: false }
+    act(() => useSkillStoreV2.setState({
+      agents: [agent],
+      selectedPackDetail: {
+        ...pack,
+        appliedAgents: [{ packId: pack.id, packName: pack.name, memberCount: 1, agentId: agent.id }],
+      },
+    }))
+    const file = 'C:/Team Files/审阅技能包.agentbro-pack.zip'
+    vi.mocked(saveDialog).mockResolvedValueOnce(file)
+    const write = vi.spyOn(skillApiV2, 'writePackArchive').mockResolvedValue(undefined)
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints')
+    fireEvent.click(screen.getByLabelText('更多操作'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '导出技能包和文件（ZIP）' }))
+
+    expect(await screen.findByText('技能包和文件已导出。')).toBeInTheDocument()
+    expect(saveDialog).toHaveBeenCalledWith({
+      defaultPath: 'skill-pack.agentbro-pack.zip', filters: [{ name: 'ZIP', extensions: ['zip'] }],
+    })
+    expect(write).toHaveBeenCalledWith(file, {
+      format: 'agentbro-skill-pack', version: 4, name: pack.name, description: '', tags: [],
+      skillIds: [skill.id], suggestedAgentIds: [agent.id],
+    })
+    expect(fingerprints).not.toHaveBeenCalled()
+  })
+
+  it('restores missing and conflicting archived Skills before creating the Pack in order', async () => {
+    const { pack, skill } = await renderPackPage()
+    const hash = 'a'.repeat(64)
+    const skillIds = [skill.id, 'local-checklist', 'local-report']
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack', version: 2, name: 'Offline review', description: '', tags: [],
+      skillIds, skillFingerprints: Object.fromEntries(skillIds.map((id) => [id, hash])),
+    }
+    const destinationId = `${skill.id}-restored`
+    const restoredIds = [destinationId, ...skillIds.slice(1)]
+    const reviewed = restoredIds.map((skillId) => ({ skillId, fingerprint: hash, missing: false }))
+    const differing = { skillId: skill.id, fingerprint: 'b'.repeat(64), missing: false }
+    const file = 'C:/Team Files/审阅技能包.ZIP'
+    const revision = 'c'.repeat(64)
+    vi.mocked(openDialog).mockResolvedValueOnce(file)
+    vi.spyOn(skillApiV2, 'readPackArchive').mockResolvedValue({ manifest, revision })
+    vi.spyOn(skillApiV2, 'getPackFingerprints')
+      .mockResolvedValueOnce([differing, ...skillIds.slice(1).map((skillId) => ({ skillId, fingerprint: null, missing: true }))])
+      .mockResolvedValueOnce([differing, ...reviewed.slice(1)])
+      .mockResolvedValueOnce(reviewed)
+    const restore = vi.spyOn(skillApiV2, 'restoreArchivedPackMembers').mockResolvedValue({})
+    const create = vi.spyOn(skillApiV2, 'importReviewedPack').mockResolvedValue({ ...pack, id: 'offline-pack', name: manifest.name })
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    const confirm = dialog.getByRole('button', { name: '创建技能包' })
+    expect(confirm).toBeDisabled()
+    expect(dialog.getAllByText('ZIP 中包含此技能')).toHaveLength(3)
+    const restoreMissing = dialog.getByRole('button', { name: '恢复 2 个缺失技能' })
+    fireEvent.click(restoreMissing)
+    await waitFor(() => expect(restoreMissing).not.toBeInTheDocument())
+    expect(restore).toHaveBeenNthCalledWith(1, file, revision, skillIds.slice(1).map((skillId) => ({ skillId, destinationId: skillId })))
+
+    fireEvent.click(dialog.getByRole('button', { name: `将 ${skill.id} 恢复为副本` }))
+    expect(dialog.getByLabelText('新技能 ID')).toHaveValue(destinationId)
+    fireEvent.click(dialog.getByRole('button', { name: '恢复副本' }))
+    await waitFor(() => expect(confirm).toBeEnabled())
+    expect(restore).toHaveBeenNthCalledWith(2, file, revision, [{ skillId: skill.id, destinationId }])
+    fireEvent.click(confirm)
+    await waitFor(() => expect(create).toHaveBeenCalledWith({
+      ...manifest,
+      skillIds: restoredIds,
+      skillFingerprints: Object.fromEntries(restoredIds.map((id) => [id, hash])),
+      skillSources: {},
+    }, reviewed, false, LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
   it('exports the verified GitHub sources and keeps fingerprints for edited Skills', async () => {
     const { pack, skill } = await renderPackPage()
     const file = '/Team/pinned.agentbro-pack.json'

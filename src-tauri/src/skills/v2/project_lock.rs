@@ -179,7 +179,7 @@ fn duplicate_names<'a>(names: impl Iterator<Item = &'a String>) -> BTreeSet<Stri
         .collect()
 }
 
-fn valid_component(name: &str) -> bool {
+pub(super) fn valid_component(name: &str) -> bool {
     !name.is_empty()
         && !name.ends_with(['.', ' '])
         && !name
@@ -189,12 +189,15 @@ fn valid_component(name: &str) -> bool {
             name.split('.')
                 .next()
                 .unwrap_or_default()
+                .trim_end_matches(' ')
                 .to_ascii_uppercase()
                 .as_str(),
             "CON"
                 | "PRN"
                 | "AUX"
                 | "NUL"
+                | "CONIN$"
+                | "CONOUT$"
                 | "COM1"
                 | "COM2"
                 | "COM3"
@@ -204,6 +207,9 @@ fn valid_component(name: &str) -> bool {
                 | "COM7"
                 | "COM8"
                 | "COM9"
+                | "COM¹"
+                | "COM²"
+                | "COM³"
                 | "LPT1"
                 | "LPT2"
                 | "LPT3"
@@ -213,6 +219,9 @@ fn valid_component(name: &str) -> bool {
                 | "LPT7"
                 | "LPT8"
                 | "LPT9"
+                | "LPT¹"
+                | "LPT²"
+                | "LPT³"
         )
 }
 
@@ -498,15 +507,7 @@ pub(super) fn fingerprint_canonical_skill_directory(
     {
         return Err("The installed path is not a Skill directory".to_string());
     }
-    let mut files = BTreeMap::new();
-    collect_skill_files(
-        skill,
-        skill,
-        "",
-        &mut Vec::new(),
-        &mut files,
-        skip_package_metadata,
-    )?;
+    let files = portable_skill_files(skill, skip_package_metadata)?;
     let mut hash = Sha256::new();
     for (path, file) in files {
         add_file_to_hash(&mut hash, &path, &file)?;
@@ -788,15 +789,7 @@ pub(super) fn stage_skill_copy(
     staged: &Path,
     skip_package_metadata: bool,
 ) -> Result<String, String> {
-    let mut files = BTreeMap::new();
-    collect_skill_files(
-        skill,
-        skill,
-        "",
-        &mut Vec::new(),
-        &mut files,
-        skip_package_metadata,
-    )?;
+    let files = portable_skill_files(skill, skip_package_metadata)?;
     fs::create_dir(staged).map_err(|error| error.to_string())?;
     let mut hash = Sha256::new();
     for (path, original) in files {
@@ -807,6 +800,26 @@ pub(super) fn stage_skill_copy(
         add_file_to_hash(&mut hash, &path, &target)?;
     }
     Ok(format!("{:x}", hash.finalize()))
+}
+
+pub(super) fn is_skill_cache_dir(name: &str) -> bool {
+    matches!(name, ".git" | "__pycache__" | "__pypackages__")
+}
+
+pub(super) fn portable_skill_files(
+    skill: &Path,
+    skip_package_metadata: bool,
+) -> Result<BTreeMap<String, PathBuf>, String> {
+    let mut files = BTreeMap::new();
+    collect_skill_files(
+        skill,
+        skill,
+        "",
+        &mut Vec::new(),
+        &mut files,
+        skip_package_metadata,
+    )?;
+    Ok(files)
 }
 
 fn collect_skill_files(
@@ -847,7 +860,7 @@ fn collect_skill_files(
         };
         let metadata = source.metadata().map_err(|error| error.to_string())?;
         let relative = format!("{prefix}{name}");
-        if metadata.is_dir() && matches!(name.as_str(), ".git" | "__pycache__" | "__pypackages__") {
+        if metadata.is_dir() && is_skill_cache_dir(&name) {
             continue;
         }
         if !valid_component(&name) || name.eq_ignore_ascii_case(".git") {

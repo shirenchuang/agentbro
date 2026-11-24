@@ -1372,6 +1372,15 @@ export const skillApiV2 = {
     tauriInvoke<{ manifest: SkillPackManifest; sourceUrl: string }>('read_skill_pack_manifest_link', { link }),
   writePackManifest: (path: string, manifest: SkillPackManifest) =>
     tauriInvoke<void>('write_skill_pack_manifest', { path, manifest }),
+  readPackArchive: (path: string) =>
+    tauriInvoke<{ manifest: SkillPackManifest; revision: string }>('read_skill_pack_archive', { path }),
+  writePackArchive: (path: string, manifest: SkillPackManifest) =>
+    tauriInvoke<void>('write_skill_pack_archive', { path, manifest }),
+  restoreArchivedPackMembers: (
+    path: string,
+    revision: string,
+    members: { skillId: string; destinationId: string }[],
+  ) => tauriInvoke<Record<string, string>>('restore_archived_skill_pack_members', { path, revision, members }),
   getPackFingerprints: (skillIds: string[], environmentId: string, includeSources?: boolean) =>
     invoke<SkillPackFingerprint[]>('get_skill_pack_fingerprints', { skillIds, includeSources }, environmentId),
   restorePackMember: (manifest: SkillPackManifest, skillId: string, environmentId: string) =>

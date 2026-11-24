@@ -1,5 +1,9 @@
 # Skill Pack manifests
 
+Use **Export with Skill files (ZIP)** to move a local Skill Pack between macOS and Windows. The ZIP contains the Pack's ordered definition, the Skill files in the center library, their fingerprints, and any recommended built-in Agents. Choose **Import Skill Pack** in the destination's local library, open the ZIP, and restore missing members from the preview. For a same-ID Skill with different content, **Restore as a copy** preserves both copies and uses the new ID in the imported Pack.
+
+ZIP files must be 128 MiB or smaller, with at most 20,000 files and 256 MiB of uncompressed content. Export includes regular files and in-folder link targets. Git and Python cache directories and links outside the Skill folder are skipped. JSON manifests support the local library and SSH environments.
+
 Use **Export Skill Pack** in a pack’s more-actions menu to save its definition as a JSON file. Commit the file to your own Git repository to review changes to the pack. Exporting the built-in pack captures its current member list.
 
 Use **Import Skill Pack** on the Skill Packs page to open the file. The preview lists the exact Skill IDs in order and compares recorded fingerprints with files in the selected local or SSH center library. Install missing Skills and select **Recheck Skills**. If the library has a different copy or the manifest omits a fingerprint, you can confirm that you want to use the copy in the selected library. Confirming creates a new pack that you can apply to Agents through the usual Skill Packs workflow.
