@@ -80,8 +80,18 @@ mod tests {
     #[test]
     fn qoder_cli_uses_one_configured_root_for_hooks_and_skills() {
         const PROBE: &str = "AGENTBRO_QODER_ROOT_PROBE";
+        #[cfg(target_os = "macos")]
+        const TIMEOUT_PROBE: &str = "AGENTBRO_QODER_ROOT_TIMEOUT_PROBE";
         const TEST: &str =
             "agents::qoder_cli::tests::qoder_cli_uses_one_configured_root_for_hooks_and_skills";
+        #[cfg(target_os = "macos")]
+        if std::env::var_os(TIMEOUT_PROBE).is_some() {
+            assert_eq!(
+                agent_paths::qoder_cli_home(),
+                dirs::home_dir().unwrap().join(".qoder")
+            );
+            return;
+        }
         if let Some(root) = std::env::var_os(PROBE).map(PathBuf::from) {
             let home = dirs::home_dir().unwrap();
             let settings = root.join("settings.json");
@@ -159,6 +169,19 @@ mod tests {
                 .env("ZDOTDIR", fixture.path())
                 .output()
                 .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            std::fs::write(
+                fixture.path().join(".zshrc"),
+                "/bin/sleep 7\nexport QODER_CONFIG_DIR=\"$AGENTBRO_QODER_ROOT_PROBE\"\n",
+            )
+            .unwrap();
+            let output = command.env(TIMEOUT_PROBE, "1").output().unwrap();
             assert!(
                 output.status.success(),
                 "{}\n{}",
