@@ -2,7 +2,7 @@ import { listen as listenTauriEvent } from '@tauri-apps/api/event'
 /* AgentBro — Notch Panel (Layered Dynamic Island) */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, type ComponentProps, type CSSProperties, type PointerEvent } from 'react'
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion, useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay, type PlanIdentity, type QuestionIdentity } from '../../stores/sessionStore'
+import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion, useSessionStore, selectActiveSession, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay, type PlanIdentity, type QuestionIdentity } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistoryTail, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
@@ -279,6 +279,7 @@ export function NotchPanel() {
   const rateLimits = useSessionStore(selectRateLimits)
   const usageSnapshots = useSessionStore(selectUsageSnapshots)
   const activeOverlay = useSessionStore(selectActiveOverlay)
+  const activeSession = useSessionStore(selectActiveSession)
   const dismissOverlay = useSessionStore((s) => s.dismissOverlay)
   const updateAvailableVersion = useUpdateStore((s) => s.availableVersion)
   const updateDismissedVersion = useUpdateStore((s) => s.dismissedVersion)
@@ -316,6 +317,7 @@ export function NotchPanel() {
   const overlayDismissPendingRef = useRef<string | null>(null)
   const inlineBlockingOverlayIdsRef = useRef(new Set<string>())
   const nativeHoverInsideRef = useRef(false)
+  const hitboxRef = useRef<HTMLDivElement>(null)
   const hoverContentRef = useRef<HTMLDivElement | null>(null)
   const [persistentIdleHidden, setPersistentIdleHidden] = useState(false)
   const [displayChanging, setDisplayChanging] = useState(false)
@@ -1076,6 +1078,28 @@ export function NotchPanel() {
       }
     }
 
+    function replyTarget(e: KeyboardEvent) {
+      const store = useSessionStore.getState()
+      const hitbox = hitboxRef.current
+      if (!hitbox || hitbox.dataset.islandHidden === 'true' || displayChanging || store.panelState === 'collapsed'
+        || e.defaultPrevented || e.repeat || e.isComposing || getInputFocusTarget(e.target)) return
+
+      // The queue advances before AnimatePresence mounts the next interactive layer.
+      const card = hitbox.querySelector<HTMLElement>('[data-blocking-overlay-id]:not([inert])')
+      if (card) {
+        if (activeOverlay && card.dataset.blockingOverlayId === activeOverlay.id && store.activeOverlay?.id === activeOverlay.id) {
+          return { overlay: activeOverlay }
+        }
+        return
+      }
+
+      if (!activeSession || store.activeSessionId !== activeSession.id) return
+      const rows = hitbox.querySelectorAll<HTMLElement>('[data-inline-reply-session-id]')
+      if (Array.from(rows).some((row) => row.dataset.inlineReplySessionId === activeSession.id && !row.closest('[inert]'))) {
+        return { session: activeSession }
+      }
+    }
+
     const handler = (e: KeyboardEvent) => {
       const store = useSessionStore.getState()
 
@@ -1140,32 +1164,29 @@ export function NotchPanel() {
         return
       }
 
-      const active = store.activeSessionId ? store.sessions[store.activeSessionId] : null
-      const overlay = store.activeOverlay
-      const shownOverlay = overlay && store.panelState !== 'collapsed'
-        && !(store.panelState === 'hover' && inlineBlockingOverlayIdsRef.current.has(overlay.id))
-        ? overlay
-        : undefined
-
       const approveBinding = findShortcut('approve-action')
       const rejectBinding = findShortcut('reject-action')
       const approve = approveBinding && shortcutMatchesEvent(approveBinding.keys, e)
       const reject = rejectBinding && shortcutMatchesEvent(rejectBinding.keys, e)
       if (approve || reject) {
-        if (shownOverlay?.type === 'plan') {
+        const target = replyTarget(e)
+        const overlay = target?.overlay
+        const active = target?.session
+        if (overlay?.type === 'permission') {
           e.preventDefault()
-          void answerDisplayedPlan(shownOverlay.sessionId, shownOverlay.data as PlanIdentity, approve ? 'acceptEdits' : 'manual')
-          return
-        }
-        if (active?.phase === 'waiting_approval') {
+          void answerDisplayedPermission(overlay.sessionId, overlay.data as PermissionRequest, Boolean(approve))
+        } else if (overlay?.type === 'plan') {
+          e.preventDefault()
+          void answerDisplayedPlan(overlay.sessionId, overlay.data as PlanIdentity, approve ? 'acceptEdits' : 'manual')
+        } else if (active?.phase === 'waiting_approval') {
           e.preventDefault()
           if (active.planContent || active.planTitle) {
-            if (!shownOverlay || !isBlockingOverlay(shownOverlay)) {
-              void answerDisplayedPlan(active.id, active, approve ? 'acceptEdits' : 'manual')
-            }
+            void answerDisplayedPlan(active.id, active, approve ? 'acceptEdits' : 'manual')
           } else {
             void answerDisplayedPermission(active.id, active.pendingPermission, Boolean(approve))
           }
+        }
+        if (target) {
           return
         }
       }
@@ -1203,9 +1224,10 @@ export function NotchPanel() {
       // Primary modifier + 1/2/3 selects an option.
       const num = parseInt(e.key, 10)
       if (primaryModifierPressed(e) && num >= 1 && num <= 3) {
-        const shownQuestion = shownOverlay?.type === 'question' ? shownOverlay : undefined
-        const question = shownQuestion ? shownQuestion.data as QuestionIdentity : active?.pendingQuestion
-        const sessionId = shownQuestion?.sessionId ?? active?.id
+        const target = replyTarget(e)
+        const overlay = target?.overlay
+        const question = overlay?.type === 'question' ? overlay.data as QuestionIdentity : target?.session?.pendingQuestion
+        const sessionId = overlay?.sessionId ?? target?.session?.id
         if (!question || question.multiSelect || (question.questions?.length ?? 0) > 1) return
         const option = question.options?.[num - 1]
         if (sessionId && option) {
@@ -1217,7 +1239,7 @@ export function NotchPanel() {
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [escSilenceDuration, markActiveBlockingOverlayInline, setPanelState, setWakeSilencedUntil, shortcuts])
+  }, [activeOverlay, activeSession, displayChanging, escSilenceDuration, markActiveBlockingOverlayInline, setPanelState, setWakeSilencedUntil, shortcuts])
 
   const handleSessionClick = (sessionId: string, options?: { forceDetail?: boolean }) => {
     if (!clickToDetail && !options?.forceDetail) {
@@ -1987,6 +2009,7 @@ export function NotchPanel() {
       } as CSSProperties}
     >
       <div
+        ref={hitboxRef}
         className="notch-hitbox"
         data-island-hidden={islandHidden ? 'true' : 'false'}
         onPointerEnter={() => handleMouseEnter('dom')}
@@ -2058,6 +2081,7 @@ export function NotchPanel() {
                   <IslandLayer
                     key={`alert-${activeOverlay.id}`}
                     className="notch-panel__alert-content"
+                    data-blocking-overlay-id={activeOverlay.id}
                     data-overlay-type={activeOverlay.type}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
