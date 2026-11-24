@@ -699,6 +699,7 @@
   "skills": {
     "projectsTab": "プロジェクト",
     "packManifest": {
+      "occupiedBy": "ID は {{id}} が使用中です",
       "exportArchive": "スキルファイル付きでエクスポート（ZIP）",
       "exportedArchive": "スキルパックとファイルをエクスポートしました。",
       "archiveReview": "この ZIP から不足しているスキルを復元し、パックを作成する前に内容の違いを確認します。",

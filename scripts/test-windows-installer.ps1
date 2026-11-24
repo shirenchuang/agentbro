@@ -340,6 +340,7 @@ if ($VerifyPackManifest -or $VerifyPackArchive) {
         $packArchivePath = Join-Path $manifestDirectory '迁移 技能包.agentbro-pack.zip'
         $skillIds += "windows-smoke-extra-$suffix"
         $packFixtures += Join-Path $skillRoot "$($skillIds[0])-restored"
+        $packFixtures += Join-Path $skillRoot ($skillIds[0].ToUpperInvariant())
     }
     foreach ($skillId in $skillIds) {
         $skillDirectory = Join-Path $skillRoot $skillId

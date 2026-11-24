@@ -739,6 +739,7 @@
   "skills": {
     "projectsTab": "项目",
     "packManifest": {
+      "occupiedBy": "ID 已被 {{id}} 占用",
       "exportArchive": "导出技能包和文件（ZIP）",
       "exportedArchive": "技能包和文件已导出。",
       "archiveReview": "从此 ZIP 恢复缺失的技能，并在创建技能包前核对内容差异。",

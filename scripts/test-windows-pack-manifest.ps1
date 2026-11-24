@@ -269,6 +269,7 @@ function Test-InstalledPackArchive(
     $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
     $skillRoot = Join-Path $profileDirectory '.agentbro\skills'
     $conflictingId = $manifest.skillIds[0]
+    $localId = $conflictingId.ToUpperInvariant()
     $copyId = "$conflictingId-restored"
     $missingIds = @($manifest.skillIds | Select-Object -Skip 1)
     $attachment = '附件 示例.bin'
@@ -317,11 +318,12 @@ function Test-InstalledPackArchive(
     }
     Write-Output 'The installed app saved an ordered Skill Pack ZIP with a Unicode attachment.'
 
-    foreach ($id in $missingIds) {
+    foreach ($id in $manifest.skillIds) {
         Move-Item -LiteralPath (Join-Path $skillRoot $id) -Destination (Join-Path (Split-Path $ArchivePath) "sender-$id")
     }
-    $localPath = Join-Path $skillRoot "$conflictingId\SKILL.md"
-    $localContent = "---`nname: $conflictingId`n---`nKeep the local edit.`n"
+    $localPath = Join-Path $skillRoot "$localId\SKILL.md"
+    $null = [IO.Directory]::CreateDirectory((Split-Path $localPath))
+    $localContent = "---`nname: $localId`n---`nKeep the local edit.`n"
     [IO.File]::WriteAllText($localPath, $localContent, [Text.UTF8Encoding]::new($false))
 
     $open = Wait-IslandValue 'the enabled Import Skill Pack action for the ZIP' {
@@ -333,7 +335,7 @@ function Test-InstalledPackArchive(
     $batchAction = "Restore $($missingIds.Count) missing Skills"
     $restore = Wait-IslandValue 'the batch restore action in the ZIP review' {
         $button = Find-PackControl $settings $batchAction
-        if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings 'Included in ZIP')) { $button }
+        if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $settings "ID is occupied by $localId")) { $button }
     }
     $create = Find-PackControl $settings 'Create Skill Pack'
     if (-not $create -or $create.Current.IsEnabled -or (Test-Path -LiteralPath $attachmentPath)) {
@@ -368,7 +370,7 @@ function Test-InstalledPackArchive(
     $null = Wait-IslandValue 'the imported ZIP Skill Pack confirmation' {
         Find-PackControl $settings "Imported $($manifest.name) as a new Skill Pack."
     }
-    Write-Output 'The installed app opened the ZIP, restored the missing and conflicting Skills, and created the reviewed Pack.'
+    Write-Output 'The installed app opened the ZIP, restored the missing Skills and the case-colliding ID as a copy, and created the reviewed Pack.'
 }
 
 function Open-LinkedPackFixture(

@@ -593,6 +593,7 @@
   "skills": {
     "projectsTab": "Projeler",
     "packManifest": {
+      "occupiedBy": "Kimlik {{id}} tarafından kullanılıyor",
       "exportArchive": "Beceri dosyalarıyla dışa aktar (ZIP)",
       "exportedArchive": "Beceri Paketi ve dosyaları dışa aktarıldı.",
       "archiveReview": "Eksik becerileri bu ZIP dosyasından geri yükleyin ve paketi oluşturmadan önce içerik farklarını inceleyin.",

@@ -386,6 +386,11 @@ pub(super) fn validate_review(
     }
     for member in current {
         let id = &member.skill_id;
+        if let Some(occupied) = &member.occupied_by {
+            return Err(format!(
+                "The destination for '{id}' is occupied by '{occupied}'."
+            ));
+        }
         if member.missing {
             return Err(format!("Skill '{id}' is missing from the center library."));
         }
