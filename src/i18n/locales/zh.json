@@ -362,7 +362,7 @@
     "shortcutDeny": "拒绝当前权限请求",
     "shortcutDenyDesc": "向最早的待处理权限请求发送拒绝响应",
     "shortcutSkip": "跳过当前问题",
-    "shortcutSkipDesc": "为最早的待处理问题选择第一个答案",
+    "shortcutSkipDesc": "如果最早等待的是单选题，就选择第一个选项。其他题型会打开灵动岛，供你手动回答。",
     "inWindowShortcuts": "窗口内快捷键",
     "pressKeys": "请按键...",
     "cancel": "取消",

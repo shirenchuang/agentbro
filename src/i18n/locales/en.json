@@ -338,7 +338,7 @@
     "shortcutDeny": "Deny current permission",
     "shortcutDenyDesc": "Sends a deny response to the oldest pending permission",
     "shortcutSkip": "Skip current question",
-    "shortcutSkipDesc": "Selects the first answer for the oldest pending question",
+    "shortcutSkipDesc": "Chooses the first option if the oldest pending question is single-choice. Other questions open in the Island.",
     "inWindowShortcuts": "In-Window Shortcuts",
     "pressKeys": "Press keys...",
     "cancel": "Cancel",

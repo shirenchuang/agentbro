@@ -294,7 +294,7 @@
     "shortcutDeny": "現在の権限リクエストを拒否",
     "shortcutDenyDesc": "最も古い保留中の権限リクエストへ拒否応答を送信します",
     "shortcutSkip": "現在の質問をスキップ",
-    "shortcutSkipDesc": "最も古い保留中の質問で最初の回答を選択します",
+    "shortcutSkipDesc": "最も古い保留中の質問が単一選択式なら、最初の選択肢を選びます。それ以外の質問はアイランドを開いて手動で回答します。",
     "inWindowShortcuts": "ウィンドウ内ショートカット",
     "pressKeys": "キーを押してください...",
     "cancel": "キャンセル",

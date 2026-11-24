@@ -37,7 +37,7 @@ use hooks::conversation_parser::{
 };
 use hooks::file_watcher::ConversationWatcher;
 use hooks::server::HookServer;
-use hooks::session_store::{SessionState, SessionStore};
+use hooks::session_store::{PendingQuestion, SessionState, SessionStore};
 use network_monitor::NetworkMonitor;
 use platform::display::{find_target_monitor, list_displays_inner, DisplayInfo};
 use sound::{SoundEngine, SoundEvent, SoundPack, SoundPackImportResult};
@@ -2139,9 +2139,13 @@ fn first_pending_question(store: &SessionStore) -> Option<SessionState> {
 }
 
 #[cfg(test)]
-mod global_shortcut_order_tests {
-    use super::{first_pending_permission, first_pending_question, SessionStore};
-    use crate::hooks::session_store::{PendingPermission, PendingQuestion};
+mod global_shortcut_tests {
+    use super::{
+        first_pending_permission, first_pending_question, question_shortcut_option, SessionStore,
+    };
+    use crate::hooks::session_store::{
+        PendingPermission, PendingQuestion, QuestionItem, QuestionOption,
+    };
 
     fn sessions() -> SessionStore {
         let store = SessionStore::new();
@@ -2224,6 +2228,41 @@ mod global_shortcut_order_tests {
         store.clear_matching_question("newer-session", Some("replacement"));
         assert!(first_pending_question(&store).is_none());
     }
+
+    #[test]
+    fn global_question_shortcut_only_answers_single_choice_with_options() {
+        let mut prompt = question("shortcut").unwrap();
+        prompt.options.insert(0, "  ".to_string());
+        assert_eq!(question_shortcut_option(&prompt), Some("Continue"));
+
+        prompt.multi_select = true;
+        assert!(question_shortcut_option(&prompt).is_none());
+        prompt.multi_select = false;
+
+        let item = QuestionItem {
+            id: Some("continue".to_string()),
+            question: prompt.question.clone(),
+            header: None,
+            options: vec![QuestionOption {
+                label: "Continue".to_string(),
+                description: None,
+            }],
+            multi_select: false,
+        };
+        prompt.questions = vec![item.clone(), item.clone()];
+        assert!(question_shortcut_option(&prompt).is_none());
+        prompt.questions = vec![item];
+        assert_eq!(question_shortcut_option(&prompt), Some("Continue"));
+        prompt.questions[0].multi_select = true;
+        assert!(question_shortcut_option(&prompt).is_none());
+        prompt.questions[0].multi_select = false;
+        prompt.questions[0].options.clear();
+        assert!(question_shortcut_option(&prompt).is_none());
+
+        prompt.questions.clear();
+        prompt.options.clear();
+        assert!(question_shortcut_option(&prompt).is_none());
+    }
 }
 
 fn handle_permission_shortcut(app: tauri::AppHandle, allowed: bool) {
@@ -2256,6 +2295,22 @@ fn handle_permission_shortcut(app: tauri::AppHandle, allowed: bool) {
     });
 }
 
+fn question_shortcut_option(question: &PendingQuestion) -> Option<&str> {
+    if question.multi_select || question.questions.len() > 1 {
+        return None;
+    }
+    let option = question
+        .options
+        .iter()
+        .find(|option| !option.trim().is_empty())?;
+    if question.questions.first().is_some_and(|item| {
+        item.multi_select || !item.options.iter().any(|choice| choice.label == *option)
+    }) {
+        return None;
+    }
+    Some(option)
+}
+
 fn handle_question_skip_shortcut(app: tauri::AppHandle) {
     let state = app.state::<AppState>();
     let Some(session) = first_pending_question(&state.session_store) else {
@@ -2265,7 +2320,10 @@ fn handle_question_skip_shortcut(app: tauri::AppHandle) {
     let Some(question) = session.pending_question else {
         return;
     };
-    let answer = question.options.first().cloned().unwrap_or_default();
+    let Some(answer) = question_shortcut_option(&question).map(str::to_owned) else {
+        show_notch_window(&app);
+        return;
+    };
 
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
