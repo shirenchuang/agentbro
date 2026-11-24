@@ -255,12 +255,13 @@ fn permission_hook_output(
             })
         });
     }
+    let qoder_once = matches!(source, "qoder-cli" | "qoder-desktop");
     match decision {
         "allow" => {
             let mut decision = serde_json::json!({ "behavior": "allow" });
             if !is_codex_source(source)
                 && !is_zcode_source(source)
-                && source != "qoder-desktop"
+                && !qoder_once
                 && always
                 && permission_suggestions
                     .as_array()
@@ -274,7 +275,7 @@ fn permission_hook_output(
             Some(permission_request_output(decision))
         }
         "auto" => {
-            if source == "qoder-desktop" {
+            if qoder_once {
                 return None;
             }
             if is_codex_source(source) || is_zcode_source(source) {
@@ -589,7 +590,7 @@ fn send_and_maybe_receive(
         return None;
     };
     let timeout = match state.get("agent").and_then(|value| value.as_str()) {
-        Some("qoder-desktop") => 120,
+        Some("qoder-cli" | "qoder-desktop") => 120,
         Some("qoder") => 25,
         _ => TIMEOUT_SECONDS,
     };
@@ -1078,6 +1079,7 @@ fn main() {
             if tool_name == "AskUserQuestion"
                 && !is_codex_source(&source)
                 && !is_antigravity_source(&source)
+                && source != "qoder-cli"
             {
                 populate_ask_user_question_state(obj, &tool_input);
 
@@ -1242,8 +1244,8 @@ fn main() {
                 return;
             }
 
-            let qoder_app = matches!(source.as_str(), "qoder" | "qoder-desktop");
-            if tool_name == "AskUserQuestion" && !qoder_app {
+            let qoder = matches!(source.as_str(), "qoder" | "qoder-cli" | "qoder-desktop");
+            if tool_name == "AskUserQuestion" && !qoder {
                 // OpenCode asks questions through PermissionRequest and consumes
                 // decision.updatedInput.answers from the bridge response. Claude Code
                 // questions are handled earlier in PreToolUse, where updatedInput is
@@ -1264,7 +1266,7 @@ fn main() {
             }
 
             // ExitPlanMode: route as a plan approval card with Manual / Accept Edits / Auto.
-            if tool_name == "ExitPlanMode" && !is_codex_source(&source) && !qoder_app {
+            if tool_name == "ExitPlanMode" && !is_codex_source(&source) && !qoder {
                 let plan_content = tool_input
                     .get("plan")
                     .or_else(|| tool_input.get("planContent"))
@@ -1637,7 +1639,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn qoder_desktop_permission_responses_do_not_change_future_permissions() {
+    fn qoder_permission_responses_do_not_change_future_permissions() {
         let suggestions = serde_json::json!([{"type": "setMode", "mode": "bypassPermissions"}]);
         let allow = permission_hook_output("qoder-desktop", "allow", "", true, suggestions.clone())
             .unwrap();
@@ -1660,6 +1662,18 @@ mod tests {
                 .is_none()
         );
         assert!(permission_hook_output("qoder-desktop", "ask", "", false, suggestions).is_none());
+    }
+
+    #[test]
+    fn qoder_cli_permission_reply_is_one_time() {
+        let suggestions = serde_json::json!([{"type": "setMode", "mode": "bypassPermissions"}]);
+        assert_eq!(
+            permission_hook_output("qoder-cli", "allow", "", true, suggestions.clone()).unwrap(),
+            serde_json::json!({"hookSpecificOutput": {
+                "hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}
+            }})
+        );
+        assert!(permission_hook_output("qoder-cli", "auto", "", false, suggestions).is_none());
     }
 
     #[test]

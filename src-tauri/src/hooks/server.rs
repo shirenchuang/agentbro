@@ -3709,6 +3709,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn qoder_cli_session_switch_finishes_the_old_session() {
+        let store = Arc::new(SessionStore::new());
+        let context = HookConnectionContext {
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending_q: Arc::new(Mutex::new(HashMap::new())),
+            pending_plan: Arc::new(Mutex::new(HashMap::new())),
+            store: store.clone(),
+            adapters: Arc::new(vec![Arc::new(
+                crate::agents::qoder_cli::QoderCliAdapter::new(),
+            )]),
+            sound: Arc::new(std::sync::Mutex::new(None)),
+            app: Arc::new(std::sync::Mutex::new(None)),
+            raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
+            config_store: Arc::new(std::sync::Mutex::new(None)),
+            recent_tools: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        for (event, id, extra) in [
+            (
+                "SessionStart",
+                "qoder-first",
+                serde_json::json!({"start_source": "startup"}),
+            ),
+            (
+                "UserPromptSubmit",
+                "qoder-first",
+                serde_json::json!({"prompt": "Read the test file"}),
+            ),
+            (
+                "PostToolUse",
+                "qoder-first",
+                serde_json::json!({"tool": "Read", "tool_input": {"file_path": "fixture.txt"}}),
+            ),
+            (
+                "SessionEnd",
+                "qoder-first",
+                serde_json::json!({"reason": "resume"}),
+            ),
+            (
+                "SessionStart",
+                "qoder-second",
+                serde_json::json!({"start_source": "resume"}),
+            ),
+        ] {
+            let mut raw = serde_json::json!({
+                "agent": "qoder-cli", "event": event, "session_id": id, "cwd": "/test/qoder"
+            });
+            raw.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let (mut client, server) = tokio::io::duplex(4096);
+            client
+                .write_all(format!("{raw}\n").as_bytes())
+                .await
+                .unwrap();
+            HookServer::handle_connection(server, context.clone())
+                .await
+                .unwrap();
+        }
+
+        let old = store.get_session("qoder-first").unwrap();
+        assert_eq!(old.phase, SessionPhase::Done);
+        assert_eq!(old.last_user_message.as_deref(), Some("Read the test file"));
+        assert_eq!(old.last_tool_name.as_deref(), Some("Read"));
+        let resumed = store.get_session("qoder-second").unwrap();
+        assert_eq!(resumed.agent_type, "qoder-cli");
+        assert_ne!(resumed.phase, SessionPhase::Done);
+    }
+
+    #[tokio::test]
     async fn harness_turn_and_permission_round_trip_share_the_island_session() {
         let store = Arc::new(SessionStore::new());
         let pending = Arc::new(Mutex::new(HashMap::new()));
