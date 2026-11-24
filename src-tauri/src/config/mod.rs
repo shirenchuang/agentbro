@@ -2,6 +2,8 @@
 // Platform-appropriate config path with auto-save and Tauri event emission
 
 use serde::{Deserialize, Serialize};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter};
@@ -495,16 +497,45 @@ impl ConfigStore {
     }
 
     /// Save config to disk
-    fn save_to_disk(&self) -> Result<(), Box<dyn std::error::Error>> {
+    fn save_to_disk(&self, config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(parent) = self.config_path.parent() {
-            std::fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)?;
         }
-        let config = self
-            .config
-            .read()
-            .map_err(|e| format!("Lock error: {}", e))?;
-        let content = serde_json::to_string_pretty(&*config)?;
-        std::fs::write(&self.config_path, content)?;
+        let path = match self.config_path.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => self.config_path.clone(),
+            Err(error) => return Err(error.into()),
+        };
+        let permissions = fs::metadata(&path).ok().map(|meta| meta.permissions());
+        if permissions.as_ref().is_some_and(fs::Permissions::readonly) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Configuration file is read-only",
+            )
+            .into());
+        }
+        let content = serde_json::to_vec_pretty(config)?;
+        let staged = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&staged)?;
+        let result = (|| {
+            file.write_all(&content)?;
+            if let Some(permissions) = permissions {
+                file.set_permissions(permissions)?;
+            }
+            drop(file);
+            fs::rename(&staged, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&staged);
+        }
+        result?;
         Ok(())
     }
 
@@ -515,18 +546,48 @@ impl ConfigStore {
 
     /// Update the config, save to disk, and emit event
     pub fn update(&self, new_config: AppConfig) -> Result<(), String> {
-        {
-            let mut config = self
-                .config
-                .write()
-                .map_err(|e| format!("Lock error: {}", e))?;
-            *config = new_config.clone();
-        }
+        self.commit(|_| Some(new_config)).map(|_| ())
+    }
 
-        if let Err(e) = self.save_to_disk() {
+    pub(crate) fn complete_first_run(
+        &self,
+        surface_mode: String,
+    ) -> Result<Option<(AppConfig, AppConfig)>, String> {
+        if !matches!(surface_mode.as_str(), "island" | "pet") {
+            return Err(format!("Unknown island surface mode: {surface_mode}"));
+        }
+        self.commit(|current| {
+            if current.analytics_consent_prompt_completed {
+                return None;
+            }
+            let mut next = current.clone();
+            next.island_surface_mode = surface_mode;
+            next.island_pet_scale = next.island_pet_scale.clamp(10, 120);
+            next.island_pet_window_origin = None;
+            next.island_pet_window_anchor = None;
+            next.analytics_enabled = true;
+            next.analytics_consent_prompt_completed = true;
+            Some(next)
+        })
+    }
+
+    fn commit(
+        &self,
+        change: impl FnOnce(&AppConfig) -> Option<AppConfig>,
+    ) -> Result<Option<(AppConfig, AppConfig)>, String> {
+        let mut config = self
+            .config
+            .write()
+            .map_err(|e| format!("Lock error: {e}"))?;
+        let Some(new_config) = change(&config) else {
+            return Ok(None);
+        };
+        if let Err(e) = self.save_to_disk(&new_config) {
             log::error!("Failed to save config: {}", e);
             return Err(format!("Failed to save config: {}", e));
         }
+        let previous = std::mem::replace(&mut *config, new_config.clone());
+        drop(config);
 
         // Emit config change event to frontend
         if let Some(ref handle) = self.app_handle {
@@ -536,7 +597,7 @@ impl ConfigStore {
         }
 
         log::info!("Config updated and saved");
-        Ok(())
+        Ok(Some((previous, new_config)))
     }
 
     /// Record that the user has enabled AgentBro hooks for `agent`. Returns
@@ -574,7 +635,69 @@ impl Default for ConfigStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_codex_app_server_sync_enabled, AppConfig};
+    use super::*;
+    use crate::skills::installer::TempInstallDir;
+
+    #[test]
+    fn first_run_setup_saves_surface_and_completion_once() {
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("首次设置.json");
+        let initial = AppConfig {
+            language: "zh".to_string(),
+            analytics_enabled: false,
+            island_pet_window_origin: Some(WindowOrigin { x: 25.0, y: 110.0 }),
+            island_pet_window_anchor: Some(PetWindowAnchor {
+                left: true,
+                top: true,
+            }),
+            ..AppConfig::default()
+        };
+        let store = ConfigStore {
+            config: Arc::new(RwLock::new(initial.clone())),
+            config_path: path.clone(),
+            app_handle: None,
+        };
+        store.update(initial).unwrap();
+        let (_, committed) = store.complete_first_run("pet".into()).unwrap().unwrap();
+        let saved = ConfigStore::load_from_disk(&path).unwrap();
+        for config in [committed, saved, store.get()] {
+            assert_eq!(config.island_surface_mode, "pet");
+            assert_eq!(config.language, "zh");
+            assert!(config.island_pet_window_anchor.is_none());
+            assert!(config.island_pet_window_origin.is_none());
+            assert!(config.analytics_enabled);
+            assert!(config.analytics_consent_prompt_completed);
+        }
+        let bytes = fs::read(&path).unwrap();
+        assert!(store.complete_first_run("island".into()).unwrap().is_none());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(store.get().island_surface_mode, "pet");
+    }
+
+    #[test]
+    fn first_run_setup_leaves_previous_config_on_save_error() {
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("config.json");
+        let store = ConfigStore {
+            config: Arc::new(RwLock::new(AppConfig::default())),
+            config_path: path.clone(),
+            app_handle: None,
+        };
+        store.update(store.get()).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let permissions = fs::metadata(&path).unwrap().permissions();
+        let mut read_only = permissions.clone();
+        read_only.set_readonly(true);
+        fs::set_permissions(&path, read_only).unwrap();
+        let result = store.complete_first_run("pet".into());
+        fs::set_permissions(&path, permissions).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(store.get().island_surface_mode, "island");
+        assert!(!store.get().analytics_consent_prompt_completed);
+        assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+        assert!(store.complete_first_run("pet".into()).unwrap().is_some());
+    }
 
     #[test]
     fn defaults_match_agentbro_island_behavior() {

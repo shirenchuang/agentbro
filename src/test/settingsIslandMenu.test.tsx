@@ -18,6 +18,14 @@ const tauriMocks = vi.hoisted(() => ({
   setGlobalActionShortcuts: vi.fn(() => Promise.resolve()),
   setIslandSurfaceOptions: vi.fn(() => Promise.resolve()),
   setAnalyticsEnabled: vi.fn(() => Promise.resolve()),
+  completeFirstRunSetup: vi.fn((islandSurfaceMode: 'island' | 'pet') => Promise.resolve({
+    islandSurfaceMode,
+    islandPetScale: 72,
+    islandPetWindowOrigin: null,
+    islandPetWindowAnchor: null,
+    analyticsEnabled: true,
+    analyticsConsentPromptCompleted: true,
+  })),
 }))
 
 vi.mock('../services/tauriApi', async (importOriginal) => {
@@ -36,6 +44,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
     setGlobalActionShortcuts: tauriMocks.setGlobalActionShortcuts,
     setIslandSurfaceOptions: tauriMocks.setIslandSurfaceOptions,
     setAnalyticsEnabled: tauriMocks.setAnalyticsEnabled,
+    completeFirstRunSetup: tauriMocks.completeFirstRunSetup,
   }
 })
 
@@ -47,6 +56,7 @@ vi.mock('react-i18next', () => ({
         'settings.soundEvents.permission-request': '权限请求',
         'settings.soundEvents.context-compact': '上下文压缩',
         'settings.probeFilterDesc': '静音很快结束的后台探测会话，避免连接检查、模型探测等短任务播放提示音。',
+        'settings.welcomeError': 'Could not save settings: {{message}}',
       }
       const value = translations[key] ?? options?.defaultValue ?? key
       return value
@@ -114,11 +124,58 @@ describe('settings island menu', () => {
     expect(useConfigStore.getState().analyticsEnabled).toBe(true)
     expect(useConfigStore.getState().islandSurfaceMode).toBe('pet')
     expect(useConfigStore.getState().islandPetWindowOrigin).toBe(null)
-    expect(tauriMocks.setIslandSurfaceOptions).toHaveBeenCalledWith({
-      islandSurfaceMode: 'pet',
-      islandPetScale: 72,
-    })
-    expect(tauriMocks.setAnalyticsEnabled).toHaveBeenCalledWith(true)
+    expect(tauriMocks.completeFirstRunSetup).toHaveBeenCalledWith('pet')
+    expect(tauriMocks.setIslandSurfaceOptions).not.toHaveBeenCalled()
+    expect(tauriMocks.setAnalyticsEnabled).not.toHaveBeenCalled()
+  })
+
+  it('keeps first-run setup open until the native save finishes', async () => {
+    useConfigStore.setState({ analyticsConsentPromptCompleted: false })
+    let finish!: () => void
+    tauriMocks.completeFirstRunSetup.mockImplementationOnce(
+      (islandSurfaceMode) => new Promise((resolve) => {
+        finish = () => resolve({
+          islandSurfaceMode,
+          islandPetScale: 72,
+          islandPetWindowOrigin: null,
+          islandPetWindowAnchor: null,
+          analyticsEnabled: true,
+          analyticsConsentPromptCompleted: true,
+        })
+      }),
+    )
+    render(<SettingsApp onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.welcomeContinue' }))
+    try {
+      expect(screen.getByRole('dialog', { name: 'settings.welcomeTitle' })).toHaveAttribute('aria-busy', 'true')
+      expect(screen.getByRole('button', { name: 'settings.welcomeSaving' })).toBeDisabled()
+      expect(screen.getByRole('radio', { name: /settings.surfacePet/ })).toBeDisabled()
+      expect(useConfigStore.getState().analyticsConsentPromptCompleted).toBe(false)
+    } finally {
+      finish()
+    }
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'settings.welcomeTitle' })).not.toBeInTheDocument())
+  })
+
+  it('preserves the selected surface on a first-run save error and retries', async () => {
+    useConfigStore.setState({ analyticsConsentPromptCompleted: false })
+    tauriMocks.completeFirstRunSetup.mockRejectedValueOnce('Read-only configuration file')
+    render(<SettingsApp onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('radio', { name: /settings.surfacePet/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'settings.welcomeContinue' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Read-only configuration file')
+    expect(screen.getByRole('dialog', { name: 'settings.welcomeTitle' })).toHaveAttribute('aria-busy', 'false')
+    expect(screen.getByRole('radio', { name: /settings.surfacePet/ })).toHaveAttribute('aria-checked', 'true')
+    expect(useConfigStore.getState().analyticsConsentPromptCompleted).toBe(false)
+    expect(useConfigStore.getState().islandSurfaceMode).toBe('island')
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.welcomeContinue' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'settings.welcomeTitle' })).not.toBeInTheDocument())
+    expect(tauriMocks.completeFirstRunSetup.mock.calls).toEqual([['pet'], ['pet']])
+    expect(useConfigStore.getState().islandSurfaceMode).toBe('pet')
   })
 
   it('keeps SSH server management out of the Dynamic Island menu', async () => {

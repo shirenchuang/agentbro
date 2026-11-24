@@ -5222,6 +5222,32 @@ pub async fn set_analytics_enabled(
 }
 
 #[tauri::command]
+pub async fn complete_first_run_setup(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    island_surface_mode: String,
+) -> Result<AppConfig, String> {
+    let Some((previous, config)) = state.config_store.complete_first_run(island_surface_mode)?
+    else {
+        return Ok(state.config_store.get());
+    };
+    if let Err(error) = sync_island_surface_options(
+        app,
+        &config,
+        previous.island_surface_mode != config.island_surface_mode
+            || config.island_surface_mode == "pet",
+    ) {
+        log::warn!("Could not apply the saved first-run surface: {error}");
+    }
+    let telemetry = state.telemetry.clone();
+    let config_store = state.config_store.clone();
+    tauri::async_runtime::spawn(async move {
+        telemetry.record_app_launch(&config_store.get()).await;
+    });
+    Ok(config)
+}
+
+#[tauri::command]
 pub async fn set_launch_at_login(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     set_launch_at_login_state(enabled)?;
     let mut config = state.config_store.get();
@@ -5400,8 +5426,15 @@ pub async fn set_island_surface_options(
     config.island_surface_mode = island_surface_mode;
     config.island_pet_scale = island_pet_scale.clamp(10, 120);
     state.config_store.update(config.clone())?;
+    sync_island_surface_options(app, &config, mode_changed)
+}
 
-    if mode_changed {
+fn sync_island_surface_options(
+    app: tauri::AppHandle,
+    config: &AppConfig,
+    reposition_surface: bool,
+) -> Result<(), String> {
+    if reposition_surface {
         let handle = app.clone();
         let saved_origin = config.island_pet_window_origin.clone();
         let is_pet_mode = config.island_surface_mode == "pet";

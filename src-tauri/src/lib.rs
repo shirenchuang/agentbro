@@ -6514,6 +6514,7 @@ pub fn run() {
             commands::update_config,
             commands::set_language,
             commands::set_analytics_enabled,
+            commands::complete_first_run_setup,
             commands::set_launch_at_login,
             commands::set_island_feature_flags,
             commands::set_island_surface_options,
