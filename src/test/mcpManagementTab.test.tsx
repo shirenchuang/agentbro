@@ -598,9 +598,8 @@ describe('McpManagementTab', () => {
 
     render(<McpManagementTab detail={detail} />)
     fireEvent.click(await screen.findByRole('button', { name: '检查' }))
-    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1))
-
-    fireEvent.click(screen.getByRole('tab', { name: /Resources/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /Resources/ }))
+    expect(inspect).toHaveBeenCalledTimes(1)
     expect(screen.getByText('Knowledge')).toBeInTheDocument()
     expect(screen.getByText('demo://knowledge')).toBeInTheDocument()
 
