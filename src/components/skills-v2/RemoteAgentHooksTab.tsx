@@ -13,7 +13,7 @@ const statusLabels = {
 } as const satisfies Record<RemoteAgentHookStatus, string>
 
 export function RemoteAgentHooksTab({
-  agentId, agentName, agentRevision, environmentId, runtimeRevision, hostName,
+  agentId, agentName, agentRevision, environmentId, runtimeRevision, hostName, disabled, runHookMutation,
 }: {
   agentId: string
   agentName: string
@@ -21,6 +21,8 @@ export function RemoteAgentHooksTab({
   environmentId: string
   runtimeRevision: number
   hostName: string
+  disabled: boolean
+  runHookMutation: (agentId: string, mutate: () => Promise<void>) => Promise<void>
 }) {
   const { t } = useTranslation()
   const [status, setStatus] = useState<RemoteAgentHookStatus | null>(null)
@@ -42,8 +44,10 @@ export function RemoteAgentHooksTab({
     setError(null)
     setStatus(null)
     try {
-      if (action === 'install') await agentApi.installHook(agentId, environmentId)
-      if (action === 'uninstall') await agentApi.uninstallHook(agentId, environmentId)
+      if (action !== 'check') {
+        const mutate = action === 'install' ? agentApi.installHook : agentApi.uninstallHook
+        await runHookMutation(agentId, () => mutate(agentId, environmentId))
+      }
       if (!isCurrent()) return
       const nextStatus = await agentApi.remoteHookStatus(agentId, environmentId)
       if (isCurrent()) setStatus(nextStatus)
@@ -52,7 +56,7 @@ export function RemoteAgentHooksTab({
     } finally {
       if (isCurrent()) setBusy(false)
     }
-  }, [agentId, environmentId, isCurrent])
+  }, [agentId, environmentId, isCurrent, runHookMutation])
 
   useEffect(() => {
     void run('check')
@@ -79,12 +83,12 @@ export function RemoteAgentHooksTab({
             {t('settings.detectNow')}
           </button>
           {status === 'installed' && (
-            <button className="sm2__btn sm2__btn--danger" type="button" disabled={busy} onClick={uninstall}>
+            <button className="sm2__btn sm2__btn--danger" type="button" disabled={busy || disabled} onClick={uninstall}>
               {t('settings.uninstallHooks')}
             </button>
           )}
           {(status === 'notInstalled' || status === 'needsReinstall') && (
-            <button className="sm2__btn sm2__btn--primary" type="button" disabled={busy} onClick={() => void run('install')}>
+            <button className="sm2__btn sm2__btn--primary" type="button" disabled={busy || disabled} onClick={() => void run('install')}>
               {t(status === 'needsReinstall' ? 'settings.reinstall' : 'settings.installHooks')}
             </button>
           )}
