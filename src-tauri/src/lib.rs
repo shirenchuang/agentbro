@@ -2200,16 +2200,17 @@ fn register_one_global_shortcut<F>(
 where
     F: Fn(tauri::AppHandle) + Send + Sync + 'static,
 {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
     let accelerator = accelerator.trim();
     if accelerator.is_empty() {
         return Ok(());
     }
-    let app_handle = app.clone();
     app.global_shortcut()
-        .on_shortcut(accelerator, move |_app, _shortcut, _event| {
-            action(app_handle.clone());
+        .on_shortcut(accelerator, move |app, _shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                action(app.clone());
+            }
         })
         .map_err(|err| format!("Failed to register global shortcut {accelerator}: {err}"))
 }
