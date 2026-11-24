@@ -9,7 +9,10 @@ use windows_sys::Win32::System::Registry::{
 const APP_PATHS: &str = r"Software\Microsoft\Windows\CurrentVersion\App Paths";
 const MAX_PATH_BYTES: u32 = 65_536;
 
-pub(super) fn find_registered(executables: &[String]) -> Option<String> {
+pub(super) fn find_registered(
+    executables: &[String],
+    matches_agent: impl Fn(&str) -> bool,
+) -> Option<String> {
     let keys: Vec<Vec<u16>> = executables
         .iter()
         .map(|name| {
@@ -25,7 +28,9 @@ pub(super) fn find_registered(executables: &[String]) -> Option<String> {
         (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6432KEY),
     ] {
         for key in &keys {
-            if let Some(path) = read_registered_path(hive, view, key) {
+            if let Some(path) =
+                read_registered_path(hive, view, key).filter(|path| matches_agent(path))
+            {
                 return Some(path);
             }
         }

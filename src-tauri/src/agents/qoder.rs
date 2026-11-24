@@ -1,26 +1,144 @@
 // QoderAdapter — Agent adapter for Qoder AI coding assistant
 
 use super::{profiles, AdapterStatus, AgentAdapter, AgentEvent};
-use std::path::PathBuf;
+use crate::terminal::process_tree;
+use std::path::{Path, PathBuf};
+
+fn qoder_bundle_source(bundle_id: &str) -> Option<&'static str> {
+    let bundle_id = bundle_id.to_ascii_lowercase();
+    if bundle_id == "com.qoder.app" || bundle_id.starts_with("com.qoder.app.helper") {
+        Some("qoder-desktop")
+    } else if bundle_id == "com.qoder.ide" || bundle_id.starts_with("com.qoder.ide.helper") {
+        Some("qoder")
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn qoder_app_source(app: &Path) -> Option<&'static str> {
+    let output = std::process::Command::new("/usr/bin/plutil")
+        .args(["-extract", "CFBundleIdentifier", "raw", "-o", "-"])
+        .arg(app.join("Contents/Info.plist"))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    qoder_bundle_source(std::str::from_utf8(&output.stdout).ok()?.trim())
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(super) fn windows_qoder_app_source(executable: &Path) -> Option<&'static str> {
+    let name = executable.file_name()?.to_str()?;
+    if name.eq_ignore_ascii_case("Qoder IDE.exe") {
+        return Some("qoder");
+    }
+    if !name.eq_ignore_ascii_case("Qoder.exe") {
+        return None;
+    }
+    let resources = executable.parent()?.join("resources");
+    if resources.join("app/product.json").is_file() {
+        Some("qoder")
+    } else if resources.join("app.asar").is_file() {
+        Some("qoder-desktop")
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_process_image(pid: u32) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+    let mut path = vec![0u16; 32768];
+    let mut len = path.len() as u32;
+    let result = unsafe {
+        let result = QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut len);
+        CloseHandle(process);
+        result
+    };
+    (result != 0).then(|| PathBuf::from(std::ffi::OsString::from_wide(&path[..len as usize])))
+}
+
+fn qoder_process_source(process: &process_tree::ProcessInfo) -> Option<&'static str> {
+    let path = Path::new(&process.command);
+    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+    if !name.starts_with("qoder") {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = path
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+    {
+        return qoder_app_source(bundle);
+    }
+    #[cfg(target_os = "windows")]
+    if name == "qoder.exe" || name == "qoder ide.exe" {
+        return windows_process_image(process.pid)
+            .and_then(|path| windows_qoder_app_source(&path).or(Some("qoder-cli")));
+    }
+    matches!(name.as_str(), "qoder" | "qodercli" | "qodercli.exe").then_some("qoder-cli")
+}
+
+pub fn qoder_hook_source(mut pid: u32, bundle_id: Option<&str>) -> Option<&'static str> {
+    let tree = process_tree::build_tree();
+    for _ in 0..20 {
+        let Some(process) = tree.get(&pid) else {
+            break;
+        };
+        if let Some(source) = qoder_process_source(process) {
+            return Some(source);
+        }
+        if process.ppid == pid {
+            break;
+        }
+        pid = process.ppid;
+    }
+    bundle_id.and_then(qoder_bundle_source)
+}
 
 pub struct QoderAdapter {
+    source: &'static str,
     config_root: PathBuf,
     status: AdapterStatus,
 }
 
 impl QoderAdapter {
     pub fn new() -> Self {
+        Self::with_source("qoder")
+    }
+
+    pub fn desktop() -> Self {
+        Self::with_source("qoder-desktop")
+    }
+
+    fn with_source(source: &'static str) -> Self {
         let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".qoder");
-        let status = Self::detect_status();
+        let status = super::programs::detected_status_for_agent_program(source);
         Self {
+            source,
             config_root,
             status,
         }
     }
 
-    fn detect_status() -> AdapterStatus {
-        super::programs::detected_status_for_agent_program("qoder")
+    fn profile(&self) -> profiles::AgentIntegrationProfile {
+        if self.source == "qoder-desktop" {
+            profiles::qoder_desktop_profile()
+        } else {
+            profiles::qoder_profile()
+        }
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -30,23 +148,27 @@ impl QoderAdapter {
 
 impl AgentAdapter for QoderAdapter {
     fn name(&self) -> &str {
-        "qoder"
+        self.source
     }
     fn display_name(&self) -> &str {
-        "Qoder"
+        if self.source == "qoder-desktop" {
+            "Qoder Desktop"
+        } else {
+            "Qoder IDE"
+        }
     }
     fn icon(&self) -> &str {
         "qoder"
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        profiles::install_at(&profiles::qoder_profile(), &self.settings_path())?;
+        profiles::install_at(&self.profile(), &self.settings_path())?;
         log::info!("Qoder hooks installed");
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        profiles::uninstall_at(&profiles::qoder_profile(), &self.settings_path())?;
+        profiles::uninstall_at(&self.profile(), &self.settings_path())?;
         log::info!("Qoder hooks removed");
         Ok(())
     }
@@ -56,7 +178,7 @@ impl AgentAdapter for QoderAdapter {
     }
 
     fn detect_status_now(&self) -> AdapterStatus {
-        Self::detect_status()
+        super::programs::detected_status_for_agent_program(self.source)
     }
 
     fn parse_event(
@@ -89,7 +211,7 @@ impl AgentAdapter for QoderAdapter {
                 project,
                 cwd,
                 terminal,
-                agent_type: "qoder".to_string(),
+                agent_type: self.source.to_string(),
             }),
             "session_end" | "SessionEnd" => Ok(AgentEvent::SessionEnd { session_id }),
             "user_prompt_submit" | "UserPromptSubmit" => Ok(AgentEvent::Processing {
@@ -135,6 +257,13 @@ impl AgentAdapter for QoderAdapter {
                 text: string_field(raw, &["summary", "last_assistant_message", "message"])
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or("Task completed")
+                    .to_string(),
+            }),
+            "StopFailure" | "stop_failure" => Ok(AgentEvent::AssistantResponseComplete {
+                session_id,
+                text: string_field(raw, &["error_message", "error", "message"])
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("Task failed")
                     .to_string(),
             }),
             "PreCompact" | "PostCompact" | "pre_compact" | "post_compact" => {
@@ -231,9 +360,31 @@ mod tests {
 
     fn adapter() -> QoderAdapter {
         QoderAdapter {
+            source: "qoder",
             config_root: PathBuf::from("/tmp/qoder-test"),
             status: AdapterStatus::Available,
         }
+    }
+
+    #[test]
+    fn desktop_hooks_keep_the_desktop_session_identity() {
+        let mut desktop = adapter();
+        desktop.source = "qoder-desktop";
+        let raw = json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "qoder-task",
+            "cwd": "/workspace/qoder"
+        });
+        assert!(matches!(
+            desktop.parse_event(&raw).unwrap(),
+            AgentEvent::SessionStart { session_id, agent_type, .. }
+                if session_id == "qoder-task" && agent_type == "qoder-desktop"
+        ));
+        assert_eq!(
+            qoder_bundle_source("com.qoder.app.helper.Renderer"),
+            Some("qoder-desktop")
+        );
+        assert_eq!(qoder_bundle_source("com.qoder.ide.helper"), Some("qoder"));
     }
 
     #[test]

@@ -718,6 +718,33 @@ pub fn qoder_cli_profile() -> AgentIntegrationProfile {
     json_profile("qoder-cli", ".qoder/settings.json", BASIC_AGENT_EVENTS)
 }
 
+const QODER_DESKTOP_EVENTS: &[HookEventDescriptor] = &[
+    plain_event("SessionStart"),
+    plain_event("UserPromptSubmit"),
+    matcher_event("PreToolUse", "*", None),
+    matcher_event("PostToolUse", "*", None),
+    matcher_event("PostToolUseFailure", "*", None),
+    matcher_event("PermissionRequest", "*", Some(600)),
+    matcher_event("PermissionDenied", "*", None),
+    matcher_event("Notification", "*", None),
+    plain_event("Stop"),
+    plain_event("StopFailure"),
+    plain_event("SessionEnd"),
+    plain_event("PreCompact"),
+    plain_event("PostCompact"),
+    plain_event("SubagentStart"),
+    plain_event("SubagentStop"),
+];
+
+pub fn qoder_desktop_profile() -> AgentIntegrationProfile {
+    AgentIntegrationProfile {
+        id: "qoder-desktop",
+        source: "qoder-desktop",
+        events: QODER_DESKTOP_EVENTS,
+        ..qoder_profile()
+    }
+}
+
 pub fn qwen_profile() -> AgentIntegrationProfile {
     AgentIntegrationProfile {
         id: "qwen",
@@ -927,6 +954,7 @@ pub fn profile_for_agent(id: &str) -> Option<AgentIntegrationProfile> {
         "pi" => Some(pi_profile()),
         "qoder" => Some(qoder_profile()),
         "qoder-cli" => Some(qoder_cli_profile()),
+        "qoder-desktop" => Some(qoder_desktop_profile()),
         "qwen" => Some(qwen_profile()),
         "stepfun" => Some(stepfun_profile()),
         "workbuddy" => Some(workbuddy_profile(WorkBuddyEdition::China)),

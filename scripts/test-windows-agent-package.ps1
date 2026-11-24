@@ -1,7 +1,19 @@
-﻿function Open-ManagedAgent([Windows.Automation.AutomationElement]$Island, [string]$AgentName) {
+﻿function Open-ManagedAgent(
+    [Windows.Automation.AutomationElement]$Island,
+    [string]$AgentName,
+    [switch]$RefreshPrograms,
+    [string]$SearchQuery = $AgentName
+) {
     $settings = Open-InstalledAgentSkills $Island
     $agents = Wait-IslandValue 'the Agent Management navigation item' { Find-PackControl $settings 'Agent 管理' }
     Invoke-PackControl $agents | Out-Host
+    if ($RefreshPrograms) {
+        $refresh = Wait-IslandValue 'the enabled Agent version refresh' {
+            $button = Find-PackControl $settings '获取版本'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        }
+        Invoke-PackControl $refresh
+    }
     $search = Wait-IslandValue 'the Agent search' {
         Find-PackControl $settings 'Search Agents' ([Windows.Automation.ControlType]::Edit)
     }
@@ -14,7 +26,7 @@
             [AgentBroSmokeInput]::PressKeyInWindow($handle, $key)
         }
     }
-    foreach ($character in $AgentName.ToCharArray()) {
+    foreach ($character in $SearchQuery.ToCharArray()) {
         if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $handle) {
             throw 'Agent Management lost focus before entering the Agent search'
         }
@@ -386,36 +398,41 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     Test-InstalledAgentPackageAcrossSettingsWindows $settings $fixtureLauncher
 }
 
-function Test-InstalledRegisteredAgentApp([Windows.Automation.AutomationElement]$Island) {
+function Test-InstalledRegisteredAgentApp(
+    [Windows.Automation.AutomationElement]$Island,
+    [string]$AgentName = 'Cursor',
+    [string]$ExeName = 'Cursor.exe'
+) {
     if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
         throw 'The App Paths fixture requires an isolated GitHub-hosted runner'
     }
-    $registration = 'Software\Microsoft\Windows\CurrentVersion\App Paths\Cursor.exe'
+    $registration = "Software\Microsoft\Windows\CurrentVersion\App Paths\$ExeName"
     $registry = [Microsoft.Win32.Registry]::CurrentUser
     $existing = $registry.OpenSubKey($registration)
     if ($existing) {
         $existing.Dispose()
-        throw 'The runner already has a Cursor App Paths registration'
+        throw "The runner already has a $ExeName App Paths registration"
     }
     $folderName = "AgentBro 应用 $([Guid]::NewGuid().ToString('N'))"
     $directory = Join-Path $env:TEMP $folderName
-    $executable = Join-Path $directory 'Cursor.exe'
+    $executable = Join-Path $directory $ExeName
     try {
         $null = New-Item -ItemType Directory -Path $directory
         Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\where.exe') -Destination $executable
+        if ($AgentName -eq 'Qoder Desktop') {
+            $resources = Join-Path $directory 'resources'
+            $null = New-Item -ItemType Directory -Path $resources
+            $null = New-Item -ItemType File -Path (Join-Path $resources 'app.asar')
+        }
         $key = $registry.CreateSubKey($registration)
         try {
-            $key.SetValue('', ('"%TEMP%\' + $folderName + '\Cursor.exe"'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            $key.SetValue('', ('"%TEMP%\' + $folderName + '\' + $ExeName + '"'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
         } finally {
             $key.Dispose()
         }
 
-        $settings = Open-ManagedAgent $Island 'Cursor'
-        $refresh = Wait-IslandValue 'the enabled Agent version refresh' {
-            $button = Find-PackControl $settings '获取版本'
-            if ($button -and $button.Current.IsEnabled) { $button }
-        }
-        Invoke-PackControl $refresh
+        $searchQuery = if ($AgentName -eq 'Qoder Desktop') { 'Qoder' } else { $AgentName }
+        $settings = Open-ManagedAgent $Island $AgentName -RefreshPrograms -SearchQuery $searchQuery
         $paths = Wait-IslandValue 'the Paths & settings tab' { Find-PackControl $settings 'Paths & settings' }
         Invoke-PackControl $paths
         $null = Wait-IslandValue 'the installed Agent and its registered application path' {
@@ -424,7 +441,16 @@ function Test-InstalledRegisteredAgentApp([Windows.Automation.AutomationElement]
         if (Find-PackControl $settings '卸载 Agent') {
             throw 'The registered Windows desktop Agent offered automatic uninstall'
         }
-        Write-Output 'Agent Management detected the registered Cursor fixture and displayed its custom executable path.'
+        Write-Output "Agent Management detected the registered $AgentName fixture and displayed its custom executable path."
+        if ($AgentName -eq 'Qoder Desktop') {
+            foreach ($otherEdition in @('Qoder IDE', 'Qoder CLI')) {
+                $null = Wait-IslandValue "$otherEdition listed as uninstalled" {
+                    $agent = Find-PackControl $settings $otherEdition ([Windows.Automation.ControlType]::Button)
+                    $agent -and ($agent.Current.ClassName -split '\s+') -contains 'sm2-sidebar__subitem--muted'
+                }
+            }
+            Write-Output 'Agent Management kept Qoder IDE and CLI separate from the registered Qoder Desktop app.'
+        }
 
         Remove-Item -LiteralPath $executable
         $refresh = Wait-IslandValue 'the Agent refresh after removing the registered executable' {

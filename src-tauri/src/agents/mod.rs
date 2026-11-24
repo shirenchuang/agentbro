@@ -232,6 +232,7 @@ pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
         Box::new(cursor_cli::CursorCliAdapter::new()),
         Box::new(copilot::CopilotAdapter::new()),
         Box::new(qoder::QoderAdapter::new()),
+        Box::new(qoder::QoderAdapter::desktop()),
         Box::new(qoder_cli::QoderCliAdapter::new()),
         Box::new(codebuddy::CodeBuddyAdapter::new()),
         Box::new(codebuddycn::CodeBuddyCNAdapter::new()),

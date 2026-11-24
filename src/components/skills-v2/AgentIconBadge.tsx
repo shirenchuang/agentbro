@@ -40,6 +40,7 @@ const agentIcons: Record<string, string> = {
   workbuddy: workbuddyIcon,
   qoder: qoderIcon,
   'qoder-cli': qoderIcon,
+  'qoder-desktop': qoderIcon,
   pi: piIcon,
   zcode: zcodeIcon,
   doubao: doubaoIcon,

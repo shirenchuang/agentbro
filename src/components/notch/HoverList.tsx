@@ -48,6 +48,7 @@ const AGENT_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
   'droid': { bg: 'rgba(239, 68, 68, 0.15)', text: '#ef4444' },
   'qoder': { bg: 'rgba(245, 158, 11, 0.15)', text: '#f59e0b' },
   'qoder-cli': { bg: 'rgba(245, 158, 11, 0.15)', text: '#f59e0b' },
+  'qoder-desktop': { bg: 'rgba(245, 158, 11, 0.15)', text: '#f59e0b' },
   'codebuddy': { bg: 'rgba(20, 184, 166, 0.15)', text: '#14b8a6' },
   'codebuddycn': { bg: 'rgba(20, 184, 166, 0.15)', text: '#14b8a6' },
   'copilot': { bg: 'rgba(14, 165, 233, 0.15)', text: '#0ea5e9' },

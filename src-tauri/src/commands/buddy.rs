@@ -253,7 +253,7 @@ fn buddy_source_slot(agent_type: &str) -> u8 {
         "gemini" | "gemini-cli" => 2,
         "cursor" | "cursor-cli" => 3,
         "copilot" => 4,
-        "qoder" | "qoder-cli" => 5,
+        "qoder" | "qoder-cli" | "qoder-desktop" => 5,
         "droid" | "factory" | "factory-droid" => 6,
         "codebuddy" | "codebuddycn" | "codybuddycn" => 7,
         "stepfun" => 8,

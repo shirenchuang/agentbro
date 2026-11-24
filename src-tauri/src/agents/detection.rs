@@ -22,7 +22,9 @@ pub fn detect_installed_tools() -> Vec<DetectedTool> {
         detect_tool("gemini", "Google Gemini", &["gemini"], &[".gemini"]),
         detect_cursor(),
         detect_copilot(),
-        detect_tool("qoder", "Qoder", &["qoder"], &[".qoder"]),
+        detect_qoder_app("qoder-desktop", "Qoder Desktop"),
+        detect_qoder_app("qoder", "Qoder IDE"),
+        detect_tool("qoder-cli", "Qoder CLI", &["qodercli", "qoder"], &[]),
         detect_tool("codebuddy", "CodeBuddy", &["codebuddy"], &[".codebuddy"]),
         detect_tool("qwen", "Qwen Coder", &["qwen-coder", "qwen"], &[".qwen"]),
         detect_tool("kimi", "Kimi Code", &["kimi"], &[".kimi-code", ".kimi"]),
@@ -35,6 +37,16 @@ pub fn detect_installed_tools() -> Vec<DetectedTool> {
             &[".config/opencode", ".opencode"],
         ),
     ]
+}
+
+fn detect_qoder_app(agent_id: &str, display_name: &str) -> DetectedTool {
+    DetectedTool {
+        name: agent_id.to_string(),
+        display_name: display_name.to_string(),
+        status: super::programs::detected_status_for_agent_program(agent_id),
+        binary_path: None,
+        config_dir: find_config_dir(&[".qoder"]).map(|path| path.display().to_string()),
+    }
 }
 
 /// Generic detection: checks each binary name in PATH, then checks config dirs
