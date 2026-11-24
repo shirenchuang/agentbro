@@ -17,6 +17,7 @@ param(
     [switch]$VerifyDrag,
     [switch]$CloseStartupSettings,
     [switch]$AutomationFocusPermission,
+    [switch]$VerifyGlobalShortcuts,
     [switch]$VerifyAgentPackageConsole,
     [switch]$VerifyRegisteredAgentApp
 )
@@ -107,6 +108,9 @@ public static class AgentBroSmokeInput {
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr window);
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
 
@@ -180,6 +184,14 @@ public static class AgentBroSmokeInput {
 
     public static void PressLeft() { SendMouseButton(LeftDown); }
     public static void ReleaseLeft() { SendMouseButton(LeftUp); }
+
+    public static void SetGlobalShortcutKey(ushort key, bool pressed) {
+        const ushort Control = 0x11;
+        const ushort Alt = 0x12;
+        InjectInputs(pressed
+            ? new[] { KeyboardEvent(Control, 0, 0), KeyboardEvent(Alt, 0, 0), KeyboardEvent(key, 0, 0) }
+            : new[] { KeyboardEvent(key, 0, KeyUp), KeyboardEvent(Alt, 0, KeyUp), KeyboardEvent(Control, 0, KeyUp) });
+    }
 
     public static void PressKeyInWindow(IntPtr window, ushort key) {
         var foreground = GetForegroundWindow();
@@ -587,6 +599,94 @@ function Test-KeyboardPermissionDenial(
     }
 }
 
+function Open-GlobalPermissionFixture([string]$Label) {
+    $connection = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
+        $stream = $connection.GetStream()
+        $command = "echo AgentBro global shortcut $Label"
+        $event = @{
+            agent = 'claude-code'
+            event = 'PermissionRequest'
+            session_id = "$SessionId-global-$Label"
+            cwd = $Workspace
+            tool_name = 'Bash'
+            tool_use_id = "global-denial-$Label"
+            tool_input = @{ command = $command }
+        }
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes(($event | ConvertTo-Json -Compress) + "`n")
+        $stream.Write($bytes, 0, $bytes.Length)
+        $reader = [System.IO.StreamReader]::new($stream)
+        [PSCustomObject]@{ Connection = $connection; Reply = $reader.ReadLineAsync(); Command = $command }
+    } catch {
+        $connection.Dispose()
+        throw
+    }
+}
+
+function Test-InstalledGlobalShortcuts([IntPtr]$WindowHandle) {
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+        throw 'Global key input requires an isolated GitHub-hosted runner'
+    }
+    $waitForPrompt = {
+        param($Fixture)
+        $null = Wait-IslandValue "the visible global permission fixture $($Fixture.Command)" {
+            $island = Find-VisibleIsland
+            $island -and (Test-PackVisibleText $island.Element $Fixture.Command)
+        }
+    }
+    $readDenial = {
+        param($Fixture)
+        if (-not $Fixture.Reply.Wait(8000)) { throw "Global keydown did not answer $($Fixture.Command)" }
+        $response = $Fixture.Reply.GetAwaiter().GetResult() | ConvertFrom-Json
+        if ($response.decision -ne 'deny') { throw "Unexpected global shortcut response: $($response.decision)" }
+    }
+    $first = Open-GlobalPermissionFixture 'first'
+    $second = $null
+    try {
+        & $waitForPrompt $first
+        try {
+            [AgentBroSmokeInput]::SetGlobalShortcutKey(0x78, $true)
+            & $readDenial $first
+            $second = Open-GlobalPermissionFixture 'second'
+            & $waitForPrompt $second
+            if ($second.Reply.Wait(300)) { throw 'Holding the first shortcut replied to the second Hook' }
+            Write-Output 'Global Ctrl+Alt+F9 denied the first Hook on keydown. The second Hook is waiting.'
+        } finally {
+            [AgentBroSmokeInput]::SetGlobalShortcutKey(0x78, $false)
+        }
+        if ($second.Reply.Wait(700)) {
+            throw "Global Ctrl+Alt+F9 key release replied to the second Hook: $($second.Reply.GetAwaiter().GetResult())"
+        }
+        try {
+            [AgentBroSmokeInput]::SetGlobalShortcutKey(0x78, $true)
+            & $readDenial $second
+        } finally {
+            [AgentBroSmokeInput]::SetGlobalShortcutKey(0x78, $false)
+        }
+        Write-Output 'The second Hook received deny only after a fresh Ctrl+Alt+F9 keydown.'
+    } finally {
+        if ($second) { $second.Connection.Dispose() }
+        $first.Connection.Dispose()
+    }
+
+    foreach ($visible in @($false, $true)) {
+        try {
+            [AgentBroSmokeInput]::SetGlobalShortcutKey(0x77, $true)
+            $null = Wait-IslandValue "the native Island visibility changing to $visible on keydown" {
+                [AgentBroSmokeInput]::IsWindowVisible($WindowHandle) -eq $visible
+            } 5
+        } finally {
+            [AgentBroSmokeInput]::SetGlobalShortcutKey(0x77, $false)
+        }
+        Start-Sleep -Milliseconds 350
+        if ([AgentBroSmokeInput]::IsWindowVisible($WindowHandle) -ne $visible) {
+            throw 'Global Ctrl+Alt+F8 toggled the Island again on key release'
+        }
+    }
+    Write-Output 'Ctrl+Alt+F8 hid and showed the native Island on separate presses. Both releases preserved visibility.'
+}
+
 function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Island) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     try {
@@ -923,7 +1023,7 @@ try {
     }
     Test-InstalledQuestionReply $island
     Test-InstalledPlanReview $island
-    if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
+    if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }
     if ($PackImportPath) {
@@ -945,6 +1045,9 @@ try {
         Test-InstalledRegisteredAgentApp $island
         Test-InstalledRegisteredAgentApp $island -AgentName 'Qoder Desktop' -ExeName 'Qoder.exe'
         Test-InstalledAgentAfterPathChange $island
+    }
+    if ($VerifyGlobalShortcuts) {
+        Test-InstalledGlobalShortcuts $islandWindow.Handle
     }
 } catch {
     try {

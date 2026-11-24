@@ -58,6 +58,10 @@ on:
         description: Reproduce programmatic UI Automation focus on the permission button
         type: boolean
         default: false
+      windows_verify_global_shortcuts:
+        description: Separate keydown and keyup for native Island global shortcuts
+        type: boolean
+        default: false
       windows_verify_startup_stacks:
         description: Verify that the x64 Windows startup sampler resolves AgentBro frames
         type: boolean
@@ -404,6 +408,7 @@ jobs:
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
           AUTOMATION_FOCUS_PERMISSION: ${{ inputs.windows_automation_focus_permission }}
+          VERIFY_GLOBAL_SHORTCUTS: ${{ inputs.windows_verify_global_shortcuts }}
           VERIFY_STARTUP_STACKS: ${{ inputs.windows_verify_startup_stacks }}
           VERIFY_STARTUP_LOCK: ${{ !inputs.windows_artifact_run || inputs.windows_verify_startup_lock }}
         run: |
@@ -426,6 +431,7 @@ jobs:
                   -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
                   -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
                   -AutomationFocusPermission:($env:AUTOMATION_FOCUS_PERMISSION -eq 'true') `
+                  -VerifyGlobalShortcuts:($env:VERIFY_GLOBAL_SHORTCUTS -eq 'true') `
                   -VerifyStartupStackSampler:($env:VERIFY_STARTUP_STACKS -eq 'true') `
                   -VerifyStartupLock:($env:VERIFY_STARTUP_LOCK -eq 'true') `
                   -SymbolsDirectory (Join-Path $PWD 'windows-installers')
