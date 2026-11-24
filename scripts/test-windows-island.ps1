@@ -656,8 +656,10 @@ function Test-InstalledGlobalShortcuts([IntPtr]$WindowHandle) {
             }
         }
         Click-IslandElement $showSessions 'Global permission queue session list button' -CenterAfterLayout
-        & $waitForPrompt $first
         & $waitForPrompt $second
+        if ($first.Reply.IsCompleted -or $second.Reply.IsCompleted) {
+            throw 'Both permission sockets must be waiting before the shortcut is pressed'
+        }
         Write-Output 'Both permission Hooks are waiting. The older session published its request second.'
         try {
             [AgentBroSmokeInput]::SetGlobalShortcutKey(0x78, $true)
