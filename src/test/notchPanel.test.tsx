@@ -2633,6 +2633,35 @@ describe('NotchPanel island shell', () => {
     }
   })
 
+  it('keeps a question opened by the global shortcut visible until keyboard focus leaves', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    try {
+      tauriMocks.isTauri.mockReturnValue(true)
+      useConfigStore.setState({ autoCollapse: true, collapseDelay: 1 })
+      const question = { question: 'Choose a target', options: ['Production'] }
+      mountIsland({
+        id: 'keyboard-reveal', sessionId: 's1', type: 'question', data: question, createdAt: Date.now(),
+      }, { phase: 'waiting_input', pendingQuestion: question })
+
+      await waitFor(() => expect(tauriMocks.listen).toHaveBeenCalledWith('tray-open-agentbro', expect.any(Function)))
+      const onOpen = tauriMocks.listen.mock.calls.find(([event]) => event === 'tray-open-agentbro')![1]
+      act(() => onOpen({ event: 'tray-open-agentbro', id: 1, payload: 'question-shortcut' }))
+      vi.setSystemTime(Date.now() + 1500)
+      await act(() => new Promise((resolve) => setTimeout(resolve, 120)))
+
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalled()
+      expect(useSessionStore.getState().panelState).toBe('hover')
+      expect(screen.getByRole('button', { name: 'Production' })).toBeVisible()
+
+      hasFocus.mockReturnValue(false)
+      await waitFor(() => expect(useSessionStore.getState().panelState).toBe('collapsed'))
+    } finally {
+      hasFocus.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it('dismisses feedback overlays when the feedback body jumps to the terminal', () => {
     mountIsland({
       id: 'completion-s1',
