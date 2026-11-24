@@ -1681,6 +1681,88 @@ describe('NotchPanel island shell', () => {
     expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, undefined)
   })
 
+  it.each([['a', true], ['d', false]] as const)('uses the displayed request for the %s shortcut with two pending permissions', async (key, allowed) => {
+    useConfigStore.setState({ shortcuts: [
+      { action: 'approve-action', label: 'Approve Action', keys: 'CommandOrControl+Shift+A' },
+      { action: 'reject-action', label: 'Reject Action', keys: 'CommandOrControl+Shift+D' },
+    ] })
+    const displayed = { toolUseId: 'visible', toolName: 'Bash', toolInput: 'echo visible' }
+    const other = { toolUseId: 'other', toolName: 'Bash', toolInput: 'echo other' }
+    const displayedOverlay: OverlayItem = {
+      id: 'visible-permission',
+      sessionId: 's1',
+      type: 'permission',
+      data: displayed,
+      createdAt: Date.now(),
+    }
+    mountIsland(displayedOverlay, { phase: 'waiting_approval', pendingPermission: displayed })
+    act(() => {
+      const s1 = useSessionStore.getState().sessions.s1
+      const s2 = session({ id: 's2', phase: 'waiting_approval', pendingPermission: other })
+      useSessionStore.setState({
+        sessions: { s1, s2 },
+        sessionList: [s1, s2],
+        activeSessionId: 's2',
+        overlayQueue: [displayedOverlay, { ...displayedOverlay, id: 'next-permission', sessionId: 's2', data: other }],
+      })
+    })
+
+    const stroke = { key, shiftKey: true, ...primaryModifierKeyEvent() }
+    fireEvent.keyDown(window, stroke)
+
+    expect(tauriMocks.respondPermission).toHaveBeenCalledExactlyOnceWith('s1', allowed, undefined, 'visible')
+    await waitFor(() => expect(document.querySelector('[data-blocking-overlay-id="next-permission"]:not([inert])')).toBeInTheDocument())
+    fireEvent.keyDown(window, { ...stroke, repeat: true })
+
+    expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(1)
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
+    expect(useSessionStore.getState().sessions.s2.pendingPermission).toEqual(other)
+  })
+
+  it('does not answer another request behind a visible blocking card', () => {
+    const permission = { toolUseId: 'permission-id', toolName: 'Bash', toolInput: 'echo visible' }
+    const question = { toolUseId: 'question-id', question: 'Which output?', options: ['Summary', 'Full'] }
+    mountIsland({
+      id: 'visible-permission',
+      sessionId: 's1',
+      type: 'permission',
+      data: permission,
+      createdAt: Date.now(),
+    }, { phase: 'waiting_approval', pendingPermission: permission })
+    act(() => {
+      const s1 = useSessionStore.getState().sessions.s1
+      const s2 = session({ id: 's2', phase: 'waiting_input', pendingQuestion: question })
+      useSessionStore.setState({ sessions: { s1, s2 }, sessionList: [s1, s2], activeSessionId: 's2' })
+    })
+
+    fireEvent.keyDown(window, { key: '1', ...primaryModifierKeyEvent() })
+
+    expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
+  })
+
+  it('does not approve a hidden permission while a question card is visible', () => {
+    useConfigStore.setState({ shortcuts: [{ action: 'approve-action', label: 'Approve Action', keys: 'CommandOrControl+Shift+A' }] })
+    const question = { toolUseId: 'question-id', question: 'Which output?', options: ['Summary', 'Full'] }
+    mountIsland({
+      id: 'visible-question',
+      sessionId: 's1',
+      type: 'question',
+      data: question,
+      createdAt: Date.now(),
+    }, { phase: 'waiting_input', pendingQuestion: question })
+    act(() => {
+      const s1 = useSessionStore.getState().sessions.s1
+      const permission = { toolUseId: 'other', toolName: 'Bash', toolInput: 'echo other' }
+      const s2 = session({ id: 's2', phase: 'waiting_approval', pendingPermission: permission })
+      useSessionStore.setState({ sessions: { s1, s2 }, sessionList: [s1, s2], activeSessionId: 's2' })
+    })
+
+    fireEvent.keyDown(window, { key: 'a', shiftKey: true, ...primaryModifierKeyEvent() })
+
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
+  })
+
   it('routes configured panel and session navigation shortcuts', () => {
     useConfigStore.setState({
       shortcuts: [
