@@ -11,6 +11,7 @@ param(
     [switch]$VerifyDrag,
     [switch]$CloseStartupSettings,
     [switch]$AutomationFocusPermission,
+    [switch]$VerifyGlobalShortcuts,
     [switch]$VerifyStartupStackSampler,
     [switch]$VerifyStartupLock,
     [switch]$VerifyAgentPackageConsole,
@@ -83,6 +84,11 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
     exit /b 0
 )
 if "%~1 %~2 %~3"=="uninstall -g @anthropic-ai/claude-code" (
+    if not exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall-failed" (
+        type nul > "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall-failed"
+        >&2 echo fixture uninstall failed
+        exit /b 1
+    )
     if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall" (
         del /q "%~dp0claude.cmd"
         if exist "%~dp0claude.cmd" exit /b 1
@@ -94,6 +100,16 @@ if "%~1 %~2 %~3"=="uninstall -g @anthropic-ai/claude-code" (
 exit /b 1
 '@
     Set-Content -LiteralPath (Join-Path $fixtureBin 'npm.cmd') -Value ($fixtureNpm -replace '\r?\n', "`r`n") -Encoding ascii
+    $unmanagedSkill = Join-Path $env:CLAUDE_CONFIG_DIR 'skills\uninstall-fixture'
+    $null = New-Item -ItemType Directory -Path $unmanagedSkill -Force
+    @'
+---
+name: Uninstall fixture
+description: Check that a failed uninstall preserves a local skill.
+---
+
+This Skill belongs to the test Agent.
+'@ | Set-Content -LiteralPath (Join-Path $unmanagedSkill 'SKILL.md') -Encoding ascii
 }
 $env:Path = ($fixtureSearchPath + @($env:Path)) -join ';'
 
@@ -104,6 +120,9 @@ $listener.Stop()
 $env:AGENTBRO_HOOK_PORT = "$port"
 if ($TracePermissionUi -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not ($VerifyIsland -or $VerifyPackManifest))) {
     throw 'Permission tracing requires an Island check on an isolated GitHub-hosted runner'
+}
+if ($VerifyGlobalShortcuts -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $VerifyIsland)) {
+    throw 'Global shortcut fixtures require an Island check on an isolated GitHub-hosted runner'
 }
 
 function Write-WindowsTerminalStarts([string]$SourceIdentifier, [object[]]$Baseline, [int]$AgentBroPid) {
@@ -343,6 +362,28 @@ Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue
     Select-Object -ExpandProperty Name
 
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
+$shortcutConfigPath = $null
+if ($VerifyGlobalShortcuts) {
+    $configDirectory = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'agentbro'
+    $shortcutConfigPath = Join-Path $configDirectory 'config.json'
+    if (Test-Path -LiteralPath $shortcutConfigPath) { throw 'The runner already has an AgentBro config' }
+    $null = New-Item -ItemType Directory -Path $configDirectory -Force
+    @{
+        soundEnabled = $false
+        soundVolume = 0.5
+        autoHide = $false
+        smartSuppression = $false
+        completionTimeout = 5
+        showTokenUsage = $true
+        theme = 'system'
+        analyticsEnabled = $false
+        globalShortcut = 'Control+Alt+F8'
+        shortcutDeny = 'Control+Alt+F9'
+        shortcutDenyEnabled = $true
+        shortcutSkip = 'Control+Alt+F10'
+        shortcutSkipEnabled = $true
+    } | ConvertTo-Json | Set-Content -LiteralPath $shortcutConfigPath -Encoding utf8
+}
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
 
 function Test-DuplicateStartup([string]$State) {
@@ -554,6 +595,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
     if ($CloseStartupSettings) { $start.ArgumentList.Add('-CloseStartupSettings') }
     if ($AutomationFocusPermission) { $start.ArgumentList.Add('-AutomationFocusPermission') }
+    if ($VerifyGlobalShortcuts) { $start.ArgumentList.Add('-VerifyGlobalShortcuts') }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
@@ -699,6 +741,9 @@ try {
     }
     if (-not $app.HasExited) {
         Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
+    }
+    if ($shortcutConfigPath) {
+        Remove-Item -LiteralPath $shortcutConfigPath -ErrorAction SilentlyContinue
     }
     foreach ($fixture in $packFixtures) {
         Remove-Item -LiteralPath $fixture -Recurse -ErrorAction SilentlyContinue

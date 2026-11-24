@@ -505,7 +505,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         versions_indicate_update(installed_version.as_deref(), latest_version.as_deref());
     let config_dir = match id.as_str() {
         "kimi" => Some(agent_paths::kimi_code_home().display().to_string()),
-        "claude-code" | "deepseek-harness" => skill_path
+        "claude-code" | "deepseek-harness" | "qoder-cli" => skill_path
             .and_then(Path::parent)
             .map(|path| path.display().to_string()),
         _ => meta.config_dir.map(expand_home),
@@ -1155,8 +1155,20 @@ fn package_command(program: impl AsRef<OsStr>, path: Option<&OsStr>) -> Command 
 fn package_operation_command(command: &str) -> Command {
     let path = executable::augmented_path_env();
     if let Some(arguments) = command.strip_prefix("npm ") {
-        let mut process = package_command(executable::command_path("npm"), path.as_deref());
+        let launcher = executable::command_path("npm");
+        let mut process = package_command(&launcher, path.as_deref());
         process.args(arguments.split_ascii_whitespace());
+        #[cfg(target_os = "windows")]
+        if launcher
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+            })
+        {
+            // Rust runs batch shims via cmd /C, which can lose an exit /B status.
+            process.raw_arg("& exit");
+        }
         return process;
     }
 
@@ -1365,7 +1377,15 @@ fn app_path_candidates_for_platform(
     platform: RuntimePlatform,
 ) -> Vec<String> {
     let mut paths = match platform {
-        RuntimePlatform::Macos => macos_app_path_candidates(meta),
+        RuntimePlatform::Macos => {
+            let mut paths = macos_app_path_candidates(meta);
+            if agent_id == "qoder" {
+                if let Some(legacy) = metadata_for("qoder-desktop") {
+                    paths.extend(macos_app_path_candidates(&legacy));
+                }
+            }
+            paths
+        }
         RuntimePlatform::Windows => windows_app_path_candidates(agent_id, meta),
         RuntimePlatform::Linux => linux_app_path_candidates(agent_id, meta),
     };
@@ -1395,17 +1415,36 @@ fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> 
     let existing = app_path_candidates(agent_id, meta)
         .into_iter()
         .find(|path| {
+            let candidate = Path::new(path);
             if cfg!(target_os = "windows") {
-                Path::new(path).is_file()
+                candidate.is_file() && app_path_matches_agent(agent_id, candidate)
             } else {
-                Path::new(path).exists()
+                candidate.exists() && app_path_matches_agent(agent_id, candidate)
             }
         });
     #[cfg(target_os = "windows")]
     let existing = existing.or_else(|| {
-        windows_app_paths::find_registered(&windows_registration_names(agent_id, meta))
+        windows_app_paths::find_registered(&windows_registration_names(agent_id, meta), |path| {
+            app_path_matches_agent(agent_id, Path::new(path))
+        })
     });
     existing
+}
+
+fn app_path_matches_agent(agent_id: &str, path: &Path) -> bool {
+    if !matches!(agent_id, "qoder" | "qoder-desktop") {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    let source = super::qoder::qoder_app_source(path);
+    #[cfg(target_os = "windows")]
+    let source = super::qoder::windows_qoder_app_source(path);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let source = {
+        let _ = path;
+        Some(agent_id)
+    };
+    source == Some(agent_id)
 }
 
 pub(crate) fn detected_status_for_agent_program(agent_id: &str) -> AdapterStatus {
@@ -1555,6 +1594,8 @@ fn windows_app_directory_names(agent_id: &str, meta: &ProgramMetadata) -> Vec<St
         "droid" | "factory-droid" => names.extend(["Factory", "Droid"]),
         "codebuddycn" | "codybuddycn" => names.extend(["CodyBuddyCN", "CodeBuddy CN", "CodeBuddy"]),
         "qwen" => names.extend(["Qwen Code", "Qwen"]),
+        "qoder" => names.extend(["Qoder IDE", "Qoder"]),
+        "qoder-desktop" => names.push("Qoder"),
         _ => {}
     }
     names.push(display_name_for_agent(agent_id));
@@ -1574,6 +1615,8 @@ fn windows_executable_names(agent_id: &str, meta: &ProgramMetadata) -> Vec<Strin
         }
         "qwen" => names.extend(["Qwen Code.exe", "Qwen.exe"]),
         "qwenwork-cn" => names.push("Launcher.exe"),
+        "qoder" => names.extend(["Qoder IDE.exe", "Qoder.exe"]),
+        "qoder-desktop" => names.push("Qoder.exe"),
         _ => {}
     }
     names.push(display_name_for_agent(agent_id));
@@ -1647,7 +1690,8 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "cursor-cli" => "Cursor CLI",
         "opencode" => "OpenCode",
         "copilot" => "GitHub Copilot",
-        "qoder" => "Qoder",
+        "qoder" => "Qoder IDE",
+        "qoder-desktop" => "Qoder Desktop",
         "qoder-cli" => "Qoder CLI",
         "hermes" => "Hermes",
         "antigravity" => "Antigravity",
@@ -1687,7 +1731,7 @@ fn icon_for_agent(id: &str) -> String {
         "codebuddycn" | "codybuddycn" => "codebuddy".to_string(),
         "gemini-cli" => "gemini".to_string(),
         "cursor-cli" => "cursor".to_string(),
-        "qoder-cli" => "qoder".to_string(),
+        "qoder-cli" | "qoder-desktop" => "qoder".to_string(),
         "qwenwork-cn" => "qwen".to_string(),
         "deepseek-harness" => "deepseek".to_string(),
         "factory-droid" => "factory-droid".to_string(),
@@ -1779,6 +1823,12 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "https://cline.bot",
         ),
         "qoder" => app(
+            "qoder",
+            "/Applications/Qoder IDE.app",
+            "~/.qoder",
+            "https://qoder.com",
+        ),
+        "qoder-desktop" => app_no_uninstall(
             "qoder",
             "/Applications/Qoder.app",
             "~/.qoder",
@@ -2434,6 +2484,49 @@ mod tests {
 
         let cline = metadata_for("cline").expect("cline metadata");
         assert_eq!(cline.uninstall_command, None);
+    }
+
+    #[test]
+    fn windows_qoder_desktop_detection_keeps_the_ide_and_cli_separate() {
+        let fixture = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary installations");
+        let app = fixture.path().join("Qoder");
+        let old_ide = fixture.path().join("Legacy Qoder");
+        let ide = fixture.path().join("Qoder IDE");
+        let cli = fixture.path().join("bin");
+        for directory in [&app, &old_ide, &ide, &cli] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::create_dir_all(app.join("resources")).unwrap();
+        std::fs::create_dir_all(old_ide.join("resources/app")).unwrap();
+        std::fs::write(app.join("resources/app.asar"), "").unwrap();
+        std::fs::write(old_ide.join("resources/app/product.json"), "{}").unwrap();
+        let classify = super::super::qoder::windows_qoder_app_source;
+        assert_eq!(classify(&app.join("Qoder.exe")), Some("qoder-desktop"));
+        assert_eq!(classify(&old_ide.join("Qoder.exe")), Some("qoder"));
+        assert_eq!(classify(&ide.join("Qoder IDE.exe")), Some("qoder"));
+        assert_eq!(classify(&cli.join("qoder.exe")), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_qoder_detection_uses_the_bundle_identifier() {
+        let fixture = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary installation");
+        let app = fixture.path().join("Qoder.app");
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        let info = app.join("Contents/Info.plist");
+        let bundle = |identifier| {
+            format!(
+                r#"<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{identifier}</string></dict></plist>"#
+            )
+        };
+        std::fs::write(&info, bundle("com.qoder.app")).unwrap();
+        assert!(super::app_path_matches_agent("qoder-desktop", &app));
+        assert!(!super::app_path_matches_agent("qoder", &app));
+        std::fs::write(&info, bundle("com.qoder.ide")).unwrap();
+        assert!(super::app_path_matches_agent("qoder", &app));
+        assert!(!super::app_path_matches_agent("qoder-desktop", &app));
     }
 
     #[test]

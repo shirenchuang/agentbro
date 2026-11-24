@@ -46,6 +46,7 @@ type AgentRuntimeSelection = {
   environmentId: string
   selectionRevision: number
 }
+type RunHookMutation = (agentId: string, mutate: () => Promise<void>) => Promise<void>
 type AgentSkillDetailTarget = AgentRuntimeSelection & {
   skillId: string
   fallback: SkillDetailFallback | null
@@ -89,6 +90,7 @@ type AgentActionTarget = AgentRuntimeSelection & {
 }
 type AgentUninstallTarget = AgentActionTarget & {
   program: AgentProgramInfo
+  preservesSharedSkills: boolean
   unmanagedItems: UnmanagedItemDto[]
 }
 
@@ -116,6 +118,14 @@ function isCurrentAgentSkillScope(scope: AgentSkillScope) {
     && agentSelectionRevision === scope.agentSelectionRevision
 }
 
+function isUninstallProgramPresent(program: AgentProgramInfo, environmentId: string) {
+  // SSH inventory can mark a CLI installed based on its remaining configuration or Skills.
+  if (environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID && program.kind === 'cli' && program.uninstallCommand) {
+    return program.binaryPath !== null
+  }
+  return isAgentProgramInstalled(program)
+}
+
 function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: AgentProgramInfo) {
   return isAgentProgramInstalled(reviewed) === isAgentProgramInstalled(current)
     && reviewed.kind === current.kind
@@ -127,12 +137,24 @@ function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: Ag
     && reviewed.uninstallCommand === current.uninstallCommand
     && reviewed.hooksInstalled === current.hooksInstalled
     && reviewed.configDir === current.configDir
+    && reviewed.skillsDir === current.skillsDir
+}
+
+function hasSharedSkillsDirectory(program: AgentProgramInfo, programs: AgentProgramInfo[], environmentId: string) {
+  if (!program.skillsDir) return false
+  const windows = environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID && isWindowsPlatform()
+  const normalize = (path: string) => {
+    const normalized = windows ? path.replaceAll('\\', '/').toLowerCase() : path
+    return normalized.replace(/\/+$/, '') || normalized
+  }
+  const root = normalize(program.skillsDir)
+  return programs.some((other) => other.id !== program.id && other.skillsDir && normalize(other.skillsDir) === root)
 }
 
 export function AgentManagementPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
-  const { setError, loadOverview, loadAgentDetail } = state
+  const { setError, loadOverview, loadAgentDetail, beginAgentProgramOperation, finishAgentProgramOperation } = state
   const allSessions = useSessionStore((s) => s.sessionList)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const { selectedEnvironmentId: runtimeEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
@@ -150,6 +172,7 @@ export function AgentManagementPage() {
   ), [agentUsageScores, state.agents])
   const detail = state.selectedAgentDetail?.id === SHARED_SKILLS_AGENT_ID ? null : state.selectedAgentDetail
   const [tab, setTab] = useState<DetailTab>('overview')
+  const [hookCleanupRevision, setHookCleanupRevision] = useState(0)
   const [adopt, setAdopt] = useState<AdoptDialogState | null>(null)
   const [skillDetailTarget, setSkillDetailTarget] = useState<AgentSkillDetailTarget | null>(null)
   const currentSkillDetail = skillDetailTarget && isAgentRuntimeSelection(skillDetailTarget) ? skillDetailTarget : null
@@ -184,7 +207,7 @@ export function AgentManagementPage() {
   const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || operation !== null || openingAgentId !== null || deletingAgentId !== null || adoptingUnmanagedId !== null
   const isCurrentRuntime = () => isAgentRuntimeSelection(runtimeSelection)
 
-  const loadPrograms = useCallback(async (runtime: AgentRuntimeSelection) => {
+  const loadPrograms = useCallback(async (runtime: AgentRuntimeSelection, hooksOnly = false) => {
     if (!isAgentRuntimeSelection(runtime)) return
     const request = ++latestAgentProgramRequest
     programRequestRef.current = request
@@ -193,9 +216,16 @@ export function AgentManagementPage() {
       && isAgentRuntimeSelection(runtime)
     setSettledProgramRuntime(null)
     try {
-      const next = await agentApi.refresh(runtime.environmentId)
+      const next = await (hooksOnly ? agentApi.list(runtime.environmentId) : agentApi.refresh(runtime.environmentId))
       if (!isAgentRuntimeSelection(runtime)) return
-      const programs = Object.fromEntries(next.map((agent) => [agent.id, agent]))
+      const snapshot = useSkillStoreV2.getState().agentProgramSnapshot
+      const previous = hooksOnly && snapshot?.environmentId === runtime.environmentId
+        && snapshot.selectionRevision === runtime.selectionRevision ? snapshot.programs : undefined
+      const programs = { ...previous }
+      for (const agent of next) {
+        const existing = previous?.[agent.id]
+        programs[agent.id] = existing ? { ...existing, hooksInstalled: agent.hooksInstalled } : agent
+      }
       if (isLatest()) useSkillStoreV2.setState({ agentProgramSnapshot: { ...runtime, programs } })
       return programs
     } catch (e) {
@@ -204,6 +234,18 @@ export function AgentManagementPage() {
       if (request === programRequestRef.current && isAgentRuntimeSelection(runtime)) setSettledProgramRuntime(runtime)
     }
   }, [setError, t])
+
+  const runHookMutation = useCallback<RunHookMutation>(async (agentId, mutate) => {
+    const active = { agentId, environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision, operation: 'hook' } as const
+    if (!isAgentRuntimeSelection(active) || useSkillStoreV2.getState().selectedAgentId !== agentId) return
+    if (!beginAgentProgramOperation(active)) return
+    try {
+      await mutate()
+      await loadPrograms(active, true)
+    } finally {
+      finishAgentProgramOperation(active)
+    }
+  }, [beginAgentProgramOperation, finishAgentProgramOperation, loadPrograms, runtimeEnvironmentId, runtimeSelectionRevision])
 
   useEffect(() => {
     if (state.initialized && !state.startupScanInFlight) void state.loadOverview()
@@ -559,12 +601,13 @@ export function AgentManagementPage() {
     const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
     const program = programs[agent.id]
     if (!program || !isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) return
-    const unmanagedItems = removableUnmanagedSkills(useSkillStoreV2.getState().unmanaged, agent.id)
-    setUninstallTarget({ agent, program, unmanagedItems, environmentId: selectedEnvironmentId, selectionRevision })
+    const preservesSharedSkills = hasSharedSkillsDirectory(program, Object.values(programs), selectedEnvironmentId)
+    const unmanagedItems = preservesSharedSkills ? [] : removableUnmanagedSkills(useSkillStoreV2.getState().unmanaged, agent.id)
+    setUninstallTarget({ agent, program, preservesSharedSkills, unmanagedItems, environmentId: selectedEnvironmentId, selectionRevision })
   }
 
   const uninstallAgent = async (target: AgentUninstallTarget) => {
-    const { agent, program, unmanagedItems, environmentId, selectionRevision } = target
+    const { agent, program, preservesSharedSkills, unmanagedItems, environmentId, selectionRevision } = target
     const isCurrent = () => isAgentRuntimeSelection(target)
     if (!isCurrent()) {
       setUninstallTarget(null)
@@ -572,10 +615,12 @@ export function AgentManagementPage() {
     }
 
     const snapshot = useSkillStoreV2.getState().agentProgramSnapshot
-    const currentProgram = snapshot?.environmentId === environmentId && snapshot.selectionRevision === selectionRevision
-      ? snapshot.programs[agent.id]
+    const currentPrograms = snapshot?.environmentId === environmentId && snapshot.selectionRevision === selectionRevision
+      ? snapshot.programs
       : undefined
-    if (!currentProgram || !matchesReviewedUninstallProgram(program, currentProgram)) {
+    const currentProgram = currentPrograms?.[agent.id]
+    if (!currentPrograms || !currentProgram || !matchesReviewedUninstallProgram(program, currentProgram)
+      || hasSharedSkillsDirectory(currentProgram, Object.values(currentPrograms), environmentId) !== preservesSharedSkills) {
       setUninstallTarget(null)
       state.setError(t('skills.agentManagement.uninstallReviewChanged', { agent: agent.displayName }))
       return
@@ -588,12 +633,12 @@ export function AgentManagementPage() {
     const failures: string[] = []
     let removedSkills = 0
     try {
-      const uninstallProgram = Boolean(isAgentProgramInstalled(program) && program.uninstallCommand)
-      let commandSucceeded = false
+      const uninstallProgram = Boolean(program.uninstallCommand && isUninstallProgramPresent(program, environmentId))
+      let cleanupBlocked: string | null = null
+      let preserveSkills = preservesSharedSkills
       if (uninstallProgram) {
         try {
           await agentApi.uninstall(agent.id, environmentId)
-          commandSucceeded = true
         } catch (error) {
           if (isAgentPackageOperationBusy(error)) {
             if (isCurrent()) {
@@ -602,60 +647,75 @@ export function AgentManagementPage() {
             }
             return
           }
-          failures.push(`程序：${skillErrorMessage(t, error)}`)
+          cleanupBlocked = t('skills.agentManagement.uninstallCommandFailed', { error: skillErrorMessage(t, error) })
+        }
+        if (cleanupBlocked === null) {
+          const detectedPrograms = await agentApi.list(environmentId).catch(() => [])
+          const detected = detectedPrograms.find((item) => item.id === agent.id)
+          if (!detected) {
+            cleanupBlocked = t('skills.agentManagement.uninstallUnverified', { agent: agent.displayName })
+          } else if (isUninstallProgramPresent(detected, environmentId)) {
+            cleanupBlocked = t('skills.agentManagement.programStillInstalled', { agent: agent.displayName })
+          } else if (detected.configDir !== program.configDir || detected.skillsDir !== program.skillsDir) {
+            cleanupBlocked = t('skills.agentManagement.uninstallProfileChanged', { agent: agent.displayName })
+          } else {
+            preserveSkills ||= hasSharedSkillsDirectory(detected, detectedPrograms, environmentId)
+          }
         }
       }
 
-      const targetIds = agent.skills.map((skill) => skill.id)
-      if (targetIds.length > 0) {
+      if (cleanupBlocked === null && !preserveSkills) {
+        const targetIds = agent.skills.map((skill) => skill.id)
+        if (targetIds.length > 0) {
+          try {
+            const result = await skillApiV2.deleteSkillTargetDistributions(targetIds, environmentId)
+            removedSkills += result.deleted
+            failures.push(...result.failures.map((failure) => `Skill：${failure.error}`))
+          } catch (error) {
+            failures.push(`已管理 Skills：${skillErrorMessage(t, error)}`)
+          }
+        }
+
+        for (const item of unmanagedItems) {
+          try {
+            await skillApiV2.deleteUnmanagedAgentSkill(agent.id, item.id, environmentId)
+            removedSkills += 1
+          } catch (error) {
+            failures.push(`${item.inferredSkillId || item.path}：${skillErrorMessage(t, error)}`)
+          }
+        }
+      }
+
+      if (cleanupBlocked === null) {
+        if (program.hooksInstalled) {
+          try {
+            await agentApi.uninstallHook(agent.id, environmentId)
+            if (isCurrent() && useSkillStoreV2.getState().selectedAgentId === agent.id) {
+              setHookCleanupRevision((revision) => revision + 1)
+            }
+          } catch (error) {
+            failures.push(`Hook：${skillErrorMessage(t, error)}`)
+          }
+        }
+
         try {
-          const result = await skillApiV2.deleteSkillTargetDistributions(targetIds, environmentId)
-          removedSkills += result.deleted
-          failures.push(...result.failures.map((failure) => `Skill：${failure.error}`))
+          const remainingUnmanaged = await skillApiV2.listUnmanaged(environmentId)
+          if (isCurrent()) useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
         } catch (error) {
-          failures.push(`已管理 Skills：${skillErrorMessage(t, error)}`)
+          failures.push(skillErrorMessage(t, error))
         }
-      }
-
-      for (const item of unmanagedItems) {
-        try {
-          await skillApiV2.deleteUnmanagedAgentSkill(agent.id, item.id, environmentId)
-          removedSkills += 1
-        } catch (error) {
-          failures.push(`${item.inferredSkillId || item.path}：${skillErrorMessage(t, error)}`)
-        }
-      }
-
-      if (program.hooksInstalled) {
-        try {
-          await agentApi.uninstallHook(agent.id, environmentId)
-        } catch (error) {
-          failures.push(`Hook：${skillErrorMessage(t, error)}`)
-        }
-      }
-
-      try {
-        const remainingUnmanaged = await skillApiV2.listUnmanaged(environmentId)
-        if (isCurrent()) useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
-      } catch (error) {
-        failures.push(skillErrorMessage(t, error))
       }
       if (!isCurrent()) return
       setUninstallTarget(null)
       const [refreshed] = await Promise.all([loadPrograms(target), state.loadOverview(true)])
       if (!isCurrent()) return
-      const status = refreshed?.[agent.id]?.status
-      const removedProgram = status === 'notInstalled' || status === 'unavailable'
-      if (commandSucceeded && !removedProgram) {
-        failures.unshift(t(status
-          ? 'skills.agentManagement.programStillInstalled'
-          : 'skills.agentManagement.uninstallUnverified', { agent: agent.displayName }))
-      }
-      if ((!uninstallProgram || failures.length > 0) && useSkillStoreV2.getState().selectedAgentId === agent.id) {
+      if ((!uninstallProgram || cleanupBlocked !== null || failures.length > 0) && useSkillStoreV2.getState().selectedAgentId === agent.id) {
         await state.loadAgentDetail(agent.id, true)
       }
       if (!isCurrent()) return
-      if (failures.length > 0) {
+      if (cleanupBlocked !== null) {
+        state.setError(t('skills.agentManagement.uninstallCleanupPreserved', { reason: cleanupBlocked }))
+      } else if (failures.length > 0) {
         const errors = failures.slice(0, 3).join(' ')
         state.setError(uninstallProgram
           ? `部分卸载失败，${errors}`
@@ -678,7 +738,7 @@ export function AgentManagementPage() {
           const nextAgent = nextAgents.find((item) => {
             if (item.id === SHARED_SKILLS_AGENT_ID) return false
             const detected = refreshed?.[item.id]
-            return detected ? isAgentProgramInstalled(detected) : item.installed
+            return detected ? isUninstallProgramPresent(detected, environmentId) : item.installed
           })
           await state.selectAgent(nextAgent?.id ?? null)
         }
@@ -787,27 +847,24 @@ export function AgentManagementPage() {
   }
 
   const selectedProgram = detail ? programs[detail.id] ?? null : null
-  const selectedProgramInstalled = selectedProgram?.status === 'installed' || selectedProgram?.status === 'updateAvailable'
+  const selectedProgramInstalled = selectedProgram ? isUninstallProgramPresent(selectedProgram, runtimeEnvironmentId) : false
   const canUninstallProgram = Boolean(selectedProgramInstalled && selectedProgram?.uninstallCommand)
-  const selectedUnmanagedItems = detail
-    ? removableUnmanagedSkills(state.unmanaged, detail.id)
-    : []
-  const selectedHasResiduals = Boolean(detail && (
-    detail.skills.length > 0
-    || selectedUnmanagedItems.length > 0
-    || detail.appliedPacks.length > 0
-    || selectedProgram?.hooksInstalled
-  ))
+  const selectedHasPrivateSkills = Boolean(detail && selectedProgram
+    && !hasSharedSkillsDirectory(selectedProgram, Object.values(programs), runtimeEnvironmentId) && (
+      detail.skills.length > 0
+      || removableUnmanagedSkills(state.unmanaged, detail.id).length > 0
+      || detail.appliedPacks.length > 0
+    ))
   const canUninstallSelectedAgent = Boolean(
     selectedProgram
     && !selectedProgram.isCustom
-    && (canUninstallProgram || selectedHasResiduals),
+    && (canUninstallProgram || selectedProgram.hooksInstalled || selectedHasPrivateSkills),
   )
   const uninstallAgentTarget = uninstallTarget && isRuntimeEnvironment(uninstallTarget.environmentId, uninstallTarget.selectionRevision)
     ? uninstallTarget.agent
     : null
   const uninstallProgram = uninstallTarget?.program
-  const uninstallProgramInstalled = uninstallProgram ? isAgentProgramInstalled(uninstallProgram) : false
+  const uninstallProgramInstalled = uninstallTarget ? isUninstallProgramPresent(uninstallTarget.program, uninstallTarget.environmentId) : false
   const cleanupOnly = !uninstallProgramInstalled || !uninstallProgram?.uninstallCommand
   const uninstallUnmanagedItems = uninstallTarget?.unmanagedItems ?? []
 
@@ -863,6 +920,8 @@ export function AgentManagementPage() {
             opening={openingAgentId === detail.id}
             adoptingUnmanagedId={adoptingUnmanagedId}
             program={programs[detail.id] || null}
+            hookCleanupRevision={hookCleanupRevision}
+            runHookMutation={runHookMutation}
             agentInstalled={agents.find((agent) => agent.id === detail.id)?.installed ?? Boolean(detail.version || detail.skillsDir)}
             programLoading={programLoading}
             agentOutput={agentOutput}
@@ -949,7 +1008,9 @@ export function AgentManagementPage() {
             })}
           </p>
           <p className="sm2-agent-uninstall__intro">
-            {cleanupOnly ? t('skills.agentManagement.cleanupDescription') : '卸载会移除支持自动卸载的程序，并清理该运行环境中 AgentBro 检测到的残留。'}
+            {cleanupOnly
+              ? t(uninstallTarget.preservesSharedSkills ? 'skills.agentManagement.cleanupHookDescription' : 'skills.agentManagement.cleanupDescription')
+              : '卸载会移除支持自动卸载的程序，并清理该运行环境中 AgentBro 检测到的残留。'}
           </p>
           <div className="sm2-agent-uninstall__summary" aria-label="卸载清理范围">
             {uninstallProgramInstalled && uninstallProgram?.uninstallCommand && (
@@ -958,13 +1019,13 @@ export function AgentManagementPage() {
             {uninstallProgramInstalled && !uninstallProgram?.uninstallCommand && (
               <div><strong>程序</strong><span>不支持自动卸载，将保留</span></div>
             )}
-            {uninstallAgentTarget.skills.length > 0 && (
+            {!uninstallTarget.preservesSharedSkills && uninstallAgentTarget.skills.length > 0 && (
               <div><strong>{uninstallAgentTarget.skills.length}</strong><span>已管理 Skills</span></div>
             )}
             {uninstallUnmanagedItems.length > 0 && (
               <div className="sm2-agent-uninstall__danger-count"><strong>{uninstallUnmanagedItems.length}</strong><span>未管理 Skills</span></div>
             )}
-            {uninstallAgentTarget.appliedPacks.length > 0 && (
+            {!uninstallTarget.preservesSharedSkills && uninstallAgentTarget.appliedPacks.length > 0 && (
               <div><strong>{uninstallAgentTarget.appliedPacks.length}</strong><span>技能包关联</span></div>
             )}
             {uninstallProgram?.hooksInstalled && (
@@ -978,6 +1039,9 @@ export function AgentManagementPage() {
             <div className="sm2-agent-uninstall__warning">未管理 Skills 会直接删除；若中心库没有副本，删除后无法从 AgentBro 恢复。</div>
           )}
           <div className="sm2-agent-uninstall__preserved">保留：中心技能库、Agent 配置、会话记录、MCP 与插件配置。</div>
+          {uninstallTarget.preservesSharedSkills && (
+            <div className="sm2-agent-uninstall__preserved">{t('skills.agentManagement.cleanupSharedSkills')}</div>
+          )}
           {uninstallProgramInstalled && uninstallProgram?.uninstallCommand && (
             <code className="sm2__command-preview">
               {uninstallProgram.kind === 'app'
@@ -1305,6 +1369,8 @@ function AgentDetailView({
   opening,
   adoptingUnmanagedId,
   program,
+  hookCleanupRevision,
+  runHookMutation,
   agentInstalled,
   programLoading,
   agentOutput,
@@ -1329,6 +1395,8 @@ function AgentDetailView({
   opening: boolean
   adoptingUnmanagedId: string | null
   program: AgentProgramInfo | null
+  hookCleanupRevision: number
+  runHookMutation: RunHookMutation
   agentInstalled: boolean
   programLoading: boolean
   agentOutput: string[]
@@ -1490,7 +1558,9 @@ function AgentDetailView({
         )}
         {tab === 'mcp' && <McpTab detail={detail} />}
         {tab === 'plugins' && <PluginManagementTab detail={detail} />}
-        {tab === 'hooks' && <HooksTab detail={detail} />}
+        {tab === 'hooks' && (
+          <HooksTab key={hookCleanupRevision} detail={detail} disabled={busy || programLoading} runHookMutation={runHookMutation} />
+        )}
         {tab === 'config' && <ConfigTab detail={detail} program={program} />}
       </div>
     </div>
@@ -4271,12 +4341,26 @@ function McpTab({ detail }: { detail: AgentDetail }) {
   return <McpManagementTab detail={detail} />
 }
 
-function HooksTab({ detail }: { detail: AgentDetail }) {
+function HooksTab({ detail, disabled, runHookMutation }: {
+  detail: AgentDetail
+  disabled: boolean
+  runHookMutation: RunHookMutation
+}) {
   const { selectedEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
   const runtimeRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
   const agentRevision = useSkillStoreV2((state) => state.agentSelectionRevision)
   const key = `${selectedEnvironmentId}:${runtimeRevision}:${agentRevision}:${detail.id}`
-  if (isLocal) return <LocalHooksTab key={key} detail={detail} />
+  if (isLocal) {
+    return (
+      <LocalHooksTab
+        key={key}
+        detail={detail}
+        scope={{ agentId: detail.id, environmentId: selectedEnvironmentId, runtimeSelectionRevision: runtimeRevision, agentSelectionRevision: agentRevision }}
+        disabled={disabled}
+        runHookMutation={runHookMutation}
+      />
+    )
+  }
   return (
     <RemoteAgentHooksTab
       key={key}
@@ -4286,27 +4370,37 @@ function HooksTab({ detail }: { detail: AgentDetail }) {
       environmentId={selectedEnvironmentId}
       runtimeRevision={runtimeRevision}
       hostName={remoteHost?.name || selectedEnvironmentId}
+      disabled={disabled}
+      runHookMutation={runHookMutation}
     />
   )
 }
 
-function LocalHooksTab({ detail }: { detail: AgentDetail }) {
+function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
+  detail: AgentDetail
+  scope: AgentSkillScope
+  disabled: boolean
+  runHookMutation: RunHookMutation
+}) {
+  const { t } = useTranslation()
   const agentId = detail.id
   const [hook, setHook] = useState<HookStatus | null>(null)
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<'install' | 'uninstall' | 'configure' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const actionsDisabled = disabled || busy !== null
 
   const load = async () => {
+    if (!isCurrentAgentSkillScope(scope)) return
     setLoading(true)
     try {
       const all = await getAllHookStatus()
       const found = await findAgentHookStatus(all, detail)
-      setHook(found || null)
+      if (isCurrentAgentSkillScope(scope)) setHook(found || null)
     } catch (e) {
-      setError(String(e))
+      if (isCurrentAgentSkillScope(scope)) setError(String(e))
     } finally {
-      setLoading(false)
+      if (isCurrentAgentSkillScope(scope)) setLoading(false)
     }
   }
 
@@ -4316,46 +4410,46 @@ function LocalHooksTab({ detail }: { detail: AgentDetail }) {
   }, [agentId])
 
   const install = async () => {
-    setBusy(true)
+    setBusy('install')
     setError(null)
     try {
-      await installAgentHook(hook?.toolId || agentId)
+      await runHookMutation(agentId, () => installAgentHook(hook?.toolId || agentId))
       await load()
     } catch (e) {
       setError(String(e))
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
   const toggleEvent = async (eventName: string, enabled: boolean) => {
     if (!hook?.events) return
-    setBusy(true)
+    setBusy('configure')
     setError(null)
     try {
       const next = hook.events
         .filter((event) => (event.name === eventName ? enabled : event.enabled))
         .map((event) => event.name)
-      await configureAgentHookEvents(hook.toolId || agentId, next)
+      await runHookMutation(agentId, () => configureAgentHookEvents(hook.toolId || agentId, next))
       await load()
     } catch (e) {
       setError(String(e))
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
   const uninstall = async () => {
     if (!confirm(`移除 ${agentId} 的 Hook？`)) return
-    setBusy(true)
+    setBusy('uninstall')
     setError(null)
     try {
-      await uninstallAgentHook(hook?.toolId || agentId)
+      await runHookMutation(agentId, () => uninstallAgentHook(hook?.toolId || agentId))
       await load()
     } catch (e) {
       setError(String(e))
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
@@ -4382,19 +4476,22 @@ function LocalHooksTab({ detail }: { detail: AgentDetail }) {
         </div>
         <div className="sm2__btn-row sm2__hook-actions">
           {hook.configPath && (
-            <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => skillApiV2.openPath(hook.configPath!)}>
+            <button className="sm2__btn sm2__btn--ghost" disabled={actionsDisabled} onClick={() => skillApiV2.openPath(hook.configPath!)}>
               打开配置
             </button>
           )}
           {hook.configDir && (
-            <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => skillApiV2.openPath(hook.configDir!)}>
+            <button className="sm2__btn sm2__btn--ghost" disabled={actionsDisabled} onClick={() => skillApiV2.openPath(hook.configDir!)}>
               打开目录
             </button>
           )}
-          {hook.installed ? (
-            <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy} busy={busy} busyLabel="正在卸载" onClick={uninstall}>卸载 Hook</ActionButton>
-          ) : (
-            <ActionButton className="sm2__btn sm2__btn--primary" disabled={busy} busy={busy} busyLabel="正在安装" onClick={install}>安装 Hook</ActionButton>
+          {hook.installed && (
+            <ActionButton className="sm2__btn sm2__btn--danger" disabled={actionsDisabled} busy={busy === 'uninstall'} busyLabel="正在卸载" onClick={uninstall}>卸载 Hook</ActionButton>
+          )}
+          {(!hook.installed || hook.installStatus === 'needs_reinstall') && (
+            <ActionButton className="sm2__btn sm2__btn--primary" disabled={actionsDisabled} busy={busy === 'install'} busyLabel="正在安装" onClick={install}>
+              {hook.installStatus === 'needs_reinstall' ? t('settings.reinstall') : '安装 Hook'}
+            </ActionButton>
           )}
         </div>
       </section>
@@ -4403,7 +4500,7 @@ function LocalHooksTab({ detail }: { detail: AgentDetail }) {
           <div className="sm2__panel-head">
             <h3>桥接命令</h3>
             {hook.bridgePath && (
-              <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => skillApiV2.openPath(hook.bridgePath!)}>
+              <button className="sm2__btn sm2__btn--ghost" disabled={actionsDisabled} onClick={() => skillApiV2.openPath(hook.bridgePath!)}>
                 打开脚本
               </button>
             )}
@@ -4429,7 +4526,7 @@ function LocalHooksTab({ detail }: { detail: AgentDetail }) {
                   event={event}
                   installed={hook.installed}
                   configPath={hook.configPath}
-                  busy={busy}
+                  busy={actionsDisabled}
                   onToggle={toggleEvent}
                 />
               ))}

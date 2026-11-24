@@ -6652,6 +6652,24 @@ fn shared_agents_skills_dir_is_not_listed_as_a_managed_agent() {
 }
 
 #[test]
+fn qoder_products_are_listed_with_a_shared_skills_directory() {
+    let (_home, svc, _lock) = fresh_service("qoder-agents");
+    let skills_dir = svc.home.join(".qoder/skills").display().to_string();
+    let agents = svc.list_managed_agents().unwrap();
+
+    for (id, name) in [
+        ("qoder-desktop", "Qoder Desktop"),
+        ("qoder", "Qoder IDE"),
+        ("qoder-cli", "Qoder CLI"),
+    ] {
+        let agent = agents.iter().find(|agent| agent.id == id).unwrap();
+        assert_eq!(agent.display_name, name);
+        assert_eq!(agent.icon_key, "qoder");
+        assert_eq!(agent.skills_dir.as_deref(), Some(skills_dir.as_str()));
+    }
+}
+
+#[test]
 fn custom_agent_metadata_is_listed_and_uses_declared_paths() {
     let (_home, svc, _lock) = fresh_service("custom-agent-metadata");
     let root = svc.home.join(".codefuse/engine/cc");

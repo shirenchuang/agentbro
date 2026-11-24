@@ -1606,14 +1606,14 @@ fn upsert_codex_app_server_pending_permission(
         session.term_bundle_id = Some("com.openai.codex".to_string());
         session.phase = SessionPhase::WaitingApproval;
         session.description = Some(preview.to_string());
-        session.pending_permission = Some(crate::hooks::session_store::PendingPermission {
+        session.set_pending_permission(Some(crate::hooks::session_store::PendingPermission {
             tool_use_id: Some(tool_use_id),
             tool_name: tool_name.to_string(),
             tool_input: tool_input.to_string(),
             diff: None,
             options: None,
-        });
-        session.pending_question = None;
+        }));
+        session.set_pending_question(None);
         session.pending_plan = None;
     });
 }
@@ -1633,8 +1633,8 @@ fn upsert_codex_app_server_pending_question(
         session.term_bundle_id = Some("com.openai.codex".to_string());
         session.phase = SessionPhase::WaitingInput;
         session.description = Some(preview.to_string());
-        session.pending_question = Some(pending_question);
-        session.pending_permission = None;
+        session.set_pending_question(Some(pending_question));
+        session.set_pending_permission(None);
         session.pending_plan = None;
     });
 }
@@ -2641,6 +2641,9 @@ pub async fn send_message(
 
     if is_qoder_app_session(&session) {
         return send_message_to_qoder_app(&session, &message, activate_before_send.unwrap_or(true));
+    }
+    if session.agent_type == "qoder-desktop" {
+        return Err("Open Qoder Desktop to continue the conversation.".to_string());
     }
 
     if let Some(err) = app_host_message_unsupported_error(&session) {
@@ -4210,6 +4213,9 @@ pub async fn jump_to_terminal(
     #[cfg(target_os = "windows")]
     if let Some(distribution) = &session.wsl_distribution {
         return crate::platform::wsl::open_workspace(distribution, &session.cwd);
+    }
+    if session.agent_type == "qoder-desktop" {
+        return crate::agents::programs::open_agent_app(&session.agent_type);
     }
     #[cfg(target_os = "windows")]
     if matches!(

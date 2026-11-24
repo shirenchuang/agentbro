@@ -244,11 +244,24 @@ fn permission_hook_output(
     always: bool,
     permission_suggestions: serde_json::Value,
 ) -> Option<serde_json::Value> {
+    if source == "qoder" {
+        return matches!(decision, "allow" | "deny").then(|| {
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "permissionDecision": decision,
+                    "permissionDecisionReason": reason,
+                }
+            })
+        });
+    }
+    let qoder_once = matches!(source, "qoder-cli" | "qoder-desktop");
     match decision {
         "allow" => {
             let mut decision = serde_json::json!({ "behavior": "allow" });
             if !is_codex_source(source)
                 && !is_zcode_source(source)
+                && !qoder_once
                 && always
                 && permission_suggestions
                     .as_array()
@@ -262,6 +275,9 @@ fn permission_hook_output(
             Some(permission_request_output(decision))
         }
         "auto" => {
+            if qoder_once {
+                return None;
+            }
             if is_codex_source(source) || is_zcode_source(source) {
                 Some(permission_request_output(
                     serde_json::json!({ "behavior": "allow" }),
@@ -573,8 +589,13 @@ fn send_and_maybe_receive(
         record_invocation(state, false);
         return None;
     };
+    let timeout = match state.get("agent").and_then(|value| value.as_str()) {
+        Some("qoder-cli" | "qoder-desktop") => 120,
+        Some("qoder") => 25,
+        _ => TIMEOUT_SECONDS,
+    };
     stream
-        .set_read_timeout(Some(Duration::from_secs(TIMEOUT_SECONDS)))
+        .set_read_timeout(Some(Duration::from_secs(timeout)))
         .ok();
     let payload = format!("{}\n", state);
     if stream.write_all(payload.as_bytes()).is_err() {
@@ -871,13 +892,22 @@ fn main() {
     .unwrap_or("");
     let wsl_distribution = arg_value("--wsl-distro");
     let pid = wsl_distribution.is_none().then(parent_process_id);
+    let term_bundle_id = std::env::var("__CFBundleIdentifier").ok();
+    if matches!(source.as_str(), "qoder" | "qoder-cli" | "qoder-desktop") {
+        let actual_source = agentbro_lib::agents::qoder::qoder_hook_source(
+            pid.unwrap_or(0),
+            term_bundle_id.as_deref(),
+        );
+        if actual_source.map_or(source == "qoder-desktop", |actual| actual != source) {
+            return;
+        }
+    }
     let tty = wsl_distribution.is_none().then(get_tty).flatten();
     let engine_label =
         arg_value("--engine-label").or_else(|| std::env::var("AGENTBRO_ENGINE_LABEL").ok());
     let engine_config_root =
         arg_value("--config-root").or_else(|| std::env::var("AGENTBRO_CONFIG_ROOT").ok());
     let term_program = std::env::var("TERM_PROGRAM").ok();
-    let term_bundle_id = std::env::var("__CFBundleIdentifier").ok();
     let wezterm_pane = std::env::var("WEZTERM_PANE").ok();
     let zellij = std::env::var("ZELLIJ").ok();
     let zellij_pane_id = std::env::var("ZELLIJ_PANE_ID").ok();
@@ -1049,6 +1079,7 @@ fn main() {
             if tool_name == "AskUserQuestion"
                 && !is_codex_source(&source)
                 && !is_antigravity_source(&source)
+                && source != "qoder-cli"
             {
                 populate_ask_user_question_state(obj, &tool_input);
 
@@ -1213,7 +1244,8 @@ fn main() {
                 return;
             }
 
-            if tool_name == "AskUserQuestion" {
+            let qoder = matches!(source.as_str(), "qoder" | "qoder-cli" | "qoder-desktop");
+            if tool_name == "AskUserQuestion" && !qoder {
                 // OpenCode asks questions through PermissionRequest and consumes
                 // decision.updatedInput.answers from the bridge response. Claude Code
                 // questions are handled earlier in PreToolUse, where updatedInput is
@@ -1234,7 +1266,7 @@ fn main() {
             }
 
             // ExitPlanMode: route as a plan approval card with Manual / Accept Edits / Auto.
-            if tool_name == "ExitPlanMode" && !is_codex_source(&source) {
+            if tool_name == "ExitPlanMode" && !is_codex_source(&source) && !qoder {
                 let plan_content = tool_input
                     .get("plan")
                     .or_else(|| tool_input.get("planContent"))
@@ -1605,6 +1637,59 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qoder_permission_responses_do_not_change_future_permissions() {
+        let suggestions = serde_json::json!([{"type": "setMode", "mode": "bypassPermissions"}]);
+        let allow = permission_hook_output("qoder-desktop", "allow", "", true, suggestions.clone())
+            .unwrap();
+        assert_eq!(
+            allow["hookSpecificOutput"]["decision"],
+            serde_json::json!({"behavior": "allow"})
+        );
+        let deny = permission_hook_output(
+            "qoder-desktop",
+            "deny",
+            "fixture",
+            false,
+            suggestions.clone(),
+        )
+        .unwrap();
+        assert_eq!(deny["hookSpecificOutput"]["decision"]["message"], "fixture");
+        assert_eq!(deny["hookSpecificOutput"]["decision"]["behavior"], "deny");
+        assert!(
+            permission_hook_output("qoder-desktop", "auto", "", false, suggestions.clone())
+                .is_none()
+        );
+        assert!(permission_hook_output("qoder-desktop", "ask", "", false, suggestions).is_none());
+    }
+
+    #[test]
+    fn qoder_cli_permission_reply_is_one_time() {
+        let suggestions = serde_json::json!([{"type": "setMode", "mode": "bypassPermissions"}]);
+        assert_eq!(
+            permission_hook_output("qoder-cli", "allow", "", true, suggestions.clone()).unwrap(),
+            serde_json::json!({"hookSpecificOutput": {
+                "hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}
+            }})
+        );
+        assert!(permission_hook_output("qoder-cli", "auto", "", false, suggestions).is_none());
+    }
+
+    #[test]
+    fn qoder_ide_permission_response_uses_its_flat_permission_schema() {
+        let response =
+            permission_hook_output("qoder", "deny", "fixture", false, serde_json::Value::Null)
+                .unwrap();
+        assert_eq!(
+            response["hookSpecificOutput"],
+            serde_json::json!({
+                "hookEventName": "PermissionRequest",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "fixture"
+            })
+        );
+    }
 
     #[test]
     fn normalizes_current_kimi_permission_events() {

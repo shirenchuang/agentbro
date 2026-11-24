@@ -1,7 +1,36 @@
-﻿function Open-ManagedAgent([Windows.Automation.AutomationElement]$Island, [string]$AgentName) {
+﻿function Invoke-ManagedAgentButton([Windows.Automation.AutomationElement]$Settings, [string]$Name) {
+    $null = Wait-IslandValue "invoking $Name in Agent Management" {
+        try {
+            $button = Find-PackControl $Settings $Name ([Windows.Automation.ControlType]::Button)
+            $invoke = $null
+            if ($button -and $button.Current.IsEnabled -and
+                $button.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
+                $invoke.Invoke()
+                return $true
+            }
+        } catch {
+            if ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
+                $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]) { throw }
+        }
+    }
+}
+
+function Open-ManagedAgent(
+    [Windows.Automation.AutomationElement]$Island,
+    [string]$AgentName,
+    [switch]$RefreshPrograms,
+    [string]$SearchQuery = $AgentName
+) {
     $settings = Open-InstalledAgentSkills $Island
     $agents = Wait-IslandValue 'the Agent Management navigation item' { Find-PackControl $settings 'Agent 管理' }
     Invoke-PackControl $agents | Out-Host
+    if ($RefreshPrograms) {
+        $refresh = Wait-IslandValue 'the enabled Agent version refresh' {
+            $button = Find-PackControl $settings '获取版本'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        }
+        Invoke-PackControl $refresh
+    }
     $search = Wait-IslandValue 'the Agent search' {
         Find-PackControl $settings 'Search Agents' ([Windows.Automation.ControlType]::Edit)
     }
@@ -14,25 +43,13 @@
             [AgentBroSmokeInput]::PressKeyInWindow($handle, $key)
         }
     }
-    foreach ($character in $AgentName.ToCharArray()) {
+    foreach ($character in $SearchQuery.ToCharArray()) {
         if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $handle) {
             throw 'Agent Management lost focus before entering the Agent search'
         }
         [AgentBroSmokeInput]::AppendCharacter($character)
     }
-    $null = Wait-IslandValue "selecting $AgentName in Agent Management" {
-        try {
-            $agent = Find-PackControl $settings $AgentName ([Windows.Automation.ControlType]::Button)
-            $invoke = $null
-            if ($agent -and $agent.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
-                $invoke.Invoke()
-                return $true
-            }
-        } catch {
-            if ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
-                $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]) { throw }
-        }
-    }
+    Invoke-ManagedAgentButton $settings $AgentName
     Write-Host "Selected $AgentName through Windows UI Automation."
     $settings
 }
@@ -320,6 +337,12 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         throw 'The package update opened a visible Windows console'
     }
 
+    $fixtureSkills = Join-Path $env:CLAUDE_CONFIG_DIR 'skills\uninstall-fixture\SKILL.md'
+    $fixtureSettings = Join-Path $env:CLAUDE_CONFIG_DIR 'settings.json'
+    $reviewedSettings = Get-Content -LiteralPath $fixtureSettings -Raw
+    if ($reviewedSettings -notmatch 'agentbro-bridge') {
+        throw 'The uninstall fixture must have the installed AgentBro Hook'
+    }
     $uninstall = Wait-IslandValue 'the uninstall button for the installed Agent' {
         $button = Find-PackControl $settings '卸载 Agent'
         if ($button -and $button.Current.IsEnabled) { $button }
@@ -338,70 +361,151 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     }
     Write-Output 'The uninstall confirmation focused Cancel and restored focus after native Escape.'
     [AgentBroSmokeInput]::PressKeyInWindow($handle, 0x20)
-    $confirm = Wait-IslandValue 'the uninstall confirmation' { Find-PackControl $settings '确认卸载' }
-    Invoke-PackControl $confirm
-    $null = Wait-IslandValue 'the Agent still detected after the first uninstall' {
-        Test-PackVisibleText $settings 'The uninstall command completed. AgentBro still detects Claude Code.'
+    foreach ($issue in @(
+        'The uninstall command failed. uninstall failed for claude-code (exit code: 1)',
+        'AgentBro still detects Claude Code.'
+    )) {
+        $confirm = Wait-IslandValue 'the uninstall confirmation reviewing unmanaged Skills and the Hook' {
+            $button = Find-PackControl $settings '确认卸载'
+            if ($button -and (Test-PackVisibleText $settings '未管理 Skills') -and
+                (Test-PackVisibleText $settings '移除 AgentBro Hook')) { $button }
+        }
+        Invoke-PackControl $confirm
+        $null = Wait-IslandValue "the preserved resources message after $issue" {
+            (Test-PackVisibleText $settings $issue) -and
+                (Test-PackVisibleText $settings 'AgentBro kept the Skills and Hooks.')
+        }
+        if (-not (Test-Path -LiteralPath $fixtureLauncher -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $fixtureSkills -PathType Leaf) -or
+            (Get-Content -LiteralPath $fixtureSettings -Raw) -cne $reviewedSettings) {
+            throw "The unsuccessful uninstall changed the launcher, unmanaged Skill, or Hook settings"
+        }
+        Write-Output "Verified that the launcher, unmanaged Skill, and Hook settings were preserved. $issue"
+        $retry = Wait-IslandValue 'the enabled uninstall after preserving the Agent resources' {
+            $button = Find-PackControl $settings '卸载 Agent'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        }
+        Invoke-PackControl $retry
     }
-    if (-not (Test-Path -LiteralPath $fixtureLauncher -PathType Leaf)) {
-        throw 'The first package uninstall unexpectedly removed the fixture launcher'
-    }
-    Write-Output 'The first uninstall exited successfully. Agent Management kept the detected Agent visible.'
 
-    $retry = Wait-IslandValue 'the enabled uninstall after detecting the remaining Agent' {
-        $button = Find-PackControl $settings '卸载 Agent'
-        if ($button -and $button.Current.IsEnabled) { $button }
-    }
-    Invoke-PackControl $retry
-    $confirm = Wait-IslandValue 'the second uninstall confirmation' { Find-PackControl $settings '确认卸载' }
+    $confirm = Wait-IslandValue 'the successful uninstall confirmation' { Find-PackControl $settings '确认卸载' }
     Invoke-PackControl $confirm
     $null = Wait-IslandValue 'the confirmed uninstall of the fixture launcher' {
         -not (Test-Path -LiteralPath $fixtureLauncher -PathType Leaf) -and
             (Test-PackVisibleText $settings 'Agent「Claude Code」已卸载')
     }
-    Write-Output 'Agent Management confirmed the uninstall after the fixture launcher was removed.'
+    $cleanedSettings = Get-Content -LiteralPath $fixtureSettings -Raw
+    if ((Test-Path -LiteralPath $fixtureSkills -PathType Leaf) -or
+        $cleanedSettings -match 'agentbro-bridge' -or $cleanedSettings -notmatch 'echo user-hook') {
+        throw 'The successful uninstall must remove the reviewed Skill and AgentBro Hook and keep the user Hook'
+    }
+    Write-Output 'Agent Management removed the reviewed Skill and AgentBro Hook after verifying that the fixture launcher was removed.'
     Test-InstalledAgentPackageAcrossSettingsWindows $settings $fixtureLauncher
 }
 
-function Test-InstalledRegisteredAgentApp([Windows.Automation.AutomationElement]$Island) {
+function Test-InstalledQoderSharedSkillsCleanup([Windows.Automation.AutomationElement]$Settings) {
+    $profileDir = Join-Path $env:USERPROFILE '.qoder'
+    if (Test-Path -LiteralPath $profileDir) { throw 'The runner already has a Qoder profile' }
+    $skillDir = Join-Path $profileDir 'skills\qoder-cleanup-fixture'
+    $skill = Join-Path $skillDir 'SKILL.md'
+    $config = Join-Path $profileDir 'settings.json'
+    try {
+        $null = New-Item -ItemType Directory -Path $skillDir
+        @('---', 'name: qoder-cleanup-fixture', 'description: Shared Qoder Skill fixture', '---', 'Fixture content') |
+            Set-Content -LiteralPath $skill -Encoding utf8
+        $originalSkill = Get-Content -LiteralPath $skill -Raw
+        Invoke-ManagedAgentButton $Settings 'Hooks'
+        Invoke-ManagedAgentButton $Settings '安装 Hook'
+        $null = Wait-IslandValue 'the installed Qoder Desktop Hook' {
+            (Test-Path -LiteralPath $config -PathType Leaf) -and (Find-PackControl $Settings '卸载 Hook')
+        }
+        $installedConfig = Get-Content -LiteralPath $config -Raw
+        if ($installedConfig -notmatch '--source qoder-desktop') { throw 'The fixture must have the Qoder Desktop Hook' }
+
+        Invoke-PackControl (Wait-IslandValue 'the Qoder Desktop rescan button' {
+            $button = Find-PackControl $Settings '重新扫描此 Agent'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        })
+        $null = Wait-IslandValue 'the shared Skill counted in the Qoder Desktop inventory' {
+            Test-PackVisibleText $Settings 'Scan complete: 0 managed, 1 unmanaged'
+        }
+        Invoke-PackControl (Wait-IslandValue 'the Qoder Desktop cleanup button' {
+            $button = Find-PackControl $Settings 'Clean up AgentBro resources' ([Windows.Automation.ControlType]::Button)
+            if ($button -and $button.Current.IsEnabled) { $button }
+        })
+        Invoke-PackControl (Wait-IslandValue 'the reviewed shared Skills preservation' {
+            if (Test-PackVisibleText $Settings 'Shared Skills and their pack associations will be kept.') {
+                Find-PackControl $Settings 'Confirm cleanup' ([Windows.Automation.ControlType]::Button)
+            }
+        })
+        $null = Wait-IslandValue 'cleanup of the Qoder Desktop Hook' {
+            -not (Find-PackControl $Settings 'Confirm cleanup') -and
+                (Find-PackControl $Settings '安装 Hook') -and
+                (Get-Content -LiteralPath $config -Raw) -notmatch '--source qoder-desktop'
+        }
+        if (-not (Test-Path -LiteralPath $skill -PathType Leaf) -or
+            (Get-Content -LiteralPath $skill -Raw) -cne $originalSkill) {
+            throw 'Cleaning up Qoder Desktop modified its shared Skill'
+        }
+        Write-Output 'Qoder Desktop cleanup removed its Hook and preserved the shared Skill on disk.'
+    } finally {
+        Remove-Item -LiteralPath $profileDir -Recurse -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-InstalledRegisteredAgentApp(
+    [Windows.Automation.AutomationElement]$Island,
+    [string]$AgentName = 'Cursor',
+    [string]$ExeName = 'Cursor.exe'
+) {
     if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
         throw 'The App Paths fixture requires an isolated GitHub-hosted runner'
     }
-    $registration = 'Software\Microsoft\Windows\CurrentVersion\App Paths\Cursor.exe'
+    $registration = "Software\Microsoft\Windows\CurrentVersion\App Paths\$ExeName"
     $registry = [Microsoft.Win32.Registry]::CurrentUser
     $existing = $registry.OpenSubKey($registration)
     if ($existing) {
         $existing.Dispose()
-        throw 'The runner already has a Cursor App Paths registration'
+        throw "The runner already has a $ExeName App Paths registration"
     }
     $folderName = "AgentBro 应用 $([Guid]::NewGuid().ToString('N'))"
     $directory = Join-Path $env:TEMP $folderName
-    $executable = Join-Path $directory 'Cursor.exe'
+    $executable = Join-Path $directory $ExeName
     try {
         $null = New-Item -ItemType Directory -Path $directory
         Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\where.exe') -Destination $executable
+        if ($AgentName -eq 'Qoder Desktop') {
+            $resources = Join-Path $directory 'resources'
+            $null = New-Item -ItemType Directory -Path $resources
+            $null = New-Item -ItemType File -Path (Join-Path $resources 'app.asar')
+        }
         $key = $registry.CreateSubKey($registration)
         try {
-            $key.SetValue('', ('"%TEMP%\' + $folderName + '\Cursor.exe"'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            $key.SetValue('', ('"%TEMP%\' + $folderName + '\' + $ExeName + '"'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
         } finally {
             $key.Dispose()
         }
 
-        $settings = Open-ManagedAgent $Island 'Cursor'
-        $refresh = Wait-IslandValue 'the enabled Agent version refresh' {
-            $button = Find-PackControl $settings '获取版本'
-            if ($button -and $button.Current.IsEnabled) { $button }
-        }
-        Invoke-PackControl $refresh
-        $paths = Wait-IslandValue 'the Paths & settings tab' { Find-PackControl $settings 'Paths & settings' }
-        Invoke-PackControl $paths
+        $searchQuery = if ($AgentName -eq 'Qoder Desktop') { 'Qoder' } else { $AgentName }
+        $settings = Open-ManagedAgent $Island $AgentName -RefreshPrograms -SearchQuery $searchQuery
+        Invoke-ManagedAgentButton $settings 'Paths & settings'
         $null = Wait-IslandValue 'the installed Agent and its registered application path' {
             (Test-PackVisibleText $settings $executable) -and (Find-PackControl $settings '无需更新')
         }
         if (Find-PackControl $settings '卸载 Agent') {
             throw 'The registered Windows desktop Agent offered automatic uninstall'
         }
-        Write-Output 'Agent Management detected the registered Cursor fixture and displayed its custom executable path.'
+        Write-Output "Agent Management detected the registered $AgentName fixture and displayed its custom executable path."
+        if ($AgentName -eq 'Qoder Desktop') {
+            foreach ($otherEdition in @('Qoder IDE', 'Qoder CLI')) {
+                $null = Wait-IslandValue "$otherEdition listed as uninstalled" {
+                    $agent = Find-PackControl $settings $otherEdition ([Windows.Automation.ControlType]::Button)
+                    $agent -and ($agent.Current.ClassName -split '\s+') -contains 'sm2-sidebar__subitem--muted'
+                }
+            }
+            Write-Output 'Agent Management kept Qoder IDE and CLI separate from the registered Qoder Desktop app.'
+            Test-InstalledQoderSharedSkillsCleanup $settings
+        }
 
         Remove-Item -LiteralPath $executable
         $refresh = Wait-IslandValue 'the Agent refresh after removing the registered executable' {
@@ -415,6 +519,65 @@ function Test-InstalledRegisteredAgentApp([Windows.Automation.AutomationElement]
         Write-Output 'Agent Management reported the fixture missing after removal of the registered executable.'
     } finally {
         $registry.DeleteSubKeyTree($registration, $false)
+        Remove-Item -LiteralPath $directory -Recurse -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-InstalledAgentAfterPathChange([Windows.Automation.AutomationElement]$Island) {
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+        throw 'The saved PATH fixture requires an isolated GitHub-hosted runner'
+    }
+
+    $settings = Open-ManagedAgent $Island 'Qoder CLI' -SearchQuery 'Qoder' -RefreshPrograms
+    $refreshPrograms = {
+        $refresh = Wait-IslandValue 'the enabled Agent version refresh' {
+            $button = Find-PackControl $settings '获取版本' ([Windows.Automation.ControlType]::Button)
+            if ($button -and $button.Current.IsEnabled) { $button }
+        }
+        Invoke-PackControl $refresh
+    }
+    $isUndetected = {
+        $agent = Find-PackControl $settings 'Qoder CLI' ([Windows.Automation.ControlType]::Button)
+        $agent -and ($agent.Current.ClassName -split '\s+') -contains 'sm2-sidebar__subitem--muted'
+    }
+    $null = Wait-IslandValue 'Qoder CLI missing before the saved PATH change' $isUndetected
+    $processId = $settings.Current.ProcessId
+    $folderName = "AgentBro 命令行 $([Guid]::NewGuid().ToString('N'))"
+    $directory = Join-Path $env:USERPROFILE $folderName
+    $executable = Join-Path $directory 'qoder.exe'
+    $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    if (-not $environment) { throw 'The runner has no user Environment registry key' }
+    try {
+        $original = $environment.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $null = New-Item -ItemType Directory -Path $directory
+        Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\where.exe') -Destination $executable
+        $originalKind = if ($null -ne $original) { $environment.GetValueKind('Path') }
+        $newEntry = '%USERPROFILE%\' + $folderName
+        $changedPath = if ($original) { "$original;$newEntry" } else { $newEntry }
+        try {
+            $environment.SetValue('Path', $changedPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            Write-Output 'Added an expandable CLI directory to the saved user PATH after AgentBro started.'
+            & $refreshPrograms
+            Invoke-ManagedAgentButton $settings 'Paths & settings'
+            $null = Wait-IslandValue 'Qoder CLI discovered through the changed saved PATH' {
+                (Test-PackVisibleText $settings $executable) -and -not (& $isUndetected)
+            }
+            Write-Output 'The installed Agent Management discovered Qoder CLI in the newly saved directory.'
+        } finally {
+            if ($null -eq $original) { $environment.DeleteValue('Path', $false) }
+            else { $environment.SetValue('Path', $original, $originalKind) }
+        }
+
+        & $refreshPrograms
+        $null = Wait-IslandValue 'Qoder CLI missing after restoring the saved PATH' {
+            (& $isUndetected) -and -not (Test-PackVisibleText $settings $executable)
+        }
+        if ($settings.Current.ProcessId -ne $processId -or -not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw 'The PATH discovery fixture must use the same process and executable throughout'
+        }
+        Write-Output 'Restoring the saved PATH hid the same Qoder CLI executable without restarting AgentBro.'
+    } finally {
+        $environment.Dispose()
         Remove-Item -LiteralPath $directory -Recurse -ErrorAction SilentlyContinue
     }
 }

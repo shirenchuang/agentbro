@@ -37,7 +37,7 @@ use hooks::conversation_parser::{
 };
 use hooks::file_watcher::ConversationWatcher;
 use hooks::server::HookServer;
-use hooks::session_store::{SessionState, SessionStore};
+use hooks::session_store::{PendingQuestion, SessionState, SessionStore};
 use network_monitor::NetworkMonitor;
 use platform::display::{find_target_monitor, list_displays_inner, DisplayInfo};
 use sound::{SoundEngine, SoundEvent, SoundPack, SoundPackImportResult};
@@ -2113,23 +2113,156 @@ fn position_skill_pack_picker(window: &tauri::WebviewWindow) {
 }
 
 fn first_pending_permission(store: &SessionStore) -> Option<SessionState> {
-    let mut sessions: Vec<_> = store
+    store
         .get_all_sessions()
         .into_iter()
         .filter(|session| session.pending_permission.is_some())
-        .collect();
-    sessions.sort_by_key(|session| session.started_at);
-    sessions.into_iter().next()
+        .min_by_key(|session| {
+            (
+                session.pending_permission_order.unwrap_or(usize::MAX),
+                session.started_at,
+            )
+        })
 }
 
 fn first_pending_question(store: &SessionStore) -> Option<SessionState> {
-    let mut sessions: Vec<_> = store
+    store
         .get_all_sessions()
         .into_iter()
         .filter(|session| session.pending_question.is_some())
-        .collect();
-    sessions.sort_by_key(|session| session.started_at);
-    sessions.into_iter().next()
+        .min_by_key(|session| {
+            (
+                session.pending_question_order.unwrap_or(usize::MAX),
+                session.started_at,
+            )
+        })
+}
+
+#[cfg(test)]
+mod global_shortcut_tests {
+    use super::{
+        first_pending_permission, first_pending_question, question_shortcut_option, SessionStore,
+    };
+    use crate::hooks::session_store::{
+        PendingPermission, PendingQuestion, QuestionItem, QuestionOption,
+    };
+
+    fn sessions() -> SessionStore {
+        let store = SessionStore::new();
+        for (id, started_at) in [("older-session", 1), ("newer-session", 2)] {
+            store.get_or_create_session(id, "claude-code", "fixture", "/fixture", "Terminal");
+            store.update_session(id, |session| session.started_at = started_at);
+        }
+        store
+    }
+
+    fn permission(id: &str) -> Option<PendingPermission> {
+        Some(PendingPermission {
+            tool_use_id: Some(id.to_string()),
+            tool_name: "Read".to_string(),
+            tool_input: String::new(),
+            diff: None,
+            options: None,
+        })
+    }
+
+    fn question(id: &str) -> Option<PendingQuestion> {
+        Some(PendingQuestion {
+            tool_use_id: Some(id.to_string()),
+            question: "Continue?".to_string(),
+            options: vec!["Continue".to_string()],
+            descriptions: Vec::new(),
+            header: None,
+            multi_select: false,
+            questions: Vec::new(),
+            source: None,
+            response_mode: None,
+        })
+    }
+
+    #[test]
+    fn permission_shortcuts_follow_request_arrival_and_replacement() {
+        let store = sessions();
+        store.set_pending_permission("newer-session", permission("first"));
+        store.set_pending_permission("older-session", permission("second"));
+        store.set_pending_permission("newer-session", permission("first"));
+        assert_eq!(
+            first_pending_permission(&store).unwrap().id,
+            "newer-session"
+        );
+
+        store.update_session("newer-session", |session| {
+            session.set_pending_permission(permission("replacement"));
+        });
+        store.clear_matching_permission("newer-session", Some("first"));
+        assert_eq!(
+            first_pending_permission(&store).unwrap().id,
+            "older-session"
+        );
+        store.clear_matching_permission("older-session", Some("second"));
+        assert_eq!(
+            first_pending_permission(&store)
+                .unwrap()
+                .pending_permission
+                .unwrap()
+                .tool_use_id
+                .as_deref(),
+            Some("replacement")
+        );
+    }
+
+    #[test]
+    fn question_shortcuts_follow_request_arrival_and_replacement() {
+        let store = sessions();
+        store.set_pending_question("newer-session", question("first"));
+        store.set_pending_question("older-session", question("second"));
+        store.set_pending_question("newer-session", question("first"));
+        assert_eq!(first_pending_question(&store).unwrap().id, "newer-session");
+
+        store.update_session("newer-session", |session| {
+            session.set_pending_question(question("replacement"));
+        });
+        assert_eq!(first_pending_question(&store).unwrap().id, "older-session");
+        store.clear_matching_question("older-session", Some("second"));
+        assert_eq!(first_pending_question(&store).unwrap().id, "newer-session");
+        store.clear_matching_question("newer-session", Some("replacement"));
+        assert!(first_pending_question(&store).is_none());
+    }
+
+    #[test]
+    fn global_question_shortcut_only_answers_single_choice_with_options() {
+        let mut prompt = question("shortcut").unwrap();
+        prompt.options.insert(0, "  ".to_string());
+        assert_eq!(question_shortcut_option(&prompt), Some("Continue"));
+
+        prompt.multi_select = true;
+        assert!(question_shortcut_option(&prompt).is_none());
+        prompt.multi_select = false;
+
+        let item = QuestionItem {
+            id: Some("continue".to_string()),
+            question: prompt.question.clone(),
+            header: None,
+            options: vec![QuestionOption {
+                label: "Continue".to_string(),
+                description: None,
+            }],
+            multi_select: false,
+        };
+        prompt.questions = vec![item.clone(), item.clone()];
+        assert!(question_shortcut_option(&prompt).is_none());
+        prompt.questions = vec![item];
+        assert_eq!(question_shortcut_option(&prompt), Some("Continue"));
+        prompt.questions[0].multi_select = true;
+        assert!(question_shortcut_option(&prompt).is_none());
+        prompt.questions[0].multi_select = false;
+        prompt.questions[0].options.clear();
+        assert!(question_shortcut_option(&prompt).is_none());
+
+        prompt.questions.clear();
+        prompt.options.clear();
+        assert!(question_shortcut_option(&prompt).is_none());
+    }
 }
 
 fn handle_permission_shortcut(app: tauri::AppHandle, allowed: bool) {
@@ -2162,6 +2295,22 @@ fn handle_permission_shortcut(app: tauri::AppHandle, allowed: bool) {
     });
 }
 
+fn question_shortcut_option(question: &PendingQuestion) -> Option<&str> {
+    if question.multi_select || question.questions.len() > 1 {
+        return None;
+    }
+    let option = question
+        .options
+        .iter()
+        .find(|option| !option.trim().is_empty())?;
+    if question.questions.first().is_some_and(|item| {
+        item.multi_select || !item.options.iter().any(|choice| choice.label == *option)
+    }) {
+        return None;
+    }
+    Some(option)
+}
+
 fn handle_question_skip_shortcut(app: tauri::AppHandle) {
     let state = app.state::<AppState>();
     let Some(session) = first_pending_question(&state.session_store) else {
@@ -2171,7 +2320,10 @@ fn handle_question_skip_shortcut(app: tauri::AppHandle) {
     let Some(question) = session.pending_question else {
         return;
     };
-    let answer = question.options.first().cloned().unwrap_or_default();
+    let Some(answer) = question_shortcut_option(&question).map(str::to_owned) else {
+        show_notch_window(&app);
+        return;
+    };
 
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
@@ -2200,16 +2352,17 @@ fn register_one_global_shortcut<F>(
 where
     F: Fn(tauri::AppHandle) + Send + Sync + 'static,
 {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
     let accelerator = accelerator.trim();
     if accelerator.is_empty() {
         return Ok(());
     }
-    let app_handle = app.clone();
     app.global_shortcut()
-        .on_shortcut(accelerator, move |_app, _shortcut, _event| {
-            action(app_handle.clone());
+        .on_shortcut(accelerator, move |app, _shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                action(app.clone());
+            }
         })
         .map_err(|err| format!("Failed to register global shortcut {accelerator}: {err}"))
 }

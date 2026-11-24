@@ -1823,7 +1823,7 @@ function ShortcutsTab() {
         </SettingRow>
         <SettingRow
           label={t('settings.shortcutSkip', { defaultValue: 'Skip current question' })}
-          description={t('settings.shortcutSkipDesc', { defaultValue: 'Selects the first answer for the oldest pending question' })}
+          description={t('settings.shortcutSkipDesc', { defaultValue: 'Chooses the first option if the oldest pending question is single-choice. Other questions open in the Island.' })}
         >
           <div className="shortcut-global-control">
             <Toggle checked={config.shortcutSkipEnabled} onChange={(v) => setShortcutEnabled('shortcutSkipEnabled', v)} />

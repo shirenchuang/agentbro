@@ -5,6 +5,9 @@ use crate::agents::profiles::{self, HookEntryTemplate};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub(super) const REMOTE_RUNNER_COMMAND: &str = "\"${SHELL:-/bin/bash}\" -lc 'python3 -'";
+pub(super) const REMOTE_HOOK_SETTINGS: &str = include_str!("hook_settings.py");
+
 pub struct InstallResult {
     pub ok: bool,
     pub message: String,
@@ -276,12 +279,7 @@ impl RemoteInstaller {
         profile: &profiles::AgentIntegrationProfile,
     ) -> Result<RemoteAgentHookStatus, String> {
         let script = hook_status_script(profile);
-        let encoded = base64_encode(script.as_bytes());
-        let cmd = format!(
-            "\"${{SHELL:-/bin/bash}}\" -lc \"echo '{}' | base64 -d | python3\"",
-            encoded
-        );
-        let result = run_ssh(host, &cmd, 15).await;
+        let result = run_ssh_with_input(host, REMOTE_RUNNER_COMMAND, script.into_bytes(), 15).await;
         parse_hook_status(result)
     }
 
@@ -365,12 +363,7 @@ print(target)
         profile: &profiles::AgentIntegrationProfile,
     ) -> InstallResult {
         let script = hook_install_script(host, profile);
-        let encoded = base64_encode(script.as_bytes());
-        let cmd = format!(
-            "\"${{SHELL:-/bin/bash}}\" -lc \"echo '{}' | base64 -d | python3\"",
-            encoded
-        );
-        let result = run_ssh(host, &cmd, 30).await;
+        let result = run_ssh_with_input(host, REMOTE_RUNNER_COMMAND, script.into_bytes(), 30).await;
 
         if result.exit_code == 0 {
             InstallResult {
@@ -393,12 +386,7 @@ print(target)
         profile: &profiles::AgentIntegrationProfile,
     ) -> InstallResult {
         let script = hook_remove_script(profile);
-        let encoded = base64_encode(script.as_bytes());
-        let cmd = format!(
-            "\"${{SHELL:-/bin/bash}}\" -lc \"echo '{}' | base64 -d | python3\"",
-            encoded
-        );
-        let result = run_ssh(host, &cmd, 30).await;
+        let result = run_ssh_with_input(host, REMOTE_RUNNER_COMMAND, script.into_bytes(), 30).await;
 
         if result.exit_code == 0 {
             InstallResult {
@@ -841,8 +829,8 @@ struct RemoteHookEventSpec {
     timeout: Option<u64>,
 }
 
-fn remote_event_specs_json(profile: &profiles::AgentIntegrationProfile) -> String {
-    let specs = profiles::effective_event_descriptors(profile)
+fn remote_event_specs(profile: &profiles::AgentIntegrationProfile) -> Vec<RemoteHookEventSpec> {
+    profiles::effective_event_descriptors(profile)
         .iter()
         .map(|event| RemoteHookEventSpec {
             name: event.name,
@@ -852,58 +840,22 @@ fn remote_event_specs_json(profile: &profiles::AgentIntegrationProfile) -> Strin
             },
             timeout: event.timeout,
         })
-        .collect::<Vec<_>>();
-    serde_json::to_string(&specs).unwrap_or_else(|_| "[]".to_string())
+        .collect()
 }
 
-fn profile_config_path_parts_json(profile: &profiles::AgentIntegrationProfile) -> String {
-    let parts = profile
-        .configuration_path
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    serde_json::to_string(&parts).unwrap_or_else(|_| "[]".to_string())
-}
-
-fn json_string(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+fn render_hook_settings(
+    profile: &profiles::AgentIntegrationProfile,
+    mut request: serde_json::Value,
+) -> String {
+    request["profileId"] = profile.id.into();
+    request["source"] = profile.source.into();
+    request["configPath"] = profile.configuration_path.into();
+    let payload = base64_encode(request.to_string().as_bytes());
+    format!("{REMOTE_HOOK_SETTINGS}\nrun_hook_settings(\"{payload}\")\n")
 }
 
 fn hook_status_script(profile: &profiles::AgentIntegrationProfile) -> String {
-    let config_path_parts_json = profile_config_path_parts_json(profile);
-
-    format!(
-        r#"
-import json, pathlib
-home = pathlib.Path.home()
-config_path = home
-for part in json.loads(r'''{config_path_parts_json}'''):
-    config_path = config_path / part
-hook_script = home / ".agentbro" / "remote" / "hook.py"
-
-def status():
-    try:
-        data = json.loads(config_path.read_text() or "{{}}")
-    except FileNotFoundError:
-        return "notInstalled"
-    except ValueError:
-        return "settingsCorrupted"
-    if not isinstance(data, dict) or not isinstance(data.get("hooks", {{}}), dict):
-        return "settingsCorrupted"
-    found = any(
-        "remote-hook.py" in json.dumps(entry, sort_keys=True) or "remote/hook.py" in json.dumps(entry, sort_keys=True)
-        for entries in data.get("hooks", {{}}).values()
-        if isinstance(entries, list)
-        for entry in entries
-    )
-    if not found:
-        return "notInstalled"
-    return "installed" if hook_script.is_file() else "needsReinstall"
-
-print("agentbro_hook_status=" + json.dumps(status()))
-"#,
-        config_path_parts_json = config_path_parts_json,
-    )
+    render_hook_settings(profile, serde_json::json!({"operation": "status"}))
 }
 
 fn parse_hook_status(result: SshResult) -> Result<RemoteAgentHookStatus, String> {
@@ -928,149 +880,20 @@ fn parse_hook_status(result: SshResult) -> Result<RemoteAgentHookStatus, String>
 }
 
 fn hook_install_script(host: &RemoteHost, profile: &profiles::AgentIntegrationProfile) -> String {
-    let socket = &host.remote_socket_path;
-    let host_id = &host.id;
-    let host_name = &host.name;
-    let source = profile.source;
-    let config_path_parts_json = profile_config_path_parts_json(profile);
-    let event_specs_json = remote_event_specs_json(profile);
-    let socket_json = json_string(socket);
-    let host_id_json = json_string(host_id);
-    let host_name_json = json_string(host_name);
-    let source_json = json_string(source);
-
-    format!(
-        r#"
-import json, pathlib, shlex, sys
-
-home = pathlib.Path.home()
-config_path = home
-for part in json.loads(r'''{config_path_parts_json}'''):
-    config_path = config_path / part
-event_specs = json.loads(r'''{event_specs_json}''')
-socket_path = json.loads(r'''{socket_json}''')
-host_id = json.loads(r'''{host_id_json}''')
-host_name = json.loads(r'''{host_name_json}''')
-source = json.loads(r'''{source_json}''')
-hook_cmd = " ".join([
-    "AGENTBRO_SOCKET=" + shlex.quote(socket_path),
-    "AGENTBRO_HOST_ID=" + shlex.quote(host_id),
-    "AGENTBRO_HOST_NAME=" + shlex.quote(host_name),
-    "AGENTBRO_AGENT=" + shlex.quote(source),
-    "python3 ~/.agentbro/remote/hook.py",
-])
-
-def is_agentbro_entry(value):
-    try:
-        text = json.dumps(value, sort_keys=True)
-    except Exception:
-        text = str(value)
-    return (
-        "remote-hook.py" in text
-        or "remote/hook.py" in text
-        or "agentbro-bridge" in text
-        or "AgentBro managed integration" in text
-    )
-
-try:
-    if config_path.exists():
-        data = json.loads(config_path.read_text() or "{{}}")
-    else:
-        data = {{}}
-    hooks = data.setdefault("hooks", {{}})
-    for event_name, value in list(hooks.items()):
-        if not isinstance(value, list):
-            continue
-        filtered = [entry for entry in value if not is_agentbro_entry(entry)]
-        if filtered:
-            hooks[event_name] = filtered
-        else:
-            hooks.pop(event_name, None)
-
-    for event in event_specs:
-        inner = {{"type": "command", "command": hook_cmd}}
-        if event.get("timeout") is not None:
-            inner["timeout"] = event["timeout"]
-        entry = {{"hooks": [inner]}}
-        if event.get("matcher") is not None:
-            entry["matcher"] = event["matcher"]
-        hooks.setdefault(event["name"], []).append(entry)
-
-    if hooks:
-        data["hooks"] = hooks
-    else:
-        data.pop("hooks", None)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(data, indent=2))
-    print(f"{{source}} hooks configured: {{len(event_specs)}} events")
-except Exception as e:
-    print(f"{{source}} config error: {{e}}", file=sys.stderr)
-    raise SystemExit(1)
-"#,
-        config_path_parts_json = config_path_parts_json,
-        event_specs_json = event_specs_json,
-        socket_json = socket_json,
-        host_id_json = host_id_json,
-        host_name_json = host_name_json,
-        source_json = source_json,
+    render_hook_settings(
+        profile,
+        serde_json::json!({
+            "operation": "install",
+            "socketPath": host.remote_socket_path,
+            "hostId": host.id,
+            "hostName": host.name,
+            "events": remote_event_specs(profile),
+        }),
     )
 }
 
 fn hook_remove_script(profile: &profiles::AgentIntegrationProfile) -> String {
-    let source = profile.source;
-    let config_path_parts_json = profile_config_path_parts_json(profile);
-    let source_json = json_string(source);
-
-    format!(
-        r#"
-import json, pathlib, sys
-
-home = pathlib.Path.home()
-config_path = home
-for part in json.loads(r'''{config_path_parts_json}'''):
-    config_path = config_path / part
-source = json.loads(r'''{source_json}''')
-
-def is_agentbro_entry(value):
-    try:
-        text = json.dumps(value, sort_keys=True)
-    except Exception:
-        text = str(value)
-    return (
-        "remote-hook.py" in text
-        or "remote/hook.py" in text
-        or "agentbro-bridge" in text
-        or "AgentBro managed integration" in text
-    )
-
-try:
-    removed = 0
-    if config_path.exists():
-        data = json.loads(config_path.read_text() or "{{}}")
-        hooks = data.get("hooks")
-        if isinstance(hooks, dict):
-            for event_name, value in list(hooks.items()):
-                if not isinstance(value, list):
-                    continue
-                filtered = [entry for entry in value if not is_agentbro_entry(entry)]
-                removed += len(value) - len(filtered)
-                if filtered:
-                    hooks[event_name] = filtered
-                else:
-                    hooks.pop(event_name, None)
-            if hooks:
-                data["hooks"] = hooks
-            else:
-                data.pop("hooks", None)
-            config_path.write_text(json.dumps(data, indent=2))
-    print(f"{{source}} hooks removed: {{removed}}")
-except Exception as e:
-    print(f"{{source}} uninstall error: {{e}}", file=sys.stderr)
-    raise SystemExit(1)
-"#,
-        config_path_parts_json = config_path_parts_json,
-        source_json = source_json,
-    )
+    render_hook_settings(profile, serde_json::json!({"operation": "remove"}))
 }
 
 fn remote_agent_control_socket_path(host: &RemoteHost) -> String {
@@ -2095,12 +1918,24 @@ mod tests {
         }
 
         fn run(&self, script: &str) -> std::process::Output {
-            std::process::Command::new("python3")
+            self.run_with_claude_config(script, None)
+        }
+
+        fn run_with_claude_config(
+            &self,
+            script: &str,
+            config: Option<&str>,
+        ) -> std::process::Output {
+            let mut command = std::process::Command::new("python3");
+            command
                 .args(["-c", "import pathlib, sys; pathlib.Path.home = lambda: pathlib.Path(sys.argv[1]); exec(sys.argv[2])"])
                 .arg(&self.0)
                 .arg(script)
-                .output()
-                .unwrap()
+                .env_remove("CLAUDE_CONFIG_DIR");
+            if let Some(config) = config {
+                command.env("CLAUDE_CONFIG_DIR", config);
+            }
+            command.output().unwrap()
         }
     }
 
@@ -2141,6 +1976,105 @@ mod tests {
         let codex_config =
             std::fs::read_to_string(fixture.0.join(codex.configuration_path)).unwrap();
         assert!(codex_config.contains("remote/hook.py"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssh_claude_hooks_use_the_active_profile_and_preserve_user_commands() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let fixture = HookTestHome::new();
+        let profile = profiles::claude_code_profile();
+        let custom = "profiles/Claude integration/settings.json";
+        let custom_path = fixture.0.join(custom);
+        let default_path = fixture.0.join(profile.configuration_path);
+        let run = |script: String| {
+            let output =
+                fixture.run_with_claude_config(&script, Some("~/profiles/Claude integration"));
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let read = || {
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&custom_path).unwrap())
+                .unwrap()
+        };
+        let bridge = ".agentbro/remote/hook.py";
+        let old_command = "AGENT_ISLAND_HOST_ID=legacy python3 ~/.agent-island/remote-hook.py";
+        let user_settings = serde_json::json!({
+            "permissions": {"allow": ["Read"]},
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Read",
+                    "sequential": true,
+                    "hooks": [
+                        {"type": "command", "command": "echo ~/.agentbro/remote/hook.py", "timeout": 12},
+                        {"type": "prompt", "prompt": "Review remote-hook.py changes"}
+                    ]
+                }]
+            }
+        });
+        fixture.write(bridge, "# shared bridge");
+        fixture.write(
+            profile.configuration_path,
+            &serde_json::json!({"hooks": {"Stop": [{"hooks": [{
+                "type": "command", "command": old_command
+            }]}]}})
+            .to_string(),
+        );
+        let default_bytes = std::fs::read(&default_path).unwrap();
+        let settings_file = "profiles/active-settings.json";
+        let settings_path = fixture.0.join(settings_file);
+        fixture.write(settings_file, &user_settings.to_string());
+        std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::create_dir(custom_path.parent().unwrap()).unwrap();
+        symlink(&settings_path, &custom_path).unwrap();
+        let status = || run(hook_status_script(&profile));
+        assert!(status().contains("\"notInstalled\""));
+        assert!(
+            String::from_utf8_lossy(&fixture.run(&hook_status_script(&profile)).stdout)
+                .contains("\"installed\"")
+        );
+
+        let mut prior = user_settings.clone();
+        prior["hooks"]["PreToolUse"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .insert(
+                1,
+                serde_json::json!({"type": "command", "command": old_command}),
+            );
+        fixture.write(custom, &prior.to_string());
+        assert!(status().contains("\"installed\""));
+
+        run(hook_install_script(&host(), &profile));
+        let installed = read();
+        assert_eq!(
+            installed["hooks"]["PreToolUse"][0],
+            user_settings["hooks"]["PreToolUse"][0]
+        );
+        assert_eq!(installed["permissions"], user_settings["permissions"]);
+        assert!(!installed.to_string().contains("AGENT_ISLAND_HOST_ID"));
+        assert!(status().contains("\"installed\""));
+        run(hook_install_script(&host(), &profile));
+        assert_eq!(read(), installed);
+        assert_eq!(std::fs::read(&default_path).unwrap(), default_bytes);
+
+        run(hook_remove_script(&profile));
+        assert_eq!(read(), user_settings);
+        assert!(status().contains("\"notInstalled\""));
+        assert!(custom_path.symlink_metadata().unwrap().is_symlink());
+        assert_eq!(
+            settings_path.metadata().unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        let before_noop = std::fs::read(&custom_path).unwrap();
+        run(hook_remove_script(&profile));
+        assert_eq!(std::fs::read(&custom_path).unwrap(), before_noop);
+        assert_eq!(std::fs::read(&default_path).unwrap(), default_bytes);
     }
 
     #[cfg(unix)]

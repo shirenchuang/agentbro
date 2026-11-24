@@ -434,14 +434,8 @@ pub fn interactive_login_shell_vars(vars: &[&str]) -> Vec<(String, String)> {
     if vars.is_empty() {
         return Vec::new();
     }
-    let shell = user_shell();
-    let output = match crate::platform::process::background_command(&shell)
-        .args(["-lic", "env"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        Ok(output) if output.status.success() => output,
+    let output = match interactive_login_shell_output(user_shell()) {
+        Some(output) if output.status.success() => output,
         _ => return Vec::new(),
     };
     let output = String::from_utf8_lossy(&output.stdout);
@@ -454,6 +448,55 @@ pub fn interactive_login_shell_vars(vars: &[&str]) -> Vec<(String, String)> {
             })
         })
         .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn interactive_login_shell_output(shell: String) -> Option<std::process::Output> {
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    // Agent inventory can call this from inside the app's Tokio runtime.
+    std::thread::Builder::new()
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?
+                .block_on(async {
+                    let child = crate::platform::process::background_tokio_command(shell)
+                        .args(["-lic", "env"])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .process_group(0)
+                        .kill_on_drop(true)
+                        .spawn()
+                        .ok()?;
+                    let group = child.id()? as libc::pid_t;
+                    let output = child.wait_with_output();
+                    tokio::pin!(output);
+                    match tokio::time::timeout(Duration::from_secs(3), &mut output).await {
+                        Ok(result) => result.ok(),
+                        Err(_) => {
+                            unsafe { libc::killpg(group, libc::SIGKILL) };
+                            None
+                        }
+                    }
+                })
+        })
+        .ok()?
+        .join()
+        .ok()?
+}
+
+#[cfg(not(target_os = "macos"))]
+fn interactive_login_shell_output(shell: String) -> Option<std::process::Output> {
+    crate::platform::process::background_command(shell)
+        .args(["-lic", "env"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
 }
 
 fn shell_var(var: &str, interactive: bool) -> Option<String> {
@@ -580,11 +623,23 @@ fn candidate_dirs_with_path(inherited: Option<OsString>) -> Vec<PathBuf> {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    let saved_path = crate::platform::windows_environment::saved_path();
+    #[cfg(target_os = "windows")]
+    let saved_dirs = saved_path
+        .as_deref()
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .filter(|dir| dir.is_absolute());
+    #[cfg(not(target_os = "windows"))]
+    let saved_dirs = std::iter::empty();
+
     let mut seen = BTreeSet::new();
     inherited
         .as_deref()
         .into_iter()
         .flat_map(std::env::split_paths)
+        .chain(saved_dirs)
         .chain(dirs)
         .filter(|dir| seen.insert(dir.clone()))
         .collect()

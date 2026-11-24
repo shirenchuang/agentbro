@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
+static NEXT_PENDING_REQUEST_ORDER: AtomicUsize = AtomicUsize::new(0);
+
 /// Session phase — mirrors frontend SessionPhase type
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -315,7 +317,11 @@ pub struct SessionState {
     pub last_main_agent_at: Option<i64>,
     pub cache_ttl_ms: Option<i64>,
     pub pending_permission: Option<PendingPermission>,
+    #[serde(skip)]
+    pub(crate) pending_permission_order: Option<usize>,
     pub pending_question: Option<PendingQuestion>,
+    #[serde(skip)]
+    pub(crate) pending_question_order: Option<usize>,
     pub pending_plan: Option<PendingPlan>,
     pub last_tool_name: Option<String>,
     pub last_tool_target: Option<String>,
@@ -372,7 +378,9 @@ impl SessionState {
             last_main_agent_at: None,
             cache_ttl_ms: None,
             pending_permission: None,
+            pending_permission_order: None,
             pending_question: None,
+            pending_question_order: None,
             pending_plan: None,
             last_tool_name: None,
             last_tool_target: None,
@@ -410,15 +418,51 @@ impl SessionState {
     pub fn has_unfinished_tasks(&self) -> bool {
         self.tasks.iter().any(|task| task.status != "completed")
     }
+
+    pub(crate) fn set_pending_permission(&mut self, permission: Option<PendingPermission>) {
+        self.pending_permission_order = permission.as_ref().map(|request| {
+            pending_request_order(
+                self.pending_permission_order,
+                self.pending_permission
+                    .as_ref()
+                    .and_then(|previous| previous.tool_use_id.as_deref()),
+                request.tool_use_id.as_deref(),
+            )
+        });
+        self.pending_permission = permission;
+    }
+
+    pub(crate) fn set_pending_question(&mut self, question: Option<PendingQuestion>) {
+        self.pending_question_order = question.as_ref().map(|request| {
+            pending_request_order(
+                self.pending_question_order,
+                self.pending_question
+                    .as_ref()
+                    .and_then(|previous| previous.tool_use_id.as_deref()),
+                request.tool_use_id.as_deref(),
+            )
+        });
+        self.pending_question = question;
+    }
+}
+
+fn pending_request_order(
+    previous_order: Option<usize>,
+    previous_id: Option<&str>,
+    incoming_id: Option<&str>,
+) -> usize {
+    previous_order
+        .filter(|_| incoming_id.is_some() && incoming_id == previous_id)
+        .unwrap_or_else(|| NEXT_PENDING_REQUEST_ORDER.fetch_add(1, Ordering::Relaxed))
 }
 
 fn reconcile_pending_for_phase(session: &mut SessionState) {
     match &session.phase {
         SessionPhase::WaitingApproval => {
-            session.pending_question = None;
+            session.set_pending_question(None);
         }
         SessionPhase::WaitingInput => {
-            session.pending_permission = None;
+            session.set_pending_permission(None);
             session.pending_plan = None;
         }
         _ => {
@@ -427,7 +471,7 @@ fn reconcile_pending_for_phase(session: &mut SessionState) {
             // until the user responds. Clearing here would dismiss the approval UI
             // when a Processing event (e.g. AfterAgent) arrives concurrently.
             if session.pending_permission.is_none() {
-                session.pending_question = None;
+                session.set_pending_question(None);
                 session.pending_plan = None;
             }
         }
@@ -567,7 +611,7 @@ impl SessionStore {
     /// Set pending permission on a session
     pub fn set_pending_permission(&self, session_id: &str, permission: Option<PendingPermission>) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
-            session.pending_permission = permission;
+            session.set_pending_permission(permission);
             if session.pending_permission.is_some() {
                 session.phase = SessionPhase::WaitingApproval;
             }
@@ -584,7 +628,7 @@ impl SessionStore {
             if permission.tool_use_id.as_deref() != tool_use_id {
                 return;
             }
-            session.pending_permission = None;
+            session.set_pending_permission(None);
             if session.phase == SessionPhase::WaitingApproval && session.pending_plan.is_none() {
                 session.phase = SessionPhase::Processing;
             }
@@ -596,7 +640,7 @@ impl SessionStore {
     /// Set pending question on a session
     pub fn set_pending_question(&self, session_id: &str, question: Option<PendingQuestion>) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
-            session.pending_question = question;
+            session.set_pending_question(question);
             if session.pending_question.is_some() {
                 session.phase = SessionPhase::WaitingInput;
             }
@@ -613,7 +657,7 @@ impl SessionStore {
             if question.tool_use_id.as_deref() != tool_use_id {
                 return;
             }
-            session.pending_question = None;
+            session.set_pending_question(None);
             if session.phase == SessionPhase::WaitingInput {
                 session.phase =
                     if session.pending_permission.is_some() || session.pending_plan.is_some() {
@@ -967,8 +1011,8 @@ impl SessionStore {
                 session.phase = SessionPhase::Done;
                 session.description = Some("Session ended".to_string());
                 session.last_response = Some("Session ended".to_string());
-                session.pending_permission = None;
-                session.pending_question = None;
+                session.set_pending_permission(None);
+                session.set_pending_question(None);
                 session.pending_plan = None;
                 session.update_duration();
             }
