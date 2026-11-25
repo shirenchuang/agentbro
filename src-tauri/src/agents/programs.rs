@@ -144,6 +144,22 @@ impl ProgramMetadata {
         }
         npm_installation(launcher?, self.package_name?)
     }
+
+    fn reviewed_npm_installation(
+        &self,
+        launcher: Option<&Path>,
+        expected_binary_path: Option<&str>,
+    ) -> Result<Option<NpmInstallation>, String> {
+        let installation = self.npm_installation(launcher);
+        if expected_binary_path.is_some_and(|expected| {
+            !installation
+                .as_ref()
+                .is_some_and(|selected| selected.launcher == Path::new(expected))
+        }) {
+            return Err("The selected npm Agent launcher changed. Refresh Agent Management and review the installation again.".to_string());
+        }
+        Ok(installation)
+    }
 }
 
 #[derive(Clone)]
@@ -197,7 +213,7 @@ pub async fn agent_install(
     state: State<'_, AppState>,
     agent_id: String,
 ) -> Result<(), String> {
-    run_agent_command(app, &state.adapters, &agent_id, "install")
+    run_agent_command(app, &state.adapters, &agent_id, "install", None)
         .await
         .map(|_| ())
 }
@@ -207,13 +223,20 @@ pub async fn agent_update(
     app: AppHandle,
     state: State<'_, AppState>,
     agent_id: String,
+    expected_binary_path: Option<String>,
 ) -> Result<AgentUpdateOutcome, String> {
-    run_agent_command(app, &state.adapters, &agent_id, "update")
-        .await
-        .map(|outcome| match outcome {
-            PackageOperationOutcome::Completed(_) => AgentUpdateOutcome::Completed,
-            PackageOperationOutcome::NoNewerVersion => AgentUpdateOutcome::NoNewerVersion,
-        })
+    run_agent_command(
+        app,
+        &state.adapters,
+        &agent_id,
+        "update",
+        expected_binary_path.as_deref(),
+    )
+    .await
+    .map(|outcome| match outcome {
+        PackageOperationOutcome::Completed(_) => AgentUpdateOutcome::Completed,
+        PackageOperationOutcome::NoNewerVersion => AgentUpdateOutcome::NoNewerVersion,
+    })
 }
 
 #[tauri::command]
@@ -221,10 +244,17 @@ pub async fn agent_uninstall(
     app: AppHandle,
     state: State<'_, AppState>,
     agent_id: String,
+    expected_binary_path: Option<String>,
 ) -> Result<(), String> {
-    run_agent_command(app, &state.adapters, &agent_id, "uninstall")
-        .await
-        .map(|_| ())
+    run_agent_command(
+        app,
+        &state.adapters,
+        &agent_id,
+        "uninstall",
+        expected_binary_path.as_deref(),
+    )
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -566,7 +596,11 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         package_name: meta.package_name.map(ToString::to_string),
         installed_version,
         latest_version,
-        binary_path: binary_path.map(|path| path.display().to_string()),
+        binary_path: npm
+            .as_ref()
+            .map(|npm| &npm.launcher)
+            .or(binary_path.as_ref())
+            .map(|path| path.display().to_string()),
         config_dir,
         app_path: display_app_path,
         download_url: meta.download_url.map(ToString::to_string),
@@ -800,9 +834,6 @@ async fn npm_update_command_line(
         .ok_or_else(|| format!("No npm package configured for {agent_id}"))?;
     let installed = parse_semver(&installation.version)
         .ok_or_else(|| format!("Could not verify the installed npm version for {package}"))?;
-    let prefix = installation.prefix.canonicalize().map_err(|error| {
-        format!("Could not resolve the detected npm installation for {agent_id}: {error}")
-    })?;
     let npm = executable::command_path("npm");
     let path = executable::augmented_path_env();
     let latest = npm_latest_version(
@@ -812,16 +843,7 @@ async fn npm_update_command_line(
     )
     .await?;
     let current_binary = find_agent_binary(agent_id, meta);
-    if !meta
-        .npm_installation(current_binary.as_deref())
-        .is_some_and(|current| {
-            current.version == installation.version
-                && current
-                    .prefix
-                    .canonicalize()
-                    .is_ok_and(|current_prefix| current_prefix == prefix)
-        })
-    {
+    if meta.npm_installation(current_binary.as_deref()).as_ref() != Some(installation) {
         return Err("The npm Agent installation changed while checking for updates. Refresh Agent Management and try again.".to_string());
     }
     Ok(latest
@@ -896,6 +918,7 @@ async fn run_agent_command(
     _adapters: &[std::sync::Arc<dyn AgentAdapter>],
     agent_id: &str,
     operation: &str,
+    expected_binary_path: Option<&str>,
 ) -> Result<PackageOperationOutcome, String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let _package_operation = claim_agent_package_operation()?;
@@ -914,6 +937,7 @@ async fn run_agent_command(
         operation,
         &meta,
         installed_binary.as_deref(),
+        expected_binary_path,
     )
     .await;
     let (stream, message) = match &result {
@@ -939,7 +963,9 @@ async fn execute_package_operation(
     operation: &str,
     meta: &ProgramMetadata,
     installed_binary: Option<&Path>,
+    expected_binary_path: Option<&str>,
 ) -> Result<PackageOperationOutcome, String> {
+    let npm = meta.reviewed_npm_installation(installed_binary, expected_binary_path)?;
     if operation == "uninstall"
         && !program_is_installed_for_agent(
             agent_id,
@@ -978,17 +1004,14 @@ async fn execute_package_operation(
         }
         .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
         .to_string();
-        let npm = if meta.package_manager == Some("npm")
+        if npm.is_none()
+            && meta.package_manager == Some("npm")
             && (installed_binary.is_some() || operation != "install")
         {
-            Some(meta.npm_installation(installed_binary).ok_or_else(|| {
-                format!(
-                    "Could not locate the npm installation for the detected {agent_id} launcher"
-                )
-            })?)
-        } else {
-            None
-        };
+            return Err(format!(
+                "Could not locate the npm installation for the detected {agent_id} launcher"
+            ));
+        }
         if let Some(installation) = &npm {
             emit_output(
                 app,
@@ -2905,7 +2928,7 @@ esac
         .unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .current_dir(&home)
-            .env(CHILD_PROBE, &prefix)
+            .env(CHILD_PROBE, prefix.canonicalize().unwrap())
             .env("npm_config_prefix", home.join("default prefix"))
             .env("HOME", &home)
             .env("SHELL", "/bin/sh")

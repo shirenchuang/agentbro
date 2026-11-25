@@ -2,30 +2,43 @@ use super::RuntimePlatform;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+#[derive(PartialEq, Eq)]
 pub(super) struct NpmInstallation {
     pub prefix: PathBuf,
+    pub launcher: PathBuf,
     pub version: String,
 }
 
 pub(super) fn npm_installation(launcher: &Path, package: &str) -> Option<NpmInstallation> {
     let directory = launcher.parent()?;
     let windows = RuntimePlatform::current() == RuntimePlatform::Windows;
-    let (prefix, modules, command) = if windows {
+    let prefix = if windows {
         if !launcher.extension()?.eq_ignore_ascii_case("cmd") {
             return None;
         }
-        (
-            directory,
-            directory.join("node_modules"),
-            launcher.file_stem()?.to_str()?,
-        )
+        directory
     } else {
         if directory.file_name()? != "bin" {
             return None;
         }
-        let prefix = directory.parent()?;
+        directory.parent()?
+    };
+    let relative_launcher = launcher.strip_prefix(prefix).ok()?;
+    let prefix = fs::canonicalize(if prefix.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        prefix
+    })
+    .ok()?;
+    #[cfg(windows)]
+    let prefix = crate::platform::windows_shell::ordinary_path(&prefix)
+        .filter(|path| path.canonicalize().is_ok_and(|physical| physical == prefix))
+        .unwrap_or(prefix);
+    let launcher = prefix.join(relative_launcher);
+    let (modules, command) = if windows {
+        (prefix.join("node_modules"), launcher.file_stem()?.to_str()?)
+    } else {
         (
-            prefix,
             prefix.join("lib/node_modules"),
             launcher.file_name()?.to_str()?,
         )
@@ -66,8 +79,8 @@ pub(super) fn npm_installation(launcher: &Path, package: &str) -> Option<NpmInst
         return None;
     }
     let matches = if windows {
-        let relative = target.strip_prefix(directory).ok()?;
-        let script = fs::read_to_string(launcher).ok()?;
+        let relative = target.strip_prefix(&prefix).ok()?;
+        let script = fs::read_to_string(&launcher).ok()?;
         windows_shim_matches_entry(&script, relative)
     } else {
         launcher.canonicalize().ok()? == target.canonicalize().ok()?
@@ -80,7 +93,8 @@ pub(super) fn npm_installation(launcher: &Path, package: &str) -> Option<NpmInst
         return None;
     }
     Some(NpmInstallation {
-        prefix: prefix.to_path_buf(),
+        prefix,
+        launcher,
         version: version.to_string(),
     })
 }
@@ -164,12 +178,53 @@ mod tests {
         let selected = install(&first, "1.0.0");
         let other = install(&second, "2.0.0");
         let active = npm_installation(&selected, PACKAGE).unwrap();
-        assert_eq!(active.prefix, first);
+        assert_eq!(
+            active.prefix.canonicalize().unwrap(),
+            first.canonicalize().unwrap()
+        );
+        let bin = if cfg!(windows) {
+            active.prefix.clone()
+        } else {
+            active.prefix.join("bin")
+        };
+        assert_eq!(active.launcher.parent(), Some(bin.as_path()));
         assert_eq!(active.version, "1.0.0");
         assert_eq!(npm_installation(&other, PACKAGE).unwrap().version, "2.0.0");
 
         fs::remove_file(&selected).unwrap();
         fs::write(&selected, "echo separate installation").unwrap();
         assert!(npm_installation(&selected, PACKAGE).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn changing_a_toolchain_symlink_changes_the_detected_npm_prefix() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let first = fixture.path().join("first");
+        let second = fixture.path().join("second");
+        install(&first, "2.0.0");
+        install(&second, "2.0.0");
+        let alias = fixture.path().join("active");
+        let launcher = alias.join("bin/claude");
+
+        symlink(&first, &alias).unwrap();
+        let reviewed = npm_installation(&launcher, PACKAGE).unwrap();
+        let meta = super::super::metadata_for("claude-code").unwrap();
+        let expected = reviewed.launcher.to_str();
+        assert!(meta
+            .reviewed_npm_installation(Some(&launcher), expected)
+            .is_ok());
+        fs::remove_file(&alias).unwrap();
+        symlink(&second, &alias).unwrap();
+        let current = npm_installation(&launcher, PACKAGE).unwrap();
+        assert_eq!(reviewed.version, current.version);
+        assert_ne!(reviewed.prefix, current.prefix);
+        assert_eq!(reviewed.prefix, first.canonicalize().unwrap());
+        assert_eq!(current.prefix, second.canonicalize().unwrap());
+        assert!(meta
+            .reviewed_npm_installation(Some(&launcher), expected)
+            .is_err());
     }
 }

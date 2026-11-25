@@ -51,10 +51,11 @@ node "%dp0%\node_modules\@anthropic-ai\claude-code\cli.js" %*
 '@
     $fixtureLauncherBackup = Join-Path $stage 'claude.cmd.fixture'
     Set-Content -LiteralPath $fixtureLauncherBackup -Value $fixtureLauncherText -Encoding ascii
-    foreach ($prefix in @($fixtureBin, $env:npm_config_prefix)) {
+    $alternatePrefix = Join-Path $stage 'alternate npm prefix'
+    foreach ($prefix in @($fixtureBin, $env:npm_config_prefix, $alternatePrefix)) {
         $package = Join-Path $prefix $packageRelative
         $null = New-Item -ItemType Directory -Path $package -Force
-        $version = if ($prefix -eq $fixtureBin) { '2.0.0' } else { '9.0.0' }
+        $version = if ($prefix -eq $env:npm_config_prefix) { '9.0.0' } else { '2.0.0' }
         "{`"name`":`"@anthropic-ai/claude-code`",`"version`":`"$version`",`"bin`":{`"claude`":`"./cli.js`"}}" |
             Set-Content -LiteralPath (Join-Path $package 'package.json') -Encoding ascii
         Set-Content -LiteralPath (Join-Path $package 'cli.js') -Value 'console.log(require("./package.json").version)' -Encoding ascii
@@ -63,7 +64,9 @@ node "%dp0%\node_modules\@anthropic-ai\claude-code\cli.js" %*
     $fallbackBin = Join-Path $stage 'fallback bin'
     $null = New-Item -ItemType Directory -Path $fallbackBin
     Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\whoami.exe') -Destination (Join-Path $fallbackBin 'claude.exe')
-    $fixtureSearchPath += $fallbackBin
+    $fixtureAlias = Join-Path $stage 'active npm prefix'
+    $null = New-Item -ItemType Junction -Path $fixtureAlias -Target $fixtureBin
+    $fixtureSearchPath = @($fixtureAlias, $fixtureBin, $fallbackBin)
     $fixtureNpm = @'
 @echo off
 if /i "%~1"=="list" (
@@ -85,6 +88,7 @@ if /i "%~1"=="view" (
     exit /b 0
 )
 if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@999.0.0" (
+    >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.mutation" echo install
     if /i not "%npm_config_prefix%"=="%AGENTBRO_PACKAGE_FIXTURE_PREFIX%" exit /b 2
     >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo npm fixture entered the update
     set "agentbro_retry="
@@ -104,6 +108,7 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@999.0.0" (
     exit /b 0
 )
 if "%~1 %~2 %~3"=="uninstall -g @anthropic-ai/claude-code" (
+    >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.mutation" echo uninstall
     if /i not "%npm_config_prefix%"=="%AGENTBRO_PACKAGE_FIXTURE_PREFIX%" exit /b 2
     if not exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall-failed" (
         type nul > "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall-failed"

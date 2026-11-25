@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::ptr::{null, null_mut};
 use windows::core::{HRESULT, PCWSTR};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_LOCAL_SERVER};
@@ -17,6 +18,26 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 pub(crate) struct ShellApartment;
+
+pub(crate) fn ordinary_path(path: &Path) -> Option<PathBuf> {
+    let mut components = path.components();
+    let Component::Prefix(prefix) = components.next()? else {
+        return None;
+    };
+    let mut base = match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", char::from(drive))),
+        Prefix::VerbatimUNC(server, share) => {
+            let mut base = std::ffi::OsString::from(r"\\");
+            base.push(server);
+            base.push(r"\");
+            base.push(share);
+            PathBuf::from(base)
+        }
+        _ => return None,
+    };
+    base.push(components.as_path());
+    Some(base)
+}
 
 impl ShellApartment {
     pub(crate) fn initialize() -> Result<Self, String> {
