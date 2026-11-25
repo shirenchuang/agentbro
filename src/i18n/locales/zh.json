@@ -29,6 +29,7 @@
     "openWslTerminal": "打开 WSL 终端",
     "composerHintNoTerminal": "这个会话没有可输入的终端。",
     "openHostApp": "打开 App",
+    "qoderApprovalFallback": "请在 Qoder 中查看审批",
     "send": "发送",
     "dismiss": "关闭",
     "back": "返回会话列表",

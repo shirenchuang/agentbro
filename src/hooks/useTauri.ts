@@ -202,6 +202,7 @@ function transformSession(bs: BackendSession): SessionState {
     contextWindow: bs.contextWindow ?? undefined,
     lastMainAgentAt: bs.lastMainAgentAt ?? undefined,
     cacheTtlMs: bs.cacheTtlMs ?? undefined,
+    permissionInHostApp: bs.permissionInHostApp,
     pendingPermission: bs.pendingPermission ? {
       toolUseId: bs.pendingPermission.toolUseId ?? undefined,
       toolName: bs.pendingPermission.toolName,

@@ -79,6 +79,37 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).toHaveBeenCalledWith('s1')
   })
 
+  it('opens Qoder Desktop for an approval that left the Island', () => {
+    const onJumpToTerminal = vi.fn()
+    const desktop = session({
+      agentType: 'qoder-desktop',
+      phase: 'waiting_input',
+      permissionInHostApp: true,
+      pid: undefined,
+      terminal: '',
+    })
+    const { rerender } = render(
+      <HoverList sessions={[desktop]} onSessionClick={vi.fn()} onJumpToTerminal={onJumpToTerminal} />,
+    )
+
+    expect(screen.getByText('Qoder Desktop')).toBeInTheDocument()
+    expect(screen.getByText('Check the approval in Qoder')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '拒绝' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open app' }))
+    expect(onJumpToTerminal).toHaveBeenCalledExactlyOnceWith('s1')
+
+    rerender(
+      <HoverList
+        sessions={[{ ...desktop, permissionInHostApp: false, termBundleId: 'com.qoder.app.helper.Renderer' }]}
+        onSessionClick={vi.fn()}
+        onJumpToTerminal={onJumpToTerminal}
+      />,
+    )
+    expect(screen.getByText('Qoder Desktop')).toBeInTheDocument()
+    expect(screen.queryByText('Check the approval in Qoder')).not.toBeInTheDocument()
+    expect(screen.queryByText('Renderer')).not.toBeInTheDocument()
+  })
+
   it('falls back to the real prompt when a Codex title is environment context', () => {
     render(
       <HoverList
