@@ -2671,11 +2671,12 @@ describe('NotchPanel island shell', () => {
       const onOpen = tauriMocks.listen.mock.calls.find(([event]) => event === 'tray-open-agentbro')![1]
       act(() => onOpen({ event: 'tray-open-agentbro', id: 1, payload: 'question-shortcut' }))
       vi.setSystemTime(Date.now() + 1500)
-      await act(() => new Promise((resolve) => setTimeout(resolve, 120)))
 
-      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalled()
-      expect(useSessionStore.getState().panelState).toBe('hover')
-      expect(screen.getByRole('button', { name: 'Production' })).toBeVisible()
+      await waitFor(() => {
+        expect(hasFocus).toHaveBeenCalled()
+        expect(useSessionStore.getState().panelState).toBe('hover')
+        expect(screen.getByRole('button', { name: 'Production' })).toBeVisible()
+      })
 
       hasFocus.mockReturnValue(false)
       await waitFor(() => expect(useSessionStore.getState().panelState).toBe('collapsed'))
