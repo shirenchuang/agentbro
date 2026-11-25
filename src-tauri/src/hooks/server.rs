@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
@@ -997,6 +997,20 @@ impl HookServer {
         }
     }
 
+    async fn wait_for_hook_reply<T>(
+        input: &mut (impl AsyncBufRead + Unpin),
+        reply: oneshot::Receiver<T>,
+        timeout: Duration,
+        keep_write_open: bool,
+    ) -> Option<T> {
+        // Legacy clients can close their write half while they wait for the reply.
+        tokio::select! {
+            biased;
+            _ = input.fill_buf(), if keep_write_open => None,
+            response = tokio::time::timeout(timeout, reply) => response.ok().and_then(Result::ok),
+        }
+    }
+
     /// Handle a single connection (works with both Unix and TCP streams via AsyncRead+AsyncWrite)
     async fn handle_connection<S>(stream: S, context: HookConnectionContext) -> anyhow::Result<()>
     where
@@ -1031,6 +1045,10 @@ impl HookServer {
         // Parse the raw JSON
         let mut raw: serde_json::Value = serde_json::from_str(line)?;
         namespace_wsl_event(&mut raw);
+        let keep_write_open = raw
+            .get(hook_endpoint::KEEP_WRITE_OPEN_FIELD)
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
 
         // Try to find a matching adapter and parse the event
         let event = Self::parse_with_adapters(&adapters, &raw);
@@ -1310,11 +1328,16 @@ impl HookServer {
                     }
                 }
 
-                let response =
-                    tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
+                let response = Self::wait_for_hook_reply(
+                    &mut buf_reader,
+                    rx,
+                    Self::interaction_response_timeout(&raw),
+                    keep_write_open,
+                )
+                .await;
 
                 match response {
-                    Ok(Ok(reply)) => {
+                    Some(reply) => {
                         let result = tokio::time::timeout_at(reply.deadline, async {
                             let json = serde_json::to_vec(&reply.response)?;
                             writer.write_all(&json).await?;
@@ -1332,9 +1355,7 @@ impl HookServer {
                             })
                         });
                         let delivered = result.is_ok();
-                        if delivered {
-                            store.clear_matching_question(session_id, Some(&tool_use_id));
-                        }
+                        store.clear_matching_question(session_id, Some(&tool_use_id));
                         let _ = reply.ack.send(result);
                         if delivered {
                             drop(tokio::task::spawn_blocking(move || {
@@ -1342,15 +1363,18 @@ impl HookServer {
                             }));
                         }
                     }
-                    _ => {
+                    None => {
                         let mut pending_map = pending_q.lock().await;
+                        // The UI may have removed the sender just before the disconnect.
                         if pending_map
                             .get(session_id)
-                            .is_some_and(|entry| entry.tool_use_id == tool_use_id)
+                            .is_none_or(|entry| entry.tool_use_id == tool_use_id)
                         {
                             pending_map.remove(session_id);
                             store.clear_matching_question(session_id, Some(&tool_use_id));
-                            log::warn!("Question request timed out for session {}", session_id);
+                            log::warn!(
+                                "Question request ended without a reply for session {session_id}"
+                            );
                         }
                     }
                 }
@@ -1421,11 +1445,16 @@ impl HookServer {
                     }
                 }
 
-                let response =
-                    tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
+                let response = Self::wait_for_hook_reply(
+                    &mut buf_reader,
+                    rx,
+                    Self::interaction_response_timeout(&raw),
+                    keep_write_open,
+                )
+                .await;
 
                 match response {
-                    Ok(Ok(reply)) => {
+                    Some(reply) => {
                         let result = tokio::time::timeout_at(reply.deadline, async {
                             let json = serde_json::to_vec(&reply.response)?;
                             writer.write_all(&json).await?;
@@ -1442,9 +1471,7 @@ impl HookServer {
                                 .map_err(|error| format!("Failed to write plan response: {error}"))
                         });
                         let delivered = result.is_ok();
-                        if delivered {
-                            store.clear_matching_plan(session_id, &request_id);
-                        }
+                        store.clear_matching_plan(session_id, &request_id);
                         let _ = reply.ack.send(result);
                         if delivered {
                             drop(tokio::task::spawn_blocking(move || {
@@ -1452,15 +1479,17 @@ impl HookServer {
                             }));
                         }
                     }
-                    _ => {
+                    None => {
                         let mut pending_map = pending_plan.lock().await;
                         if pending_map
                             .get(session_id)
-                            .is_some_and(|entry| entry.request_id == request_id)
+                            .is_none_or(|entry| entry.request_id == request_id)
                         {
                             pending_map.remove(session_id);
                             store.clear_matching_plan(session_id, &request_id);
-                            log::warn!("Plan approval timed out for session {}", session_id);
+                            log::warn!(
+                                "Plan approval ended without a reply for session {session_id}"
+                            );
                         }
                     }
                 }
@@ -4332,7 +4361,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn question_responses_report_a_closed_hook_write() {
+    async fn hook_reply_question_clears_after_a_failed_write() {
         let store = Arc::new(SessionStore::new());
         let server = HookServer::new(
             store.clone(),
@@ -4369,6 +4398,9 @@ mod tests {
             .to_string()
             .starts_with("Failed to write question response:"));
         task.await.unwrap().unwrap();
+        let session = store.get_session("closed").unwrap();
+        assert!(session.pending_question.is_none());
+        assert_eq!(session.phase, SessionPhase::Processing);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4456,7 +4488,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn plan_responses_fail_when_the_waiting_hook_closes() {
+    async fn hook_reply_plan_clears_after_a_failed_write() {
         let store = Arc::new(SessionStore::new());
         let server = HookServer::new(
             store.clone(),
@@ -4508,6 +4540,117 @@ mod tests {
             .to_string()
             .starts_with("Failed to write plan response:"));
         task.await.unwrap().unwrap();
+        let session = store.get_session("plan-disconnected").unwrap();
+        assert!(session.pending_plan.is_none());
+        assert_eq!(session.phase, SessionPhase::Processing);
+    }
+
+    #[tokio::test]
+    async fn hook_reply_disconnect_and_legacy_half_close_use_the_original_socket() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        for event in ["AskQuestion", "PlanApproval"] {
+            for scenario in ["disconnect", "open-reply", "legacy-half-close"] {
+                let session_id = format!("hook-reply-{event}-{scenario}");
+                let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                    .await
+                    .unwrap();
+                let (connection, _) = listener.accept().await.unwrap();
+                let task = tokio::spawn(HookServer::handle_connection(
+                    connection,
+                    server.connection_context(),
+                ));
+                let mut payload = serde_json::json!({
+                    "agent": "claude-code",
+                    "event": event,
+                    "session_id": session_id,
+                    "question": "Continue?",
+                    "options": ["Yes", "No"],
+                    "plan_title": "Review",
+                    "plan_content": "Review changes",
+                });
+                if scenario != "legacy-half-close" {
+                    payload["keep_write_open"] = true.into();
+                }
+                client
+                    .write_all(format!("{payload}\n").as_bytes())
+                    .await
+                    .unwrap();
+                let request_id = tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        let session = store.get_session(&session_id);
+                        let request_id = session.and_then(|session| {
+                            if event == "AskQuestion" {
+                                session
+                                    .pending_question
+                                    .and_then(|question| question.tool_use_id)
+                            } else {
+                                session.pending_plan.and_then(|plan| plan.request_id)
+                            }
+                        });
+                        if let Some(request_id) = request_id {
+                            break request_id;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("the fixture interaction should appear in the Island");
+
+                if scenario == "disconnect" {
+                    drop(client);
+                } else {
+                    if scenario == "legacy-half-close" {
+                        client.shutdown().await.unwrap();
+                    }
+                    let expected = if event == "AskQuestion" {
+                        server
+                            .respond_question(&session_id, "Yes".to_string(), Some(&request_id))
+                            .await
+                            .unwrap();
+                        serde_json::json!({"answer": "Yes"})
+                    } else {
+                        server
+                            .respond_plan(
+                                &session_id,
+                                "manual".to_string(),
+                                None,
+                                Some(&request_id),
+                            )
+                            .await
+                            .unwrap();
+                        serde_json::json!({"mode": "manual", "message": null})
+                    };
+                    let mut reply = String::new();
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        BufReader::new(client).read_line(&mut reply),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<serde_json::Value>(&reply).unwrap(),
+                        expected
+                    );
+                }
+
+                tokio::time::timeout(Duration::from_secs(2), task)
+                    .await
+                    .unwrap_or_else(|_| panic!("{event} socket stayed pending after {scenario}"))
+                    .unwrap()
+                    .unwrap();
+                let session = store.get_session(&session_id).unwrap();
+                assert!(session.pending_question.is_none() && session.pending_plan.is_none());
+                assert_eq!(session.phase, SessionPhase::Processing);
+            }
+        }
     }
 
     #[tokio::test]

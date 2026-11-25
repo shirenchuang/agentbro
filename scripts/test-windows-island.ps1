@@ -610,7 +610,7 @@ function Test-KeyboardPermissionDenial(
     }
 }
 
-function Open-GlobalHookFixture([hashtable]$Event) {
+function Open-HookFixture([hashtable]$Event) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
@@ -627,7 +627,7 @@ function Open-GlobalHookFixture([hashtable]$Event) {
 
 function Open-GlobalPermissionFixture([string]$Label, [string]$TargetSession) {
     $command = "echo AgentBro global shortcut $Label"
-    $fixture = Open-GlobalHookFixture @{
+    $fixture = Open-HookFixture @{
         agent = 'claude-code'
         event = 'PermissionRequest'
         session_id = $TargetSession
@@ -724,12 +724,13 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
     $event = @{
         agent = 'claude-code'
         event = 'AskQuestion'
+        keep_write_open = $true
         session_id = $SessionId
         cwd = $Workspace
         question = 'Pick a single answer for the global shortcut'
         options = @('Suggested answer', 'Alternative answer')
     }
-    $simple = Open-GlobalHookFixture $event
+    $simple = Open-HookFixture $event
     try {
         $null = Wait-IslandValue 'the single-choice question' {
             $island = Find-VisibleIsland
@@ -751,7 +752,7 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
         @{ question = 'Pick a region?'; options = @(@{ label = 'Preview region' }, @{ label = 'Production region' }) },
         @{ question = 'Pick an output?'; options = @(@{ label = 'Summary output' }, @{ label = 'Detailed output' }) }
     )
-    $multipart = Open-GlobalHookFixture $event
+    $multipart = Open-HookFixture $event
     try {
         $null = Wait-IslandValue 'both parts of the multipart question' {
             $island = Find-VisibleIsland
@@ -839,6 +840,7 @@ function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Isla
         $event = @{
             agent = 'claude-code'
             event = 'AskQuestion'
+            keep_write_open = $true
             session_id = $SessionId
             cwd = $Workspace
             question = 'Can the Windows Island return this answer?'
@@ -883,6 +885,7 @@ function Test-InstalledPlanReview([Windows.Automation.AutomationElement]$Island)
         $event = @{
             agent = 'claude-code'
             event = 'PlanApproval'
+            keep_write_open = $true
             session_id = $SessionId
             cwd = $Workspace
             plan_title = 'Windows Island plan review'
@@ -907,6 +910,37 @@ function Test-InstalledPlanReview([Windows.Automation.AutomationElement]$Island)
         Write-Output 'Windows Island sent the manual review decision to the original Hook socket.'
     } finally {
         $connection.Dispose()
+    }
+}
+
+function Test-InstalledDisconnectedHookCard(
+    [Windows.Automation.AutomationElement]$Island,
+    [string]$EventName,
+    [string]$ButtonName
+) {
+    $fixture = Open-HookFixture @{
+        agent = 'claude-code'
+        event = $EventName
+        keep_write_open = $true
+        session_id = $SessionId
+        cwd = $Workspace
+        question = 'Will this request still be visible when the Hook exits?'
+        options = @('Disconnected fixture answer')
+        plan_title = 'Disconnected fixture plan'
+        plan_content = 'Wait for the test to close the Hook connection.'
+    }
+    $findButton = {
+        Find-IslandButton $Island { param($Name) $Name.EndsWith($ButtonName) }
+    }
+    try {
+        $null = Wait-IslandValue "the pending $EventName button to appear" $findButton
+        $fixture.Connection.Dispose()
+        $null = Wait-IslandValue "the disconnected $EventName button to disappear" {
+            -not (& $findButton)
+        } 5
+        Write-Output "Windows Island removed the $EventName card after its Hook disconnected."
+    } finally {
+        $fixture.Connection.Dispose()
     }
 }
 
@@ -1166,6 +1200,8 @@ try {
     }
     Test-InstalledQuestionReply $island
     Test-InstalledPlanReview $island
+    Test-InstalledDisconnectedHookCard $island 'AskQuestion' 'Disconnected fixture answer'
+    Test-InstalledDisconnectedHookCard $island 'PlanApproval' 'Manual Review'
     if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $DiagnosticsExportPath -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }
