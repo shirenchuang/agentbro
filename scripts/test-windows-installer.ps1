@@ -15,6 +15,7 @@ param(
     [switch]$VerifyGlobalShortcuts,
     [switch]$VerifyStartupStackSampler,
     [switch]$VerifyStartupLock,
+    [switch]$VerifyStartupFailure,
     [switch]$VerifyAgentPackageConsole,
     [switch]$VerifyRegisteredAgentApp
 )
@@ -458,6 +459,14 @@ if ($VerifyStartupLock) {
         Test-DuplicateStartup 'cold-start'
     } finally {
         $fixtureLock.Dispose()
+    }
+}
+
+if ($VerifyStartupFailure) {
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    & $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test-windows-startup-error.ps1') -AppPath $appPath -Stage $stage
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The installed app failed the Windows startup error check.'
     }
 }
 
