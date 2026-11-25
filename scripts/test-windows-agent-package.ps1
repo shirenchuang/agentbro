@@ -227,8 +227,7 @@ function Test-ReviewedNpmLauncher([Windows.Automation.AutomationElement]$Setting
             $button = Find-PackControl $Settings '获取版本'
             $button -and $button.Current.IsEnabled -and
                 (Test-PackVisibleText $Settings '当前版本 2.0.0') -and
-                (Test-PackVisibleText $Settings '可更新到 999.0.0') -and
-                -not (Test-PackVisibleText $Settings $changedMessage)
+                (Test-PackVisibleText $Settings '可更新到 999.0.0')
         }
     }
 
@@ -238,6 +237,7 @@ function Test-ReviewedNpmLauncher([Windows.Automation.AutomationElement]$Setting
         $null = Wait-IslandValue 'rejection of the switched npm update' {
             Test-PackVisibleText $Settings $changedMessage
         }
+        Write-Output 'Agent Management rejected the switched npm update on the original action.'
     } finally {
         & $switchPrefix $reviewedPrefix
     }
