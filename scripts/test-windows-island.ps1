@@ -395,39 +395,47 @@ function Click-IslandElement(
     [switch]$CenterAfterLayout,
     [scriptblock]$FindElement
 ) {
-    $point = if ($CenterAfterLayout) {
-        $rect = Wait-IslandValue "stable bounds for $Description" {
-            $before = $Element.Current.BoundingRectangle
-            Start-Sleep -Milliseconds 200
-            $after = $Element.Current.BoundingRectangle
-            if (-not $after.IsEmpty -and $before.Equals($after)) { $after }
-        }
-        Write-Host "$Description bounds: $($rect.ToString([Globalization.CultureInfo]::InvariantCulture))."
-        [Windows.Point]::new($rect.Left + $rect.Width / 2, $rect.Top + $rect.Height / 2)
-    } else {
-        Wait-IslandValue "a clickable point on $Description" {
-            try {
-                $current = if ($FindElement) { & $FindElement } else { $Element }
-                $candidate = [Windows.Point]::new(0, 0)
-                if ($current -and $current.TryGetClickablePoint([ref]$candidate)) { $candidate }
-            } catch {
-                if (-not $FindElement -or ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
-                    $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException])) { throw }
+    $null = Wait-IslandValue "a verified native click on $Description" {
+        try {
+            $current = if ($FindElement) { & $FindElement } else { $Element }
+            if (-not $current -or -not $current.Current.IsEnabled) { return }
+            $point = [Windows.Point]::new(0, 0)
+            if ($CenterAfterLayout) {
+                $bounds = $current.Current.BoundingRectangle
+                if ($bounds.IsEmpty) { return }
+                $point = [Windows.Point]::new($bounds.Left + $bounds.Width / 2, $bounds.Top + $bounds.Height / 2)
+            } elseif (-not $current.TryGetClickablePoint([ref]$point)) {
+                return
             }
+
+            $point = [Windows.Point]::new([int]$point.X, [int]$point.Y)
+            if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
+                throw "Could not move the Windows cursor onto $Description"
+            }
+            Start-Sleep -Milliseconds 250
+            $target = if ($FindElement) { & $FindElement } else { $Element }
+            if (-not $target -or -not $target.Current.IsEnabled -or
+                ($CenterAfterLayout -and -not $bounds.Equals($target.Current.BoundingRectangle))) { return }
+            $cursor = [AgentBroSmokeInput+Point]::new()
+            if (-not [AgentBroSmokeInput]::GetCursorPos([ref]$cursor) -or
+                $cursor.X -ne $point.X -or $cursor.Y -ne $point.Y -or
+                $AppProcessId -ne [AgentBroSmokeInput]::ProcessAtCursor()) { return }
+
+            $hit = [Windows.Automation.AutomationElement]::FromPoint($point)
+            $hitName = $hit.Current.Name
+            $walker = [Windows.Automation.TreeWalker]::RawViewWalker
+            for ($ancestor = $hit; $ancestor; $ancestor = $walker.GetParent($ancestor)) {
+                if (-not $target.Equals($ancestor)) { continue }
+                [AgentBroSmokeInput]::Click()
+                Write-Host "$Description at $($point.X), $($point.Y). Hit: $hitName. Native owner: AgentBro ($AppProcessId)."
+                return $true
+            }
+            Write-Host "Waiting for $Description at $($point.X), $($point.Y). Current hit: $hitName."
+        } catch {
+            if ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
+                $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]) { throw }
         }
     }
-    if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
-        throw "Could not move the Windows cursor onto $Description"
-    }
-    Start-Sleep -Milliseconds 250
-    $underCursor = [Windows.Automation.AutomationElement]::FromPoint($point)
-    $nativeOwner = [AgentBroSmokeInput]::ProcessAtCursor()
-    $owner = Get-Process -Id $nativeOwner -ErrorAction SilentlyContinue
-    Write-Output "$Description at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $($owner.ProcessName) ($nativeOwner)."
-    if ($nativeOwner -ne $AppProcessId) {
-        throw "A different window owns the click point: $($owner.ProcessName) / $($owner.MainWindowTitle)"
-    }
-    [AgentBroSmokeInput]::Click()
 }
 
 function Test-KeyboardPermissionDenial(

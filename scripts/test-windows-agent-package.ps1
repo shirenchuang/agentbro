@@ -316,6 +316,10 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         Find-PackControl $settings '概览' ([Windows.Automation.ControlType]::Button)
     }
 
+    $null = Wait-IslandValue 'the selected Agent overview tab' {
+        $tab = Find-PackControl $settings '概览' ([Windows.Automation.ControlType]::Button)
+        $tab -and ($tab.Current.ClassName -split '\s+') -contains 'sm2__subtab--active'
+    }
     $null = Wait-IslandValue 'the installed fixture version' {
         Test-PackVisibleText $settings '当前版本 2.0.0'
     }
