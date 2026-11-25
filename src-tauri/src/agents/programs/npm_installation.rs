@@ -66,7 +66,7 @@ pub(super) fn npm_installation(launcher: &Path, package: &str) -> Option<NpmInst
         return None;
     }
     let matches = if windows {
-        let relative = target.strip_prefix(directory).ok()?.to_str()?;
+        let relative = target.strip_prefix(directory).ok()?;
         let script = fs::read_to_string(launcher).ok()?;
         windows_shim_matches_entry(&script, relative)
     } else {
@@ -85,7 +85,11 @@ pub(super) fn npm_installation(launcher: &Path, package: &str) -> Option<NpmInst
     })
 }
 
-fn windows_shim_matches_entry(script: &str, relative: &str) -> bool {
+fn windows_shim_matches_entry(script: &str, relative: &Path) -> bool {
+    let path = relative.components().collect::<PathBuf>();
+    let Some(relative) = path.to_str() else {
+        return false;
+    };
     let relative = relative.replace('/', "\\").to_ascii_lowercase();
     let target = format!(r#""%dp0%\{relative}" %*"#);
     let legacy = format!(r#""%~dp0{relative}" %*"#);
@@ -109,11 +113,15 @@ mod tests {
         let script = r#""%_prog%" "%dp0%\node_modules\@anthropic-ai\claude-code\bin\cli.js" %*"#;
         assert!(windows_shim_matches_entry(
             script,
-            r"node_modules\@anthropic-ai/claude-code\bin/cli.js"
+            Path::new(r"node_modules\@anthropic-ai/claude-code\bin/cli.js")
+        ));
+        assert!(windows_shim_matches_entry(
+            script,
+            Path::new("node_modules/@anthropic-ai/claude-code/./bin/cli.js")
         ));
         assert!(!windows_shim_matches_entry(
             script,
-            r"node_modules\@anthropic-ai/a-different-package\bin/cli.js"
+            Path::new(r"node_modules\@anthropic-ai/a-different-package\bin/cli.js")
         ));
     }
 

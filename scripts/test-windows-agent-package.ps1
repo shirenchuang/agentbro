@@ -60,7 +60,7 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
 ) {
     $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
     Copy-Item -LiteralPath (Join-Path $fixtureStage 'claude.cmd.fixture') -Destination $FixtureLauncher
-    '{"name":"@anthropic-ai/claude-code","version":"2.0.0","bin":{"claude":"cli.js"}}' |
+    '{"name":"@anthropic-ai/claude-code","version":"2.0.0","bin":{"claude":"./cli.js"}}' |
         Set-Content -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_MANIFEST -Encoding ascii
     Remove-Item -LiteralPath @(
         $env:AGENTBRO_PACKAGE_CONSOLE_RESULT,

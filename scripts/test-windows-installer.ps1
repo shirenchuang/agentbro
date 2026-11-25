@@ -55,7 +55,7 @@ node "%dp0%\node_modules\@anthropic-ai\claude-code\cli.js" %*
         $package = Join-Path $prefix $packageRelative
         $null = New-Item -ItemType Directory -Path $package -Force
         $version = if ($prefix -eq $fixtureBin) { '2.0.0' } else { '9.0.0' }
-        "{`"name`":`"@anthropic-ai/claude-code`",`"version`":`"$version`",`"bin`":{`"claude`":`"cli.js`"}}" |
+        "{`"name`":`"@anthropic-ai/claude-code`",`"version`":`"$version`",`"bin`":{`"claude`":`"./cli.js`"}}" |
             Set-Content -LiteralPath (Join-Path $package 'package.json') -Encoding ascii
         Set-Content -LiteralPath (Join-Path $package 'cli.js') -Value 'console.log(require("./package.json").version)' -Encoding ascii
         Copy-Item -LiteralPath $fixtureLauncherBackup -Destination (Join-Path $prefix 'claude.cmd') -Force
@@ -96,7 +96,7 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
     )
     if exist "%AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION%" set "agentbro_retry=1"
     if defined agentbro_retry (
-        >"%npm_config_prefix%\node_modules\@anthropic-ai\claude-code\package.json" echo {"name":"@anthropic-ai/claude-code","version":"999.0.0","bin":{"claude":"cli.js"}}
+        >"%npm_config_prefix%\node_modules\@anthropic-ai\claude-code\package.json" echo {"name":"@anthropic-ai/claude-code","version":"999.0.0","bin":{"claude":"./cli.js"}}
         type nul > "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%"
     )
     echo agentbro-package-fixture-stdout
