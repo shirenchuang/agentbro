@@ -2565,7 +2565,7 @@ pub async fn send_message(
     message: String,
     activate_before_send: Option<bool>,
 ) -> Result<(), String> {
-    log::info!("Send message: session={}, msg={}", session_id, message);
+    log::info!("Sending message to session {session_id}");
     release_notch_keyboard_focus(&app);
 
     let session = state
@@ -6556,35 +6556,118 @@ fn collect_hooks_sections(adapters: &[Arc<dyn AgentAdapter>]) -> Vec<String> {
     sections
 }
 
-/// Read recent log files from tauri-plugin-log's log directory.
-fn collect_log_files() -> Vec<(String, Vec<u8>)> {
-    let log_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("agentbro")
-        .join("logs");
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&log_dir) {
-        let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-        entries.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
-        for entry in entries.into_iter().rev().take(3) {
-            let path = entry.path();
-            if path.is_file() {
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                match std::fs::read(&path) {
-                    Ok(data) => {
-                        let redacted = redact_paths(&String::from_utf8_lossy(&data));
-                        files.push((format!("logs/{}", name), redacted.into_bytes()));
-                    }
-                    Err(_) => continue,
-                }
+fn collect_startup_logs(log_dir: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = fs::read_dir(log_dir) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let is_agentbro_log = name == "agentbro.log"
+                || name
+                    .strip_prefix("agentbro_")
+                    .and_then(|suffix| suffix.strip_suffix(".log"))
+                    .is_some_and(|date| {
+                        chrono::NaiveDateTime::parse_from_str(date, "%Y-%m-%d_%H-%M-%S").is_ok()
+                    });
+            is_agentbro_log && entry.file_type().is_ok_and(|kind| kind.is_file())
+        })
+        .collect();
+    entries.sort_by_key(|entry| entry.metadata().ok().and_then(|info| info.modified().ok()));
+    entries
+        .into_iter()
+        .rev()
+        .take(3)
+        .filter_map(|entry| {
+            let bytes = fs::read(entry.path()).ok()?;
+            let lines: Vec<_> = String::from_utf8_lossy(&bytes)
+                .lines()
+                .filter_map(diagnostic_startup_line)
+                .collect();
+            if lines.is_empty() {
+                return None;
             }
-        }
+            let name = format!("logs/{}", entry.file_name().to_string_lossy());
+            Some((name, lines.join("\n") + "\n"))
+        })
+        .collect()
+}
+
+fn diagnostic_startup_line(line: &str) -> Option<String> {
+    let (header, message) = line.split_once("] ")?;
+    let mut fields = header.strip_prefix('[')?.split("][");
+    let (date, time, target, level) = (
+        fields.next()?,
+        fields.next()?,
+        fields.next()?,
+        fields.next()?,
+    );
+    if fields.next().is_some() || !matches!(level, "INFO" | "WARN" | "ERROR") {
+        return None;
     }
-    files
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    chrono::NaiveTime::parse_from_str(time, "%H:%M:%S").ok()?;
+
+    let message = match (target, message) {
+        (
+            "agentbro_lib",
+            "Startup: creating configured windows"
+            | "Startup: configured windows created"
+            | "Startup: restoring active sessions"
+            | "Startup: initializing agent adapters"
+            | "Startup: scheduling Hook server"
+            | "AgentBro started",
+        ) => message,
+        ("agentbro_lib", data) if data.starts_with("Startup: WebView2 runtime ") => {
+            let version = data.strip_prefix("Startup: WebView2 runtime ")?;
+            if version.split('.').count() != 4
+                || !version.split('.').all(|part| {
+                    part.bytes().all(|byte| byte.is_ascii_digit()) && part.parse::<u32>().is_ok()
+                })
+            {
+                return None;
+            }
+            data
+        }
+        ("agentbro_lib::platform::windows_startup", data)
+            if data.starts_with("Startup: could not locate the WebView2 runtime:") =>
+        {
+            "Startup: could not locate the WebView2 runtime"
+        }
+        ("agentbro_lib::platform::windows_startup", data)
+            if data.starts_with("Startup: could not create Windows window '") =>
+        {
+            "Startup: could not create a Windows application window"
+        }
+        ("agentbro_lib::platform::windows_startup", data)
+            if data
+                .starts_with("Startup: Windows desktop windows are still being created after ") =>
+        {
+            "Startup: Windows application windows are taking longer to open"
+        }
+        (
+            "agentbro_lib::platform::windows_startup",
+            "Startup: closing AgentBro at the user's request",
+        ) => message,
+        ("agentbro_lib", data) if data.starts_with("Failed to start HookServer: ") => {
+            "Failed to start the Hook server"
+        }
+        ("agentbro_lib::hooks::server", data) if data.starts_with("Listening on Unix socket: ") => {
+            "Hook server is listening on a local Unix socket"
+        }
+        ("agentbro_lib::hooks::server", data) if data.starts_with("Listening on TCP: ") => {
+            let addr: std::net::SocketAddr =
+                data.strip_prefix("Listening on TCP: ")?.parse().ok()?;
+            if !addr.ip().is_loopback() {
+                return None;
+            }
+            data
+        }
+        _ => return None,
+    };
+    Some(format!("{header}] {message}"))
 }
 
 fn bridge_invocations_path() -> PathBuf {
@@ -6643,6 +6726,7 @@ fn collect_crash_reports() -> Vec<(String, Vec<u8>)> {
 
 #[tauri::command]
 pub async fn export_diagnostics(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     target_path: String,
 ) -> Result<(), String> {
@@ -6816,7 +6900,7 @@ pub async fn export_diagnostics(
     md.push_str(
         "| `bridge-invocations.jsonl` | Recent hook bridge invocations without prompt or payload content |\n",
     );
-    md.push_str("| `logs/` | Recent application logs |\n");
+    md.push_str("| `logs/` | Recent startup and Hook listener records |\n");
     md.push_str("| `crashes/` | System crash reports (if any) |\n");
 
     // ── Sanitized config as standalone JSON ──
@@ -6853,10 +6937,10 @@ pub async fn export_diagnostics(
         &redact_paths(&bridge_invocations.join("\n")),
     )?;
 
-    // Logs
-    for (name, data) in collect_log_files() {
-        zip.start_file(&name, options).map_err(|e| e.to_string())?;
-        zip.write_all(&data).map_err(|e| e.to_string())?;
+    if let Ok(log_dir) = app.path().app_log_dir() {
+        for (name, text) in collect_startup_logs(&log_dir) {
+            write_text(&mut zip, &name, &text)?;
+        }
     }
 
     // Crash reports
@@ -6986,6 +7070,52 @@ mod tests {
     use crate::remote::installer::RemoteCodexThreadSnapshot;
     use crate::remote::RemoteHost;
     use std::{collections::HashMap, fs};
+
+    #[test]
+    fn diagnostic_export_reads_active_and_rotated_startup_logs_without_session_content() {
+        let directory =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let header = "[2026-11-25][13:04:30]";
+        let current = format!(
+            "{header}[agentbro_lib][INFO] Startup: creating configured windows\n\
+             {header}[agentbro_lib][INFO] Startup: WebView2 runtime 157.0.4341.46\n\
+             {header}[agentbro_lib::hooks::server][INFO] Listening on TCP: 127.0.0.1:17894\n\
+             {header}[agentbro_lib::commands][INFO] Send message: session=test, msg=PRIVATE_FIXTURE\n\
+             PRIVATE_MULTILINE_FIXTURE\n\
+             {header}[agentbro_lib][INFO] Startup: WebView2 runtime PRIVATE_FIXTURE"
+        );
+        let previous = format!(
+            "{header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not locate the WebView2 runtime: PRIVATE_ERROR"
+        );
+        let active_name = "agentbro.log";
+        let rotated_name = "agentbro_2026-11-25_13-04-30.log";
+        fs::write(directory.path().join(active_name), current).unwrap();
+        fs::write(directory.path().join(rotated_name), previous).unwrap();
+        fs::write(
+            directory.path().join("unrelated.log"),
+            format!("{header}[agentbro_lib][INFO] Startup: restoring active sessions"),
+        )
+        .unwrap();
+
+        let logs: std::collections::BTreeMap<_, _> = super::collect_startup_logs(directory.path())
+            .into_iter()
+            .collect();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(
+            logs["logs/agentbro.log"],
+            format!(
+                "{header}[agentbro_lib][INFO] Startup: creating configured windows\n\
+                 {header}[agentbro_lib][INFO] Startup: WebView2 runtime 157.0.4341.46\n\
+                 {header}[agentbro_lib::hooks::server][INFO] Listening on TCP: 127.0.0.1:17894\n"
+            )
+        );
+        assert_eq!(
+            logs["logs/agentbro_2026-11-25_13-04-30.log"],
+            format!(
+                "{header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not locate the WebView2 runtime\n"
+            )
+        );
+    }
 
     #[test]
     fn hook_doctor_reports_latest_bridge_delivery_result() {
