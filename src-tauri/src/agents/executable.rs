@@ -25,6 +25,46 @@ pub fn find_binary(binary: &str) -> Option<PathBuf> {
     find_binary_generic(binary)
 }
 
+pub(super) fn find_qoder_cli_binary() -> Option<PathBuf> {
+    let directories: Vec<_> = candidate_dirs()
+        .into_iter()
+        .filter(|dir| dir.is_absolute())
+        .collect();
+    #[cfg(target_os = "windows")]
+    {
+        find_windows_qoder_cli_binary(&directories, dirs::home_dir().as_deref())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        ["qodercli", "qoder"].into_iter().find_map(|binary| {
+            directories.iter().map(|dir| dir.join(binary)).find(|path| {
+                path.metadata()
+                    .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            })
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn find_windows_qoder_cli_binary(directories: &[PathBuf], home: Option<&Path>) -> Option<PathBuf> {
+    ["qodercli", "qoder"]
+        .into_iter()
+        .find_map(|binary| {
+            find_windows_binary_in_dirs(
+                directories.iter().cloned(),
+                binary,
+                &windows_binary_candidates(binary),
+            )
+            .filter(|path| path.extension().is_some())
+        })
+        .or_else(|| {
+            let launcher = home?.join(".qoder/bin/qodercli/qodercli.exe");
+            launcher.is_file().then_some(launcher)
+        })
+}
+
 pub fn find_codex_cli_binary() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -1053,6 +1093,33 @@ exit 0
         let native = cli.join("qoder.exe");
         std::fs::write(&native, []).unwrap();
         assert_eq!(find_cli(), Some(native));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_qoder_cli_uses_the_user_native_launcher_after_path() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let home = fixture.path();
+        let desktop = home.join("Qoder Desktop");
+        let bin = home.join("PATH Bin");
+        std::fs::create_dir_all(desktop.join("resources")).unwrap();
+        std::fs::write(desktop.join("resources/app.asar"), "").unwrap();
+        std::fs::write(desktop.join("Qoder.exe"), "").unwrap();
+        std::fs::create_dir(&bin).unwrap();
+
+        let directories = [desktop, bin.clone()];
+        let find = || super::find_windows_qoder_cli_binary(&directories, Some(home));
+        assert_eq!(find(), None);
+
+        let native = home.join(".qoder/bin/qodercli/qodercli.exe");
+        std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+        std::fs::write(&native, "").unwrap();
+        assert_eq!(find(), Some(native));
+
+        let path_launcher = bin.join("qoder.cmd");
+        std::fs::write(&path_launcher, "").unwrap();
+        assert_eq!(find(), Some(path_launcher));
     }
 
     #[test]
