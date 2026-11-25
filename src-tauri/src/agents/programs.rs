@@ -5,8 +5,10 @@ use crate::skills::{agent_paths, registry};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::pin::pin;
+use std::process::{ExitStatus, Stdio};
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
@@ -24,6 +26,7 @@ static AGENT_PACKAGE_OUTPUT: std::sync::Mutex<BTreeMap<String, AgentPackageOutpu
     std::sync::Mutex::new(BTreeMap::new());
 const PACKAGE_OUTPUT_LINES: usize = 10;
 const PACKAGE_OUTPUT_LINE_BYTES: usize = 4096;
+const PACKAGE_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -986,7 +989,7 @@ async fn execute_package_operation(
             .await
             .map(PackageOperationOutcome::Completed);
     }
-    let (command_line, mut command) = if let Some(launcher) =
+    let (command_line, command) = if let Some(launcher) =
         native_claude_launcher(agent_id, installed_binary)
     {
         (
@@ -1045,44 +1048,12 @@ async fn execute_package_operation(
         None,
     );
 
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Could not start package command: {error}"))?;
-
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
-    let out_app = app.clone();
-    let out_id = agent_id.to_string();
-    let out_op = operation.to_string();
-    let stdout_task = tokio::spawn(async move {
-        forward_package_output(stdout, |line| {
-            emit_output(&out_app, &out_id, &out_op, "stdout", line, false, None);
-        })
-        .await
-    });
-
-    let err_app = app.clone();
-    let err_id = agent_id.to_string();
-    let err_op = operation.to_string();
-    let stderr_task = tokio::spawn(async move {
-        forward_package_output(stderr, |line| {
-            emit_output(&err_app, &err_id, &err_op, "stderr", line, false, None);
-        })
-        .await
-    });
-
-    let status = child.wait().await;
-    if status.is_err() {
-        stdout_task.abort();
-        stderr_task.abort();
-    }
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
-
-    let status = status.map_err(|error| format!("Could not wait for package command: {error}"))?;
+    let status = run_package_command(
+        command,
+        |line| emit_output(app, agent_id, operation, "stdout", line, false, None),
+        |line| emit_output(app, agent_id, operation, "stderr", line, false, None),
+    )
+    .await?;
     if status.success() {
         Ok(PackageOperationOutcome::Completed("Operation completed"))
     } else {
@@ -1090,23 +1061,99 @@ async fn execute_package_operation(
     }
 }
 
+async fn run_package_command(
+    mut command: Command,
+    mut emit_stdout: impl FnMut(&str),
+    mut emit_stderr: impl FnMut(&str),
+) -> Result<ExitStatus, String> {
+    #[cfg(target_os = "windows")]
+    let (stdout, stderr) = {
+        let (stdout, child_stdout) = windows_package_pipe()
+            .await
+            .map_err(|error| format!("Could not prepare package stdout: {error}"))?;
+        let (stderr, child_stderr) = windows_package_pipe()
+            .await
+            .map_err(|error| format!("Could not prepare package stderr: {error}"))?;
+        command.stdout(child_stdout).stderr(child_stderr);
+        (Some(stdout), Some(stderr))
+    };
+    #[cfg(not(target_os = "windows"))]
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start package command: {error}"))?;
+    drop(command);
+    #[cfg(not(target_os = "windows"))]
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+
+    let mut stdout_line = Vec::new();
+    let mut stderr_line = Vec::new();
+    let status = {
+        let mut output = pin!(async {
+            let _ = tokio::join!(
+                forward_package_output(stdout, &mut stdout_line, &mut emit_stdout),
+                forward_package_output(stderr, &mut stderr_line, &mut emit_stderr),
+            );
+        });
+        tokio::select! {
+            status = child.wait() => {
+                // A background helper can inherit the pipes and keep them open after exit.
+                if status.is_ok() {
+                    let _ = timeout(PACKAGE_OUTPUT_DRAIN_TIMEOUT, output).await;
+                }
+                status
+            }
+            () = &mut output => child.wait().await,
+        }
+    };
+    if !stdout_line.is_empty() {
+        emit_stdout(&String::from_utf8_lossy(&stdout_line));
+    }
+    if !stderr_line.is_empty() {
+        emit_stderr(&String::from_utf8_lossy(&stderr_line));
+    }
+    status.map_err(|error| format!("Could not wait for package command: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+async fn windows_package_pipe(
+) -> io::Result<(tokio::net::windows::named_pipe::NamedPipeServer, Stdio)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    // Tokio's standard child pipes use blocking reads on Windows that can outlive the timeout.
+    let name = format!(r"\\.\pipe\AgentBro-package-{}", uuid::Uuid::new_v4());
+    let reader = ServerOptions::new()
+        .access_outbound(false)
+        .first_pipe_instance(true)
+        .reject_remote_clients(true)
+        .max_instances(1)
+        .create(&name)?;
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .share_mode(0)
+        .open(name)?;
+    reader.connect().await?;
+    Ok((reader, Stdio::from(writer)))
+}
+
 async fn forward_package_output(
     pipe: Option<impl AsyncRead + Unpin>,
+    line: &mut Vec<u8>,
     mut emit: impl FnMut(&str),
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     let Some(pipe) = pipe else {
         return Ok(());
     };
     let mut reader = BufReader::new(pipe);
-    let mut line = Vec::new();
-    while reader.read_until(b'\n', &mut line).await? != 0 {
+    while reader.read_until(b'\n', line).await? != 0 {
         if line.last() == Some(&b'\n') {
             line.pop();
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
         }
-        emit(&String::from_utf8_lossy(&line));
+        emit(&String::from_utf8_lossy(line));
         line.clear();
     }
     Ok(())
@@ -2260,7 +2307,7 @@ mod tests {
         bytes.extend_from_slice(b"\xff line\r\nfinished\nfinal line");
         let mut received = Vec::new();
 
-        super::forward_package_output(Some(bytes.as_slice()), |line| {
+        super::forward_package_output(Some(bytes.as_slice()), &mut Vec::new(), |line| {
             received.push(line.to_string());
         })
         .await
@@ -2270,6 +2317,70 @@ mod tests {
             received,
             ["开始", "", "legacy � line", "finished", "final line"]
         );
+    }
+
+    #[tokio::test]
+    async fn package_command_finishes_while_a_helper_still_holds_its_pipes() {
+        use std::io::Write;
+        use std::time::{Duration, Instant};
+        const TEST: &str =
+            "agents::programs::tests::package_command_finishes_while_a_helper_still_holds_its_pipes";
+        const DIRECTORY: &str = "AGENTBRO_PACKAGE_PIPE_TEST_DIRECTORY";
+        const HOLDER: &str = "AGENTBRO_PACKAGE_PIPE_TEST_HOLDER";
+
+        let executable = std::env::current_exe().unwrap();
+        if let Some(directory) = std::env::var_os(DIRECTORY).map(std::path::PathBuf::from) {
+            let ready = directory.join("holder-ready");
+            if std::env::var_os(HOLDER).is_some() {
+                std::fs::write(&ready, b"ready").unwrap();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while directory.is_dir() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                return;
+            }
+
+            let mut helper = crate::platform::process::background_command(&executable)
+                .args(["--exact", TEST, "--nocapture"])
+                .env(HOLDER, "1")
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert!(ready.exists() && helper.try_wait().unwrap().is_none());
+            println!("package stdout before exit");
+            eprint!("package stderr without newline");
+            std::io::stderr().flush().unwrap();
+            std::process::exit(7);
+        }
+
+        let directory =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let mut command = super::package_command(&executable, None);
+        command
+            .args(["--exact", TEST, "--nocapture"])
+            .env(DIRECTORY, directory.path());
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let result = tokio::time::timeout(
+            Duration::from_secs(12),
+            super::run_package_command(
+                command,
+                |line| stdout.push(line.to_owned()),
+                |line| stderr.push(line.to_owned()),
+            ),
+        )
+        .await
+        .expect("the package command should finish before its helper releases the pipes")
+        .unwrap();
+        assert!(directory.path().join("holder-ready").is_file());
+        assert_eq!(result.code(), Some(7));
+        assert!(stdout
+            .iter()
+            .any(|line| line == "package stdout before exit"));
+        assert_eq!(stderr, ["package stderr without newline"]);
     }
 
     #[test]
