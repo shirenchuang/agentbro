@@ -103,6 +103,8 @@ jobs:
           & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::qoder_cli::tests
       - name: Test Qoder sessions and permission responses
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::server::tests::qoder_'
+      - name: Test Hook question and plan responses
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::server::tests::hook_reply_'
       - name: Test the native startup recovery dialog
         timeout-minutes: 2
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE platform::windows_startup::tests'

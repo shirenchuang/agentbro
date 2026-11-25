@@ -597,7 +597,7 @@ fn send_and_maybe_receive(
     stream
         .set_read_timeout(Some(Duration::from_secs(timeout)))
         .ok();
-    let payload = format!("{}\n", state);
+    let payload = hook_message_line(state, wait_response);
     if stream.write_all(payload.as_bytes()).is_err() {
         record_invocation(state, false);
         return None;
@@ -612,6 +612,15 @@ fn send_and_maybe_receive(
         }
     }
     None
+}
+
+fn hook_message_line(state: &serde_json::Value, wait_response: bool) -> String {
+    if !wait_response {
+        return format!("{state}\n");
+    }
+    let mut request = state.clone();
+    request[agentbro_lib::hook_endpoint::KEEP_WRITE_OPEN_FIELD] = true.into();
+    format!("{request}\n")
 }
 
 fn invocation_log_path() -> PathBuf {
@@ -1643,6 +1652,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hook_requests_waiting_for_replies_advertise_an_open_write_half() {
+        let state = serde_json::json!({"event": "AskQuestion", "session_id": "test"});
+        let event: serde_json::Value =
+            serde_json::from_str(&hook_message_line(&state, false)).unwrap();
+        assert_eq!(event, state);
+        let message = hook_message_line(&state, true);
+        assert!(message.ends_with('\n'));
+        let request: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(
+            request,
+            serde_json::json!({"event": "AskQuestion", "session_id": "test", "keep_write_open": true})
+        );
+    }
 
     #[test]
     fn qoder_permission_responses_do_not_change_future_permissions() {

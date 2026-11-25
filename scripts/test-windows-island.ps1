@@ -724,6 +724,7 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
     $event = @{
         agent = 'claude-code'
         event = 'AskQuestion'
+        keep_write_open = $true
         session_id = $SessionId
         cwd = $Workspace
         question = 'Pick a single answer for the global shortcut'
@@ -830,7 +831,10 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
     }
 }
 
-function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Island) {
+function Test-InstalledQuestionReply(
+    [Windows.Automation.AutomationElement]$Island,
+    [switch]$Disconnect
+) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
@@ -839,6 +843,7 @@ function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Isla
         $event = @{
             agent = 'claude-code'
             event = 'AskQuestion'
+            keep_write_open = $true
             session_id = $SessionId
             cwd = $Workspace
             question = 'Can the Windows Island return this answer?'
@@ -850,32 +855,49 @@ function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Isla
         $reader = [System.IO.StreamReader]::new($stream)
         $reply = $reader.ReadLineAsync()
 
-        $showSessions = Wait-IslandValue 'the question card session list button' {
-            Find-IslandButton $Island {
-                param($Name)
-                $Name -eq 'Make agents easier to use' -or $Name -match '^Show all \d+ sessions$'
-            }
-        }
-        Click-IslandElement $showSessions 'Question card session list button' -CenterAfterLayout
-        $option = Wait-IslandValue 'the inline answer in the waiting session' {
+        $findOption = {
             $group = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($ProjectName) }
             if ($group) { Find-IslandButton $group { param($Name) $Name.EndsWith($answer) } }
         }
-        Click-IslandElement $option 'Inline question answer' -CenterAfterLayout
-        if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive an answer from the Windows Island' }
-        $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
-        if ($response.answer -ne $answer) { throw "Unexpected Hook question answer: $($response.answer)" }
-        $null = Wait-IslandValue 'the answered question to disappear from the session list' {
+        $view = Wait-IslandValue 'the question card or inline answer' {
+            $option = & $findOption
+            if ($option) { return @{ Option = $option } }
+            $showSessions = Find-IslandButton $Island {
+                param($Name)
+                $Name -eq 'Make agents easier to use' -or $Name -match '^Show all \d+ sessions$'
+            }
+            if ($showSessions) { return @{ ShowSessions = $showSessions } }
+        }
+        if ($view.ShowSessions) {
+            Click-IslandElement $view.ShowSessions 'Question card session list button' -CenterAfterLayout
+        }
+        $option = Wait-IslandValue 'the inline answer in the waiting session' $findOption
+        if ($Disconnect) {
+            $connection.Dispose()
+        } else {
+            Click-IslandElement $option 'Inline question answer' -CenterAfterLayout
+            if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive an answer from the Windows Island' }
+            $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
+            if ($response.answer -ne $answer) { throw "Unexpected Hook question answer: $($response.answer)" }
+        }
+        $null = Wait-IslandValue 'the closed question to disappear from the session list' {
             $group = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($ProjectName) }
             $group -and -not (Find-IslandButton $group { param($Name) $Name.EndsWith($answer) })
         }
-        Write-Output 'Windows Island sent the inline question answer to the original Hook socket.'
+        if ($Disconnect) {
+            Write-Output 'Windows Island removed the AskQuestion card after its Hook disconnected.'
+        } else {
+            Write-Output 'Windows Island sent the inline question answer to the original Hook socket.'
+        }
     } finally {
         $connection.Dispose()
     }
 }
 
-function Test-InstalledPlanReview([Windows.Automation.AutomationElement]$Island) {
+function Test-InstalledPlanReview(
+    [Windows.Automation.AutomationElement]$Island,
+    [switch]$Disconnect
+) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
@@ -883,6 +905,7 @@ function Test-InstalledPlanReview([Windows.Automation.AutomationElement]$Island)
         $event = @{
             agent = 'claude-code'
             event = 'PlanApproval'
+            keep_write_open = $true
             session_id = $SessionId
             cwd = $Workspace
             plan_title = 'Windows Island plan review'
@@ -897,14 +920,22 @@ function Test-InstalledPlanReview([Windows.Automation.AutomationElement]$Island)
         $manual = Wait-IslandValue 'the plan manual review button' {
             Find-IslandButton $Island { param($Name) $Name -eq 'Manual Review' }
         }
-        Click-IslandElement $manual 'Plan manual review' -CenterAfterLayout
-        if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive the review decision from the Windows Island' }
-        $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
-        if ($response.mode -ne 'manual') { throw "Unexpected Hook plan decision: $($response.mode)" }
-        $null = Wait-IslandValue 'the answered plan to disappear' {
+        if ($Disconnect) {
+            $connection.Dispose()
+        } else {
+            Click-IslandElement $manual 'Plan manual review' -CenterAfterLayout
+            if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive the review decision from the Windows Island' }
+            $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
+            if ($response.mode -ne 'manual') { throw "Unexpected Hook plan decision: $($response.mode)" }
+        }
+        $null = Wait-IslandValue 'the closed plan to disappear' {
             -not (Find-IslandButton $Island { param($Name) $Name -eq 'Manual Review' })
         }
-        Write-Output 'Windows Island sent the manual review decision to the original Hook socket.'
+        if ($Disconnect) {
+            Write-Output 'Windows Island removed the PlanApproval card after its Hook disconnected.'
+        } else {
+            Write-Output 'Windows Island sent the manual review decision to the original Hook socket.'
+        }
     } finally {
         $connection.Dispose()
     }
@@ -1164,7 +1195,9 @@ try {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
     }
+    Test-InstalledQuestionReply $island -Disconnect
     Test-InstalledQuestionReply $island
+    Test-InstalledPlanReview $island -Disconnect
     Test-InstalledPlanReview $island
     if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $DiagnosticsExportPath -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')

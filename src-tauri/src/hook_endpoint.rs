@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 pub const HOOK_SOCKET_ENV: &str = "AGENTBRO_HOOK_SOCKET";
 pub const HOOK_PORT_ENV: &str = "AGENTBRO_HOOK_PORT";
+pub const KEEP_WRITE_OPEN_FIELD: &str = "keep_write_open";
 
 const RELEASE_TCP_PORT: u16 = 17894;
 
