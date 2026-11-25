@@ -218,7 +218,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   }, [feedbackText, onDeny, sending])
 
   const handleDeny = () => {
-    if (session.agentType === 'deepseek-harness' || showFeedback) {
+    if (session.agentType === 'deepseek-harness' || session.agentType === 'qoder-desktop' || showFeedback) {
       handleReject()
       return
     }

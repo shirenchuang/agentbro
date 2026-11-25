@@ -1419,6 +1419,29 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
   })
 
+  it('retries the same Qoder Desktop denial if the Hook reply fails', async () => {
+    tauriMocks.respondPermission.mockRejectedValueOnce(new Error('Hook disconnected'))
+    const permission = { toolUseId: 'qoder-permission', toolName: 'Bash', toolInput: '{"command":"pwd"}' }
+    mountIsland({
+      id: 'qoder-permission-overlay',
+      sessionId: 's1',
+      type: 'permission',
+      data: permission,
+      createdAt: Date.now(),
+    }, { agentType: 'qoder-desktop', phase: 'waiting_approval', pendingPermission: permission })
+
+    fireEvent.click(screen.getByRole('button', { name: 'notch.deny' }))
+    expect(tauriMocks.respondPermission).toHaveBeenCalledExactlyOnceWith('s1', false, undefined, 'qoder-permission')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Hook disconnected')
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toEqual(permission)
+
+    fireEvent.click(screen.getByRole('button', { name: 'notch.deny' }))
+    expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(2)
+    expect(tauriMocks.respondPermission).toHaveBeenLastCalledWith('s1', false, undefined, 'qoder-permission')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined())
+    expect(tauriMocks.sendMessage).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['hover', '.hover-list__inline-btn--deny'],
     ['expanded', '.approval-bar__btn--deny'],
@@ -2648,11 +2671,12 @@ describe('NotchPanel island shell', () => {
       const onOpen = tauriMocks.listen.mock.calls.find(([event]) => event === 'tray-open-agentbro')![1]
       act(() => onOpen({ event: 'tray-open-agentbro', id: 1, payload: 'question-shortcut' }))
       vi.setSystemTime(Date.now() + 1500)
-      await act(() => new Promise((resolve) => setTimeout(resolve, 120)))
 
-      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalled()
-      expect(useSessionStore.getState().panelState).toBe('hover')
-      expect(screen.getByRole('button', { name: 'Production' })).toBeVisible()
+      await waitFor(() => {
+        expect(hasFocus).toHaveBeenCalled()
+        expect(useSessionStore.getState().panelState).toBe('hover')
+        expect(screen.getByRole('button', { name: 'Production' })).toBeVisible()
+      })
 
       hasFocus.mockReturnValue(false)
       await waitFor(() => expect(useSessionStore.getState().panelState).toBe('collapsed'))
