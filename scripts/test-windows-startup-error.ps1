@@ -4,7 +4,69 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class AgentBroStartupDialog {
+    private const int OkButtonId = 1;
+    private const uint GetTextMessage = 0x000D;
+    private const uint CommandMessage = 0x0111;
+    private const uint AbortIfHung = 0x0002;
+    private const uint ErrorOnExit = 0x0020;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr length,
+        StringBuilder text, uint flags, uint timeout, out IntPtr result);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetDlgItem(IntPtr window, int controlId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool PostMessage(IntPtr window, uint message, IntPtr command, IntPtr control);
+
+    public static IntPtr Find(uint processId) {
+        for (var dialog = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "#32770", "AgentBro");
+             dialog != IntPtr.Zero;
+             dialog = FindWindowEx(IntPtr.Zero, dialog, "#32770", "AgentBro")) {
+            uint owner;
+            GetWindowThreadProcessId(dialog, out owner);
+            if (owner == processId && IsWindowVisible(dialog)) return dialog;
+        }
+        return IntPtr.Zero;
+    }
+
+    public static string ReadText(IntPtr dialog) {
+        var body = new StringBuilder();
+        for (var control = FindWindowEx(dialog, IntPtr.Zero, "Static", null);
+             control != IntPtr.Zero;
+             control = FindWindowEx(dialog, control, "Static", null)) {
+            var text = new StringBuilder(2048);
+            IntPtr result;
+            if (SendMessageTimeout(control, GetTextMessage, (IntPtr)text.Capacity, text,
+                AbortIfHung | ErrorOnExit, 250, out result) != IntPtr.Zero && text.Length != 0) {
+                body.AppendLine(text.ToString());
+            }
+        }
+        return body.ToString();
+    }
+
+    public static bool Acknowledge(IntPtr dialog) {
+        var button = GetDlgItem(dialog, OkButtonId);
+        return button != IntPtr.Zero && PostMessage(dialog, CommandMessage, (IntPtr)OkButtonId, button);
+    }
+}
+'@
 
 $start = [Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $AppPath
@@ -18,34 +80,26 @@ $launch = [Diagnostics.Process]::Start($start)
 try {
     $stdout = $launch.StandardOutput.ReadToEndAsync()
     $stderr = $launch.StandardError.ReadToEndAsync()
-    $condition = [Windows.Automation.AndCondition]::new(
-        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty, $launch.Id),
-        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ClassNameProperty, '#32770'),
-        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'AgentBro')
-    )
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    $text = ''
     do {
         if ($launch.HasExited) {
             throw "AgentBro exited with code $($launch.ExitCode) before showing its startup error."
         }
-        $dialog = [Windows.Automation.AutomationElement]::RootElement.FindFirst(
-            [Windows.Automation.TreeScope]::Children, $condition)
-        if ($dialog) { break }
+        $dialog = [AgentBroStartupDialog]::Find($launch.Id)
+        if ($dialog -ne [IntPtr]::Zero) {
+            $text = [AgentBroStartupDialog]::ReadText($dialog)
+            if ($text -match 'Microsoft Edge WebView2 Runtime') { break }
+        }
         Start-Sleep -Milliseconds 100
     } until ([DateTime]::UtcNow -ge $deadline)
-    if (-not $dialog) { throw 'Timed out waiting for the AgentBro startup error dialog.' }
-
-    $textCondition = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Text)
-    $text = $dialog.FindAll([Windows.Automation.TreeScope]::Descendants, $textCondition) |
-        ForEach-Object { $_.Current.Name }
-    if (($text -join ' ') -notmatch 'Microsoft Edge WebView2 Runtime') {
+    if ($dialog -eq [IntPtr]::Zero) { throw 'Timed out waiting for the AgentBro startup error dialog.' }
+    if ($text -notmatch 'Microsoft Edge WebView2 Runtime') {
         throw "The startup error did not explain which runtime to check. $text"
     }
-    $buttonCondition = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
-    $acknowledge = $dialog.FindFirst([Windows.Automation.TreeScope]::Descendants, $buttonCondition)
-    $acknowledge.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+    if (-not [AgentBroStartupDialog]::Acknowledge($dialog)) {
+        throw 'Could not activate the OK button on the native startup error.'
+    }
     if (-not $launch.WaitForExit(5000) -or $launch.ExitCode -ne 1) {
         throw 'Acknowledging the native startup error did not close the failed launch with exit code 1.'
     }
