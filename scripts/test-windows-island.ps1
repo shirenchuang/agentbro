@@ -915,9 +915,11 @@ function Test-InstalledPlanReview([Windows.Automation.AutomationElement]$Island)
 
 function Test-InstalledDisconnectedHookCard(
     [Windows.Automation.AutomationElement]$Island,
+    [IntPtr]$WindowHandle,
     [string]$EventName,
     [string]$ButtonName
 ) {
+    Move-ToIslandHoverPoint $WindowHandle $Island
     $fixture = Open-HookFixture @{
         agent = 'claude-code'
         event = $EventName
@@ -930,13 +932,20 @@ function Test-InstalledDisconnectedHookCard(
         plan_content = 'Wait for the test to close the Hook connection.'
     }
     $findButton = {
-        Find-IslandButton $Island { param($Name) $Name.EndsWith($ButtonName) }
+        $visible = Find-VisibleIsland
+        if ($visible -and $visible.Handle -eq $WindowHandle) {
+            Find-IslandButton $visible.Element { param($Name) $Name.EndsWith($ButtonName) }
+        }
     }
     try {
         $null = Wait-IslandValue "the pending $EventName button to appear" $findButton
         $fixture.Connection.Dispose()
-        $null = Wait-IslandValue "the disconnected $EventName button to disappear" {
-            -not (& $findButton)
+        $null = Wait-IslandValue "the disconnected $EventName button to leave the open Island" {
+            $visible = Find-VisibleIsland
+            if (-not $visible -or $visible.Handle -ne $WindowHandle) { return }
+            $session = Find-IslandSessionGroup $visible.Element { param($Name) $Name.Contains($ProjectName) }
+            ($session -or (Find-IslandButton $visible.Element { param($Name) $Name -eq 'Back to sessions' })) -and
+                -not (& $findButton)
         } 5
         Write-Output "Windows Island removed the $EventName card after its Hook disconnected."
     } finally {
@@ -1200,8 +1209,8 @@ try {
     }
     Test-InstalledQuestionReply $island
     Test-InstalledPlanReview $island
-    Test-InstalledDisconnectedHookCard $island 'AskQuestion' 'Disconnected fixture answer'
-    Test-InstalledDisconnectedHookCard $island 'PlanApproval' 'Manual Review'
+    Test-InstalledDisconnectedHookCard $island $islandWindow.Handle 'AskQuestion' 'Disconnected fixture answer'
+    Test-InstalledDisconnectedHookCard $island $islandWindow.Handle 'PlanApproval' 'Manual Review'
     if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $DiagnosticsExportPath -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }
