@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::io;
 use std::mem::size_of;
 use std::ptr::null_mut;
@@ -48,11 +49,11 @@ impl StartupRecovery {
         true
     }
 
-    pub(crate) fn window_creation_failed(&self, label: &str, error: &tauri::Error) {
+    pub(crate) fn fail(&self, stage: &str, error: impl Display) {
         if !self.finish(Phase::Failed) {
             return;
         }
-        log::error!("Startup: could not create Windows window '{label}': {error}");
+        log::error!("Startup: {stage}: {error}");
         let language = unsafe { GetUserDefaultUILanguage() };
         let [heading, guidance] = failure_messages(language & 0x03ff);
         let details: Vec<u16> = format!("{heading}\n\n{guidance}\n\n{error}")

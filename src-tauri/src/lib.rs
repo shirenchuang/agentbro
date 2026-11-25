@@ -6023,11 +6023,21 @@ pub fn run() {
                 if let Some(error) = startup_lock_error {
                     log::warn!("Could not acquire the Windows startup lock: {error}");
                 }
+                match tauri::webview_version() {
+                    Ok(version) => log::info!("Startup: WebView2 runtime {version}"),
+                    Err(error) => {
+                        startup_setup.fail("could not locate the WebView2 runtime", error);
+                        return Ok(());
+                    }
+                }
                 for config in &configured_windows {
                     let result = tauri::WebviewWindowBuilder::from_config(app.handle(), config)
                         .and_then(|builder| builder.build());
                     if let Err(error) = result {
-                        startup_setup.window_creation_failed(&config.label, &error);
+                        startup_setup.fail(
+                            &format!("could not create Windows window '{}'", config.label),
+                            error,
+                        );
                         return Ok(());
                     }
                 }

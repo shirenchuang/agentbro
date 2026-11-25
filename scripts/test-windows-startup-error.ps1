@@ -51,10 +51,10 @@ try {
     }
     $log = $stdout.GetAwaiter().GetResult()
     $startupError = $log -split "\r?\n" | Where-Object {
-        $_ -match "Startup: could not create Windows window 'notch': .+"
+        $_ -match 'Startup: could not locate the WebView2 runtime: .+'
     }
     if (-not $startupError -or $log -match 'Startup: scheduling Hook server') {
-        throw 'Startup did not log the window creation failure before stopping setup.'
+        throw 'Startup did not report the unavailable WebView2 runtime before stopping setup.'
     }
     Write-Output $startupError
     Write-Output 'Acknowledged the installed native WebView2 startup error before normal AgentBro setup.'
