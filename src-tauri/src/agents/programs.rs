@@ -1068,10 +1068,12 @@ async fn run_package_command(
 ) -> Result<ExitStatus, String> {
     #[cfg(target_os = "windows")]
     let (stdout, stderr) = {
-        let (stdout, child_stdout) = windows_package_pipe()
+        use crate::platform::process::windows_output_pipe;
+
+        let (stdout, child_stdout) = windows_output_pipe()
             .await
             .map_err(|error| format!("Could not prepare package stdout: {error}"))?;
-        let (stderr, child_stderr) = windows_package_pipe()
+        let (stderr, child_stderr) = windows_output_pipe()
             .await
             .map_err(|error| format!("Could not prepare package stderr: {error}"))?;
         command.stdout(child_stdout).stderr(child_stderr);
@@ -1113,28 +1115,6 @@ async fn run_package_command(
         emit_stderr(&String::from_utf8_lossy(&stderr_line));
     }
     status.map_err(|error| format!("Could not wait for package command: {error}"))
-}
-
-#[cfg(target_os = "windows")]
-async fn windows_package_pipe(
-) -> io::Result<(tokio::net::windows::named_pipe::NamedPipeServer, Stdio)> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use tokio::net::windows::named_pipe::ServerOptions;
-
-    // Tokio's standard child pipes use blocking reads on Windows that can outlive the timeout.
-    let name = format!(r"\\.\pipe\AgentBro-package-{}", uuid::Uuid::new_v4());
-    let reader = ServerOptions::new()
-        .access_outbound(false)
-        .first_pipe_instance(true)
-        .reject_remote_clients(true)
-        .max_instances(1)
-        .create(&name)?;
-    let writer = std::fs::OpenOptions::new()
-        .write(true)
-        .share_mode(0)
-        .open(name)?;
-    reader.connect().await?;
-    Ok((reader, Stdio::from(writer)))
 }
 
 async fn forward_package_output(

@@ -1,6 +1,10 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn command_exists(binary: &str) -> bool {
     find_binary(binary).is_some()
@@ -421,28 +425,26 @@ fn is_fish(shell: &str) -> bool {
     shell.ends_with("/fish")
 }
 
-fn shell_var_fallback_cmd(var: &str) -> String {
+pub fn login_shell_var(var: &str) -> Option<String> {
     let shell = user_shell();
-    if is_fish(&shell) {
+    let query = if is_fish(&shell) {
         format!("printf '%s' \"${}\"", var)
     } else {
         format!("printf '%s' \"${{{}:-}}\"", var)
-    }
-}
-
-pub fn login_shell_var(var: &str) -> Option<String> {
-    shell_var(var, false)
+    };
+    let output = shell_query(&shell, "-lc", &query)?;
+    let value = String::from_utf8_lossy(&output).trim().to_string();
+    (!value.is_empty()).then_some(value)
 }
 
 pub fn interactive_login_shell_vars(vars: &[&str]) -> Vec<(String, String)> {
     if vars.is_empty() {
         return Vec::new();
     }
-    let output = match interactive_login_shell_output(user_shell()) {
-        Some(output) if output.status.success() => output,
-        _ => return Vec::new(),
+    let Some(output) = shell_query(&user_shell(), "-lic", "env") else {
+        return Vec::new();
     };
-    let output = String::from_utf8_lossy(&output.stdout);
+    let output = String::from_utf8_lossy(&output);
     vars.iter()
         .filter_map(|name| {
             output.lines().find_map(|line| {
@@ -454,11 +456,13 @@ pub fn interactive_login_shell_vars(vars: &[&str]) -> Vec<(String, String)> {
         .collect()
 }
 
-#[cfg(target_os = "macos")]
-fn interactive_login_shell_output(shell: String) -> Option<std::process::Output> {
-    use std::process::Stdio;
-    use std::time::Duration;
+fn shell_query(shell: &str, mode: &str, query: &str) -> Option<Vec<u8>> {
+    let mut command = crate::platform::process::background_tokio_command(shell);
+    command.args([mode, query]);
+    shell_probe_output(command)
+}
 
+fn shell_probe_output(command: tokio::process::Command) -> Option<Vec<u8>> {
     // Agent inventory can call this from inside the app's Tokio runtime.
     std::thread::Builder::new()
         .spawn(move || {
@@ -466,85 +470,99 @@ fn interactive_login_shell_output(shell: String) -> Option<std::process::Output>
                 .enable_all()
                 .build()
                 .ok()?
-                .block_on(async {
-                    let child = crate::platform::process::background_tokio_command(shell)
-                        .args(["-lic", "env"])
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::null())
-                        .process_group(0)
-                        .kill_on_drop(true)
-                        .spawn()
-                        .ok()?;
-                    let group = child.id()? as libc::pid_t;
-                    let output = child.wait_with_output();
-                    tokio::pin!(output);
-                    match tokio::time::timeout(Duration::from_secs(3), &mut output).await {
-                        Ok(result) => result.ok(),
-                        Err(_) => {
-                            unsafe { libc::killpg(group, libc::SIGKILL) };
-                            None
-                        }
-                    }
-                })
+                .block_on(capture_shell_output(command))
         })
         .ok()?
         .join()
         .ok()?
 }
 
-#[cfg(not(target_os = "macos"))]
-fn interactive_login_shell_output(shell: String) -> Option<std::process::Output> {
-    crate::platform::process::background_command(shell)
-        .args(["-lic", "env"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
+async fn capture_shell_output(mut command: tokio::process::Command) -> Option<Vec<u8>> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+
+    const MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
+
+    command
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(target_os = "windows")]
+    let stdout = {
+        let (reader, writer) = crate::platform::process::windows_output_pipe().await.ok()?;
+        command.stdout(writer);
+        reader
+    };
+    #[cfg(not(target_os = "windows"))]
+    command.stdout(Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    drop(command);
+    #[cfg(not(target_os = "windows"))]
+    let stdout = child.stdout.take()?;
+
+    let result = tokio::time::timeout(SHELL_PROBE_TIMEOUT, async {
+        let mut bytes = Vec::new();
+        stdout
+            .take(MAX_OUTPUT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .ok()?;
+        if bytes.len() as u64 > MAX_OUTPUT_BYTES {
+            return None;
+        }
+        // Keep the PID reserved until stdout closes, including inherited writers.
+        child.wait().await.ok()?.success().then_some(bytes)
+    })
+    .await;
+    if let Ok(Some(bytes)) = result {
+        return Some(bytes);
+    }
+    #[cfg(unix)]
+    if let Some(group) = child.id() {
+        unsafe { libc::killpg(group as libc::pid_t, libc::SIGKILL) };
+    }
+    #[cfg(not(unix))]
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_millis(200), child.wait()).await;
+    None
 }
 
-fn shell_var(var: &str, interactive: bool) -> Option<String> {
-    let shell = user_shell();
-    let cmd = shell_var_fallback_cmd(var);
-    let shell_mode = if interactive { "-lic" } else { "-lc" };
-    let output = crate::platform::process::background_command(&shell)
-        .args([shell_mode, &cmd])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if val.is_empty() {
-        None
-    } else {
-        Some(val)
-    }
+struct ShellPathCache {
+    shell: String,
+    expires_at: Instant,
+    paths: Option<Vec<PathBuf>>,
 }
 
 fn login_shell_path() -> Option<Vec<PathBuf>> {
+    static CACHE: Mutex<Option<ShellPathCache>> = Mutex::new(None);
+
     let shell = user_shell();
-    let cmd = if is_fish(&shell) {
+    let mut cache = CACHE.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(entry) = cache
+        .as_ref()
+        .filter(|entry| entry.shell == shell && Instant::now() < entry.expires_at)
+    {
+        return entry.paths.clone();
+    }
+    let query = if is_fish(&shell) {
         "printf '%s' (string join ':' $PATH)"
     } else {
         "printf '%s' \"$PATH\""
     };
-    let output = crate::platform::process::background_command(shell)
-        .args(["-lc", cmd])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path_str.is_empty() {
-        return None;
-    }
-    Some(std::env::split_paths(&path_str).collect())
+    let paths = shell_query(&shell, "-lc", query).and_then(|output| {
+        let value = String::from_utf8_lossy(&output);
+        let value = value.trim();
+        (!value.is_empty()).then(|| std::env::split_paths(value).collect())
+    });
+    let ttl = Duration::from_secs(if paths.is_some() { 5 } else { 15 });
+    *cache = Some(ShellPathCache {
+        shell,
+        expires_at: Instant::now() + ttl,
+        paths: paths.clone(),
+    });
+    paths
 }
 
 fn candidate_dirs() -> Vec<PathBuf> {
@@ -779,6 +797,104 @@ mod tests {
                 .iter()
                 .any(|family| family.eq_ignore_ascii_case(codex))
         );
+    }
+
+    #[test]
+    fn shell_probe_times_out_even_when_the_child_has_written_output() {
+        const MODE: &str = "AGENTBRO_TEST_SHELL_PROBE_MODE";
+        const TEST: &str =
+            "agents::executable::tests::shell_probe_times_out_even_when_the_child_has_written_output";
+        const MARKER: &str = "agentbro shell probe fixture";
+        if let Some(mode) = std::env::var_os(MODE) {
+            use std::io::Write;
+
+            println!("{MARKER}");
+            std::io::stdout().flush().unwrap();
+            if mode == "slow" {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+            return;
+        }
+
+        let executable = std::env::current_exe().unwrap();
+        let probe = |mode| {
+            let mut command = crate::platform::process::background_tokio_command(&executable);
+            command
+                .args(["--exact", TEST, "--nocapture"])
+                .env(MODE, mode);
+            super::shell_probe_output(command)
+        };
+        let output = probe("ready").unwrap();
+        assert!(String::from_utf8_lossy(&output).contains(MARKER));
+        let started = std::time::Instant::now();
+        assert_eq!(probe("slow"), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_path_probe_falls_back_and_reuses_its_result_across_agent_lookups() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const FIXTURE: &str = "AGENTBRO_TEST_SHELL_PATH_ROOT";
+        const MODE: &str = "AGENTBRO_TEST_SHELL_PATH_MODE";
+        const TEST: &str =
+            "agents::executable::tests::shell_path_probe_falls_back_and_reuses_its_result_across_agent_lookups";
+
+        if let Some(root) = std::env::var_os(FIXTURE).map(std::path::PathBuf::from) {
+            let slow = std::env::var_os(MODE).as_deref() == Some(std::ffi::OsStr::new("slow"));
+            let started = std::time::Instant::now();
+            for name in ["inherited-first", "inherited-second"] {
+                let inherited = root.join(name);
+                let dirs =
+                    super::candidate_dirs_with_path(Some(inherited.clone().into_os_string()));
+                assert_eq!(dirs.first(), Some(&inherited));
+                assert!(dirs.contains(&root.join(".local/bin")));
+                assert_eq!(dirs.contains(&root.join("shell-only")), !slow);
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(8));
+            assert_eq!(
+                std::fs::read_to_string(root.join("queries")).unwrap(),
+                "probe\n"
+            );
+            return;
+        }
+
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = fixture.path();
+        let shell = root.join("test-shell");
+        std::fs::write(
+            &shell,
+            r#"#!/bin/sh
+printf 'probe\n' >> "$AGENTBRO_TEST_SHELL_PATH_ROOT/queries"
+printf '%s' "$AGENTBRO_TEST_SHELL_PATH_ROOT/shell-only"
+if [ "$AGENTBRO_TEST_SHELL_PATH_MODE" = slow ]; then
+    /bin/sleep 10 &
+fi
+exit 0
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        for mode in ["ready", "slow"] {
+            std::fs::write(root.join("queries"), []).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(FIXTURE, root)
+                .env(MODE, mode)
+                .env("HOME", root)
+                .env("SHELL", &shell)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[cfg(any(unix, target_os = "windows"))]
