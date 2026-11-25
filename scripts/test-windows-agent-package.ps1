@@ -58,7 +58,10 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
     [Windows.Automation.AutomationElement]$Settings,
     [string]$FixtureLauncher
 ) {
-    Set-Content -LiteralPath $FixtureLauncher -Value '@echo 2.0.0' -Encoding ascii
+    $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
+    Copy-Item -LiteralPath (Join-Path $fixtureStage 'claude.cmd.fixture') -Destination $FixtureLauncher
+    '{"name":"@anthropic-ai/claude-code","version":"2.0.0","bin":{"claude":"cli.js"}}' |
+        Set-Content -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_MANIFEST -Encoding ascii
     Remove-Item -LiteralPath @(
         $env:AGENTBRO_PACKAGE_CONSOLE_RESULT,
         $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED,
@@ -227,6 +230,7 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     $null = Wait-IslandValue 'the installed fixture version' {
         Test-PackVisibleText $settings '当前版本 2.0.0'
     }
+    Write-Output 'Agent Management reported the selected launcher version 2.0.0 with a separate npm default installation at 9.0.0.'
     if (Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }) {
         throw 'Agent Management offered an update while the registry tag was lower than the installed version'
     }
@@ -326,6 +330,10 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
             (Find-PackControl $settings '999.0.0') -and (Find-PackControl $settings 'Agent 更新完成')
     }
     Write-Output 'Agent Management confirmed the retry after detecting version 999.0.0.'
+    $defaultManifest = Join-Path $env:npm_config_prefix 'node_modules\@anthropic-ai\claude-code\package.json'
+    if ((Get-Content -LiteralPath $defaultManifest -Raw | ConvertFrom-Json).version -ne '9.0.0') {
+        throw 'The npm update modified the separate default installation'
+    }
     $report = Get-Content -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT -Raw -Encoding utf8 | ConvertFrom-Json
     Write-Output "Installed package console probe: $($report | ConvertTo-Json -Compress)"
     $null = Wait-IslandValue 'stdout and stderr in Agent Management' {
@@ -395,11 +403,15 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
             (Test-PackVisibleText $settings 'Agent「Claude Code」已卸载')
     }
     $cleanedSettings = Get-Content -LiteralPath $fixtureSettings -Raw
+    if (-not (Test-Path -LiteralPath (Join-Path $env:npm_config_prefix 'claude.cmd') -PathType Leaf) -or
+        (Get-Content -LiteralPath $defaultManifest -Raw | ConvertFrom-Json).version -ne '9.0.0') {
+        throw 'The npm uninstall modified the separate default installation'
+    }
     if ((Test-Path -LiteralPath $fixtureSkills -PathType Leaf) -or
         $cleanedSettings -match 'agentbro-bridge' -or $cleanedSettings -notmatch 'echo user-hook') {
         throw 'The successful uninstall must remove the reviewed Skill and AgentBro Hook and keep the user Hook'
     }
-    Write-Output 'Agent Management removed the reviewed Skill and AgentBro Hook after verifying that the fixture launcher was removed.'
+    Write-Output 'Agent Management removed the selected npm launcher and its reviewed resources, and preserved the separate npm installation.'
     Test-InstalledAgentPackageAcrossSettingsWindows $settings $fixtureLauncher
 }
 
