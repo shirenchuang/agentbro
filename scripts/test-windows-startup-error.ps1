@@ -6,11 +6,11 @@ param(
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 
 public static class AgentBroStartupDialog {
-    private const int OkButtonId = 1;
     private const uint GetTextMessage = 0x000D;
     private const uint CommandMessage = 0x0111;
     private const uint AbortIfHung = 0x0002;
@@ -30,9 +30,9 @@ public static class AgentBroStartupDialog {
         StringBuilder text, uint flags, uint timeout, out IntPtr result);
 
     [DllImport("user32.dll")]
-    private static extern IntPtr GetDlgItem(IntPtr window, int controlId);
+    private static extern int GetDlgCtrlID(IntPtr window);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool PostMessage(IntPtr window, uint message, IntPtr command, IntPtr control);
 
     public static IntPtr Find(uint processId) {
@@ -61,9 +61,13 @@ public static class AgentBroStartupDialog {
         return body.ToString();
     }
 
-    public static bool Acknowledge(IntPtr dialog) {
-        var button = GetDlgItem(dialog, OkButtonId);
-        return button != IntPtr.Zero && PostMessage(dialog, CommandMessage, (IntPtr)OkButtonId, button);
+    public static void Acknowledge(IntPtr dialog) {
+        var button = FindWindowEx(dialog, IntPtr.Zero, "Button", null);
+        if (button == IntPtr.Zero)
+            throw new InvalidOperationException("The native startup error has no button control.");
+        var buttonId = GetDlgCtrlID(button);
+        if (!PostMessage(dialog, CommandMessage, (IntPtr)buttonId, button))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not activate the native startup error button.");
     }
 }
 '@
@@ -97,9 +101,8 @@ try {
     if ($text -notmatch 'Microsoft Edge WebView2 Runtime') {
         throw "The startup error did not explain which runtime to check. $text"
     }
-    if (-not [AgentBroStartupDialog]::Acknowledge($dialog)) {
-        throw 'Could not activate the OK button on the native startup error.'
-    }
+    Write-Output $text.Trim()
+    [AgentBroStartupDialog]::Acknowledge($dialog)
     if (-not $launch.WaitForExit(5000) -or $launch.ExitCode -ne 1) {
         throw 'Acknowledging the native startup error did not close the failed launch with exit code 1.'
     }
