@@ -30,6 +30,17 @@ FIXED_CENTER_PATH = HOME / ".agentbro" / "skills"
 SHARED_SKILLS_AGENT_ID = "agents"
 DEFAULT_PACK_NAME = "全量技能包"
 SHARED_SKILL_CONSUMERS = ("codex", "kimi", "openclaw")
+AGENT_PACKAGES = {
+    "claude-code": ("npm", "@anthropic-ai/claude-code"),
+    "codex": ("npm", "@openai/codex"),
+    "gemini": ("npm", "@google/gemini-cli"),
+    "opencode": ("npm", "opencode-ai"),
+    "openclaw": ("npm", "openclaw"),
+    "copilot": ("npm", "@github/copilot"),
+    "qwen": ("npm", "@qwen-code/qwen-code"),
+    "kimi": ("npm", "@moonshot-ai/kimi-code"),
+    "aider": ("uv", "aider-chat"),
+}
 MCP_INSPECTION_MAX_PAGES = 10
 MCP_INSPECTION_MAX_ITEMS = 500
 MCP_INSPECTION_CATALOG_TIMEOUT = 15
@@ -4190,22 +4201,64 @@ def command_version(binary):
         return None
 
 
+def npm_version_precedence(version):
+    match = re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+        r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+        version,
+    ) if isinstance(version, str) else None
+    if not match:
+        raise ValueError("Could not compare npm versions for this Agent")
+    major, minor, patch, prerelease = match.groups()
+    identifiers = tuple(
+        (0, int(identifier)) if identifier.isdigit() else (1, identifier)
+        for identifier in prerelease.split(".")
+    ) if prerelease else ()
+    return int(major), int(minor), int(patch), not prerelease, identifiers
+
+
+def global_npm_installation(binary, package):
+    if not binary:
+        return None
+    launcher = pathlib.Path(binary)
+    if launcher.parent.name != "bin":
+        return None
+    try:
+        prefix = launcher.parent.parent.resolve(strict=True)
+        package_dir = prefix / "lib" / "node_modules" / package
+        manifest = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict) or manifest.get("name") != package:
+            return None
+        entries = manifest.get("bin")
+        entry = entries.get(launcher.name) if isinstance(entries, dict) else (
+            entries if launcher.name == package.rsplit("/", 1)[-1] else None
+        )
+        version = manifest.get("version")
+        if not isinstance(entry, str) or not isinstance(version, str) or not version.strip():
+            return None
+        relative = pathlib.Path(entry)
+        target = package_dir / relative
+        if relative.is_absolute() or ".." in relative.parts or not target.is_file():
+            return None
+        if target.samefile(launcher):
+            return prefix / "bin" / launcher.name, version.strip()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
 def agent_programs():
-    package_data = {
-        "claude-code": ("npm", "@anthropic-ai/claude-code"),
-        "codex": ("npm", "@openai/codex"),
-        "gemini": ("npm", "@google/gemini-cli"),
-        "opencode": ("npm", "opencode-ai"),
-        "openclaw": ("npm", "openclaw"),
-        "copilot": ("npm", "@github/copilot"),
-        "qwen": ("npm", "@qwen-code/qwen-code"),
-        "kimi": ("npm", "@moonshot-ai/kimi-code"),
-        "aider": ("uv", "aider-chat"),
-    }
     result = []
     for spec in AGENTS:
         binary = agent_binary(spec)
-        package_manager, package_name = package_data.get(spec["id"], (None, None))
+        package_manager, package_name = AGENT_PACKAGES.get(spec["id"], (None, None))
+        installation = global_npm_installation(binary, package_name) if package_manager == "npm" else None
+        if installation:
+            launcher, version = installation
+            binary = str(launcher)
+        else:
+            version = command_version(binary) if binary else None
         installed = agent_installed(spec, binary)
         config_path = agent_config_path(spec["id"])
         if spec["id"] == "claude-code":
@@ -4224,7 +4277,7 @@ def agent_programs():
             "status": "installed" if installed else "notInstalled",
             "packageManager": package_manager,
             "packageName": package_name,
-            "installedVersion": command_version(binary) if binary else None,
+            "installedVersion": version,
             "latestVersion": None,
             "binaryPath": binary,
             "configDir": str(agent_config_path(spec["id"]).parent),
@@ -4239,14 +4292,14 @@ def agent_programs():
             ),
             "updateCommand": (
                 "npm install -g " + package_name + "@latest"
-                if package_manager == "npm"
+                if installation
                 else "uv tool upgrade " + package_name
                 if package_manager == "uv"
                 else None
             ),
             "uninstallCommand": (
                 "npm uninstall -g " + package_name
-                if package_manager == "npm"
+                if installation
                 else "uv tool uninstall " + package_name
                 if package_manager == "uv"
                 else None
@@ -4304,49 +4357,66 @@ def custom_agent_program(agent_id, config):
     return value
 
 
-def run_agent_package_operation(agent_id, operation):
+def run_agent_package_command(command, timeout):
+    completed = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+    )
+    if completed.returncode != 0:
+        raise ValueError((completed.stderr or completed.stdout)[-1200:])
+    return completed.stdout
+
+
+def run_agent_package_operation(agent_id, operation, expected_binary=None):
     spec = agent_spec(agent_id)
     if not spec:
         raise ValueError("Unknown Agent: " + agent_id)
-    packages = {
-        "claude-code": ("npm", "@anthropic-ai/claude-code"),
-        "codex": ("npm", "@openai/codex"),
-        "gemini": ("npm", "@google/gemini-cli"),
-        "opencode": ("npm", "opencode-ai"),
-        "openclaw": ("npm", "openclaw"),
-        "copilot": ("npm", "@github/copilot"),
-        "qwen": ("npm", "@qwen-code/qwen-code"),
-        "kimi": ("npm", "@moonshot-ai/kimi-code"),
-        "aider": ("uv", "aider-chat"),
-    }
-    package = packages.get(agent_id)
+    package = AGENT_PACKAGES.get(agent_id)
     if not package:
         raise ValueError("This Agent does not support remote package management")
     manager, name = package
     if manager == "npm":
+        binary = agent_binary(spec)
+        installation = global_npm_installation(binary, name)
+        if expected_binary is not None and (not installation or str(installation[0]) != expected_binary):
+            raise ValueError("The SSH host selected a different Agent launcher. Refresh Agent Management and review the installation again.")
+        if not binary and operation == "uninstall":
+            return None
+        if (binary or operation != "install") and not installation:
+            raise ValueError("Could not identify the npm installation for " + spec["displayName"])
         executable = shutil.which("npm")
         if not executable:
             raise ValueError("npm is not installed on the remote server")
+        prefix_args = []
+        if installation:
+            launcher, installed_version = installation
+            prefix_args = ["--prefix", str(launcher.parent.parent)]
         if operation == "uninstall":
             command = [executable, "uninstall", "-g", name]
+        elif operation == "update":
+            latest = json.loads(run_agent_package_command(
+                [executable, "view", name + "@latest", "version", "--json",
+                 "--fetch-retries=0", "--fetch-timeout=4000"] + prefix_args,
+                timeout=8,
+            ))
+            if npm_version_precedence(latest) <= npm_version_precedence(installed_version):
+                return None
+            if global_npm_installation(agent_binary(spec), name) != installation:
+                raise ValueError("The SSH Agent installation changed while checking for updates. Refresh Agent Management and try again.")
+            command = [executable, "install", "-g", name + "@" + latest]
         else:
-            package_name = name + "@latest" if operation == "update" else name
-            command = [executable, "install", "-g", package_name]
+            command = [executable, "install", "-g", name]
+        command.extend(prefix_args)
     else:
         executable = shutil.which("uv")
         if not executable:
             raise ValueError("uv is not installed on the remote server")
         uv_operation = "upgrade" if operation == "update" else operation
         command = [executable, "tool", uv_operation, name]
-    completed = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=300,
-    )
-    if completed.returncode != 0:
-        raise ValueError((completed.stderr or completed.stdout)[-1200:])
+    run_agent_package_command(command, timeout=300)
     return None
 
 
@@ -5039,6 +5109,7 @@ def dispatch():
         return run_agent_package_operation(
             args["agentId"],
             command[len("agent_"):],
+            args.get("expectedBinaryPath"),
         )
     if command in ("agent_open_download", "agent_open_app"):
         return None

@@ -3905,6 +3905,31 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('当前版本 2.1.90')).toBeInTheDocument()
   })
 
+  it('checks for SSH npm updates against the reviewed launcher without a registry version', async () => {
+    const environmentId = 'remote-runtime'
+    const binaryPath = '/home/team/selected/bin/claude'
+    const program = makeProgram({ installedVersion: '1.0.0', latestVersion: null, binaryPath })
+    useRuntimeEnvironmentStore.getState().selectEnvironment(environmentId)
+    useSkillStoreV2.setState({ runtimeEnvironmentId: environmentId })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([program])
+      .mockResolvedValueOnce([program])
+      .mockResolvedValue([{ ...program, installedVersion: '2.0.0', binaryPath: '/home/team/other/bin/claude' }])
+    const update = vi.spyOn(agentApi, 'update').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '检查并更新' }))
+    expect(await screen.findByText('更新检查完成，Claude Code 当前版本为 1.0.0。')).toBeInTheDocument()
+    expect(update).toHaveBeenCalledExactlyOnceWith('claude-code', environmentId, binaryPath)
+
+    fireEvent.click(screen.getByRole('button', { name: '检查并更新' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Claude Code/)
+    expect(screen.queryByText('Agent 更新完成')).not.toBeInTheDocument()
+  })
+
   it('keeps an update active across Agent Management navigation and keeps its verified version', async () => {
     const oldProgram = makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })
     const newProgram = makeProgram({ installedVersion: '2.0.0', latestVersion: '2.0.0' })
@@ -8183,19 +8208,28 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByText(/已卸载/)).not.toBeInTheDocument()
   })
 
-  it.each([true, false])('cleans reviewed SSH resources after confirming launcher absence, uninstall=%s', async (installed) => {
+  it.each([
+    { installed: true, remainingBinary: null },
+    { installed: false, remainingBinary: null },
+    { installed: true, remainingBinary: '/home/test/other/bin/claude' },
+  ])('cleans SSH resources according to the remaining launcher, uninstall=$installed remaining=$remainingBinary', async ({ installed, remainingBinary }) => {
     const environmentId = 'remote-runtime'
     useRuntimeEnvironmentStore.getState().selectEnvironment(environmentId)
     const unmanaged = makeSharedUnmanaged('remote-skill', { agentId: 'claude-code' })
     useSkillStoreV2.setState({ runtimeEnvironmentId: environmentId, unmanaged: [unmanaged] })
     const residual = makeProgram({
       status: 'installed',
-      binaryPath: null,
+      binaryPath: remainingBinary,
+      uninstallCommand: null,
       configDir: '/home/test/.claude',
       skillsDir: '/home/test/.claude/skills',
       hooksInstalled: true,
     })
-    const reviewed = installed ? { ...residual, binaryPath: '/home/test/bin/claude' } : residual
+    const reviewed = installed ? {
+      ...residual,
+      binaryPath: '/home/test/bin/claude',
+      uninstallCommand: 'npm uninstall -g @anthropic-ai/claude-code',
+    } : residual
     vi.spyOn(agentApi, 'refresh').mockResolvedValueOnce([reviewed]).mockResolvedValue([residual])
     const verify = vi.spyOn(agentApi, 'list').mockResolvedValue([residual])
     const uninstall = vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
@@ -8211,11 +8245,20 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(await screen.findByRole('button', { name: installed ? '卸载 Agent' : '清理残留' }))
     fireEvent.click(screen.getByRole('button', { name: installed ? '确认卸载' : '确认清理' }))
 
+    if (remainingBinary) {
+      expect(await screen.findByRole('alert')).toHaveTextContent('已保留 Skills 和 Hook')
+      expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', environmentId, reviewed.binaryPath)
+      expect(verify).toHaveBeenCalledExactlyOnceWith(environmentId)
+      expect(deleteManaged).not.toHaveBeenCalled()
+      expect(deleteUnmanaged).not.toHaveBeenCalled()
+      expect(uninstallHook).not.toHaveBeenCalled()
+      return
+    }
     await waitFor(() => expect(uninstallHook).toHaveBeenCalledExactlyOnceWith('claude-code', environmentId))
     expect(deleteManaged).toHaveBeenCalledExactlyOnceWith(agentDetail.skills.map((skill) => skill.id), environmentId)
     expect(deleteUnmanaged).toHaveBeenCalledExactlyOnceWith('claude-code', unmanaged.id, environmentId)
     if (installed) {
-      expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', environmentId)
+      expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', environmentId, reviewed.binaryPath)
       expect(verify).toHaveBeenCalledExactlyOnceWith(environmentId)
     } else {
       expect(uninstall).not.toHaveBeenCalled()
