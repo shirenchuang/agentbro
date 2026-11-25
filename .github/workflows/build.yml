@@ -74,6 +74,10 @@ on:
         description: Verify duplicate launches against an existing Windows installer
         type: boolean
         default: false
+      windows_verify_startup_failure:
+        description: Verify the native startup error when a specified WebView2 runtime is unavailable
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -416,6 +420,7 @@ jobs:
           VERIFY_GLOBAL_SHORTCUTS: ${{ inputs.windows_verify_global_shortcuts }}
           VERIFY_STARTUP_STACKS: ${{ inputs.windows_verify_startup_stacks }}
           VERIFY_STARTUP_LOCK: ${{ !inputs.windows_artifact_run || inputs.windows_verify_startup_lock }}
+          VERIFY_STARTUP_FAILURE: ${{ !inputs.windows_artifact_run || inputs.windows_verify_startup_failure }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           if (-not $installer) {
@@ -440,6 +445,7 @@ jobs:
                   -VerifyGlobalShortcuts:($env:VERIFY_GLOBAL_SHORTCUTS -eq 'true') `
                   -VerifyStartupStackSampler:($env:VERIFY_STARTUP_STACKS -eq 'true') `
                   -VerifyStartupLock:($env:VERIFY_STARTUP_LOCK -eq 'true') `
+                  -VerifyStartupFailure:($env:VERIFY_STARTUP_FAILURE -eq 'true') `
                   -SymbolsDirectory (Join-Path $PWD 'windows-installers')
           } finally {
               if ($wslPromptWatcher) {
