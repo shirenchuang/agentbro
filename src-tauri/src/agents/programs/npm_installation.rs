@@ -68,15 +68,7 @@ pub(super) fn npm_installation(launcher: &Path, package: &str) -> Option<NpmInst
     let matches = if windows {
         let relative = target.strip_prefix(directory).ok()?.to_str()?;
         let script = fs::read_to_string(launcher).ok()?;
-        let target = format!(r#""%dp0%\{relative}" %*"#).to_ascii_lowercase();
-        let legacy = format!(r#""%~dp0{relative}" %*"#).to_ascii_lowercase();
-        let legacy_with_separator = format!(r#""%~dp0\{relative}" %*"#).to_ascii_lowercase();
-        script.lines().any(|line| {
-            let line = line.trim_end().to_ascii_lowercase();
-            line.ends_with(&target)
-                || line.ends_with(&legacy)
-                || line.ends_with(&legacy_with_separator)
-        })
+        windows_shim_matches_entry(&script, relative)
     } else {
         launcher.canonicalize().ok()? == target.canonicalize().ok()?
     };
@@ -93,13 +85,37 @@ pub(super) fn npm_installation(launcher: &Path, package: &str) -> Option<NpmInst
     })
 }
 
+fn windows_shim_matches_entry(script: &str, relative: &str) -> bool {
+    let relative = relative.replace('/', "\\").to_ascii_lowercase();
+    let target = format!(r#""%dp0%\{relative}" %*"#);
+    let legacy = format!(r#""%~dp0{relative}" %*"#);
+    let legacy_with_separator = format!(r#""%~dp0\{relative}" %*"#);
+    script.lines().any(|line| {
+        let line = line.trim_end().to_ascii_lowercase();
+        line.ends_with(&target) || line.ends_with(&legacy) || line.ends_with(&legacy_with_separator)
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::npm_installation;
+    use super::{npm_installation, windows_shim_matches_entry};
     use crate::skills::installer::TempInstallDir;
     use std::{fs, path::Path};
 
     const PACKAGE: &str = "@anthropic-ai/claude-code";
+
+    #[test]
+    fn windows_npm_shim_matches_scoped_entry_with_mixed_separators() {
+        let script = r#""%_prog%" "%dp0%\node_modules\@anthropic-ai\claude-code\bin\cli.js" %*"#;
+        assert!(windows_shim_matches_entry(
+            script,
+            r"node_modules\@anthropic-ai/claude-code\bin/cli.js"
+        ));
+        assert!(!windows_shim_matches_entry(
+            script,
+            r"node_modules\@anthropic-ai/a-different-package\bin/cli.js"
+        ));
+    }
 
     fn install(prefix: &Path, version: &str) -> std::path::PathBuf {
         #[cfg(windows)]
