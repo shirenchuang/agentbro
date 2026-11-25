@@ -3817,6 +3817,24 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('button', { name: '安装此 Agent' })).toBeEnabled()
   })
 
+  it('keeps the installed version when the desktop npm tag moves backward before update', async () => {
+    const reviewed = makeProgram({ status: 'updateAvailable', installedVersion: '2.0.0', latestVersion: '3.0.0' })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([reviewed])
+      .mockResolvedValue([{ ...reviewed, status: 'installed', latestVersion: '1.0.0' }])
+    vi.spyOn(agentApi, 'update').mockResolvedValue('noNewerVersion')
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+    expect(await screen.findByText('更新检查完成，Claude Code 当前版本为 2.0.0。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '无需更新' })).toBeDisabled()
+    expect(screen.queryByText('Agent 更新完成')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('reports an unchanged version and confirms a retry only after detecting the update', async () => {
     const outdated = makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })
     vi.spyOn(agentApi, 'refresh')

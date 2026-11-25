@@ -50,6 +50,7 @@ async function invoke<T = void>(
 
 export type AgentProgramKind = 'cli' | 'app'
 export type AgentProgramStatus = 'installed' | 'notInstalled' | 'updateAvailable' | 'unavailable'
+export type AgentUpdateOutcome = 'completed' | 'noNewerVersion' | null
 export type RemoteAgentHookStatus = 'unsupported' | 'notInstalled' | 'installed' | 'needsReinstall' | 'settingsCorrupted'
 
 export interface AgentProgramInfo {
@@ -279,7 +280,7 @@ export const agentApi = {
     : Promise.resolve(),
 
   update: (agentId: string, environmentId?: string, expectedBinaryPath?: string) => isTauriRuntime()
-    ? invoke('agent_update', expectedBinaryPath ? { agentId, expectedBinaryPath } : { agentId }, environmentId)
+    ? invoke<AgentUpdateOutcome | void>('agent_update', expectedBinaryPath ? { agentId, expectedBinaryPath } : { agentId }, environmentId)
     : Promise.resolve(),
 
   uninstall: (agentId: string, environmentId?: string, expectedBinaryPath?: string) => isTauriRuntime()
