@@ -6,15 +6,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 
-$blockedProfile = Join-Path $Stage 'occupied-webview-profile'
-[IO.File]::WriteAllText($blockedProfile, 'The fixture places a regular file at the browser data directory.')
 $start = [Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $AppPath
 $start.WorkingDirectory = Split-Path $AppPath
 $start.UseShellExecute = $false
 $start.RedirectStandardOutput = $true
 $start.RedirectStandardError = $true
-$start.EnvironmentVariables['WEBVIEW2_USER_DATA_FOLDER'] = $blockedProfile
+$start.EnvironmentVariables['WEBVIEW2_BROWSER_EXECUTABLE_FOLDER'] = Join-Path $Stage 'missing-webview2-runtime'
 
 $launch = [Diagnostics.Process]::Start($start)
 try {
@@ -61,9 +59,12 @@ try {
     Write-Output $startupError
     Write-Output 'Acknowledged the installed native WebView2 startup error before normal AgentBro setup.'
 } catch {
-    if ($launch.HasExited) {
-        Write-Output ($stdout.GetAwaiter().GetResult())
-        Write-Output ($stderr.GetAwaiter().GetResult())
+    if (-not $launch.HasExited) {
+        $launch.Kill()
+        $null = $launch.WaitForExit(3000)
+    }
+    foreach ($output in @($stdout, $stderr)) {
+        if ($output.IsCompleted) { Write-Output ($output.GetAwaiter().GetResult()) }
     }
     throw
 } finally {

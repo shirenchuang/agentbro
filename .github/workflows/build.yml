@@ -75,7 +75,7 @@ on:
         type: boolean
         default: false
       windows_verify_startup_failure:
-        description: Verify the native startup error with an unusable WebView2 data directory
+        description: Verify the native startup error when a specified WebView2 runtime is unavailable
         type: boolean
         default: false
 
