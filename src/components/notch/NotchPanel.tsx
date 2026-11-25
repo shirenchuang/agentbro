@@ -317,6 +317,7 @@ export function NotchPanel() {
   const overlayDismissPendingRef = useRef<string | null>(null)
   const inlineBlockingOverlayIdsRef = useRef(new Set<string>())
   const nativeHoverInsideRef = useRef(false)
+  const openedQuestionFromKeyboardRef = useRef(false)
   const hitboxRef = useRef<HTMLDivElement>(null)
   const hoverContentRef = useRef<HTMLDivElement | null>(null)
   const [persistentIdleHidden, setPersistentIdleHidden] = useState(false)
@@ -511,38 +512,47 @@ export function NotchPanel() {
 
   useEffect(() => {
     if (!isTauri()) return
+    let cancelled = false
     let unlisten: (() => void) | undefined
 
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen('tray-open-agentbro', () => {
-        detailModeRef.current = false
-        detailBackGuardUntilRef.current = 0
-        nativeHoverInsideRef.current = true
-        interactionLockUntilRef.current = Date.now() + 700
-        if (leaveTimerRef.current) {
-          clearTimeout(leaveTimerRef.current)
-          leaveTimerRef.current = undefined
-        }
-        if (expandTimerRef.current) {
-          clearTimeout(expandTimerRef.current)
-          expandTimerRef.current = undefined
-        }
-        if (pendingDetailOpenTimerRef.current) {
-          clearTimeout(pendingDetailOpenTimerRef.current)
-          pendingDetailOpenTimerRef.current = undefined
-        }
-        setPersistentIdleHidden(false)
-        setWakeSilencedUntil(0)
-        setNotchOpacity(1).catch(() => {})
-        useSessionStore.getState().setActiveSession(null)
-        setPanelState('hover')
-      }).then((fn) => { unlisten = fn }).catch(() => {})
+    listenTauriEvent<'tray' | 'question-shortcut'>('tray-open-agentbro', ({ payload }) => {
+      if (cancelled) return
+      detailModeRef.current = false
+      detailBackGuardUntilRef.current = 0
+      openedQuestionFromKeyboardRef.current = payload === 'question-shortcut'
+      nativeHoverInsideRef.current = true
+      interactionLockUntilRef.current = Date.now() + 700
+      if (leaveTimerRef.current) {
+        clearTimeout(leaveTimerRef.current)
+        leaveTimerRef.current = undefined
+      }
+      if (expandTimerRef.current) {
+        clearTimeout(expandTimerRef.current)
+        expandTimerRef.current = undefined
+      }
+      if (pendingDetailOpenTimerRef.current) {
+        clearTimeout(pendingDetailOpenTimerRef.current)
+        pendingDetailOpenTimerRef.current = undefined
+      }
+      setPersistentIdleHidden(false)
+      setWakeSilencedUntil(0)
+      setNotchOpacity(1).catch(() => {})
+      useSessionStore.getState().setActiveSession(null)
+      setPanelState('hover')
+    }).then((fn) => {
+      if (cancelled) fn()
+      else unlisten = fn
     }).catch(() => {})
 
     return () => {
+      cancelled = true
       unlisten?.()
     }
   }, [setPanelState, setWakeSilencedUntil])
+
+  useEffect(() => {
+    if (panelState === 'collapsed') openedQuestionFromKeyboardRef.current = false
+  }, [panelState])
 
   // Track sessions needing blocking attention.
   const blockingAttentionCount = useMemo(
@@ -898,6 +908,8 @@ export function NotchPanel() {
   // Mouse leave
   const handleMouseLeave = useCallback(() => {
     if (Date.now() < interactionLockUntilRef.current) return
+    if (openedQuestionFromKeyboardRef.current && document.hasFocus()) return
+    openedQuestionFromKeyboardRef.current = false
     nativeHoverInsideRef.current = false
     if (isDragging) return
     if (expandTimerRef.current) {

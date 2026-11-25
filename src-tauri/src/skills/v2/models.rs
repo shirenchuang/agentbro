@@ -417,6 +417,20 @@ pub struct LinkedSkillPackManifest {
     pub source_url: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewedSkillPackArchive {
+    pub manifest: SkillPackManifest,
+    pub revision: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackArchiveRestoreMember {
+    pub skill_id: String,
+    pub destination_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SkillPackGitHubSource {
@@ -431,6 +445,8 @@ pub struct SkillPackFingerprint {
     pub skill_id: String,
     pub missing: bool,
     pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occupied_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SkillPackGitHubSource>,
 }

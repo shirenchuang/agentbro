@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useId, useRef, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { OverlayItem, SessionState } from '../../types/agent'
 import { OverlayCard } from './OverlayCard'
 import { setNotchFocusable } from '../../services/tauriApi'
 import { answerDisplayedQuestion, questionReplyError, useSessionStore, type QuestionIdentity } from '../../stores/sessionStore'
+import { islandActionProps, runIslandAction } from '../../utils/islandActions'
 import './QuestionCard.css'
 
 interface QuestionOption {
@@ -43,26 +44,40 @@ function parseQuestionTag(question: string): { tag: string | null; text: string 
 const SKIP_INTERVIEW_ANSWER = 'Skip interview and plan immediately'
 
 function QuestionOptionRow({
-  index, selected = false, label, description, multiSelect = false, onMouseDown,
+  index, selected = false, label, description, multiSelect = false, other = false, onActivate,
 }: {
-  index: number; selected?: boolean; label: string; description?: string; multiSelect?: boolean; onMouseDown: () => void
+  index: number
+  selected?: boolean
+  label: string
+  description?: string
+  multiSelect?: boolean
+  other?: boolean
+  onActivate: () => void
 }) {
+  const descriptionId = useId()
   return (
-    <div
-      className={`question-card__option-row ${selected ? 'question-card__option-row--selected' : ''}`}
-      onMouseDown={onMouseDown}
+    <button
+      type="button"
+      className={`question-card__option-row ${selected ? 'question-card__option-row--selected' : ''} ${other ? 'question-card__option-row--other' : ''}`}
+      aria-label={label}
+      aria-describedby={description ? descriptionId : undefined}
+      aria-pressed={multiSelect ? selected : undefined}
+      {...islandActionProps(onActivate)}
     >
-      <span className={`question-card__option-index ${selected ? 'question-card__option-index--selected' : ''}`}>
+      <span
+        className={`question-card__option-index ${selected ? 'question-card__option-index--selected' : ''} ${other ? 'question-card__option-index--other' : ''}`}
+        aria-hidden="true"
+      >
         {multiSelect && selected ? '✓' : index + 1}
       </span>
-      <div className="question-card__option-body">
-        <div className="question-card__option-label">{label}</div>
-        {description && <div className="question-card__option-desc">{description}</div>}
-      </div>
-      <svg className="question-card__option-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none">
+      <span className="question-card__option-body">
+        <span className="question-card__option-label">{label}</span>
+        {description && <span id={descriptionId} className="question-card__option-desc">{description}</span>}
+      </span>
+      <svg aria-hidden="true" className="question-card__option-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none">
         <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
       </svg>
-    </div>
+    </button>
   )
 }
 
@@ -134,8 +149,10 @@ function MultiQuestionView({ data, onAnswer, onDraftStateChange }: { data: Quest
                 {q.options.map((opt, oi) => (
                   <button
                     key={oi}
+                    type="button"
                     className={`question-card__chip ${selectedSet.has(oi) && (q.multiSelect || !customAnswers[qi]) ? 'question-card__chip--selected' : ''} ${q.multiSelect ? 'question-card__chip--checkbox' : ''}`}
-                    onMouseDown={() => {
+                    aria-pressed={selectedSet.has(oi) && (q.multiSelect || !customAnswers[qi])}
+                    {...islandActionProps(() => {
                       setSelections(prev => {
                         if (!q.multiSelect) {
                           if (prev[qi] === oi) {
@@ -158,10 +175,10 @@ function MultiQuestionView({ data, onAnswer, onDraftStateChange }: { data: Quest
                         setCustomAnswers(prev => { const n = { ...prev }; delete n[qi]; return n })
                       }
                       setError(false)
-                    }}
+                    })}
                   >
                     {q.multiSelect && (
-                      <span className={`question-card__chip-check ${selectedSet.has(oi) ? 'question-card__chip-check--checked' : ''}`}>
+                      <span aria-hidden="true" className={`question-card__chip-check ${selectedSet.has(oi) ? 'question-card__chip-check--checked' : ''}`}>
                         {selectedSet.has(oi) && <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M3 8l4 4 6-7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                       </span>
                     )}
@@ -208,17 +225,13 @@ function MultiQuestionView({ data, onAnswer, onDraftStateChange }: { data: Quest
                   />
                 ) : (
                   <button
+                    type="button"
                     className="question-card__chip question-card__chip--other"
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      setNotchFocusable(true)
-                        .then(() => {
-                          setInputStates(prev => ({ ...prev, [qi]: true }))
-                        })
-                        .catch(() => {
-                          setInputStates(prev => ({ ...prev, [qi]: true }))
-                        })
-                    }}
+                    {...islandActionProps(() => {
+                      void setNotchFocusable(true).catch(() => undefined).then(() => {
+                        setInputStates(prev => ({ ...prev, [qi]: true }))
+                      })
+                    })}
                   >
                     {t('notch.typeHint', { defaultValue: 'Other' })}
                   </button>
@@ -230,10 +243,11 @@ function MultiQuestionView({ data, onAnswer, onDraftStateChange }: { data: Quest
       </div>
 
       <button
+        type="button"
         className="question-card__submit-all"
-        onMouseDown={handleSubmit}
+        {...islandActionProps(handleSubmit)}
       >
-        {'✓'} {t('notch.submitAll', { defaultValue: 'Submit All' })}
+        <span aria-hidden="true">✓</span> {t('notch.submitAll', { defaultValue: 'Submit All' })}
       </button>
       {error && (
         <div className="question-card__error">{'⚠'} Please answer all questions</div>
@@ -338,6 +352,10 @@ export function QuestionCard({ overlay, session, onShowSessions, onDismiss, onDr
     }, 80)
   }
 
+  const handleCustomInputAction = (event: MouseEvent<HTMLButtonElement>) => {
+    runIslandAction(event, () => { void showCustomInput() })
+  }
+
   return (
     <OverlayCard
       session={session}
@@ -380,7 +398,7 @@ export function QuestionCard({ overlay, session, onShowSessions, onDismiss, onDr
                 label={opt.label}
                 description={opt.description ?? undefined}
                 multiSelect={isMulti}
-                onMouseDown={() => {
+                onActivate={() => {
                   if (isMulti) toggleIndex(i)
                   else onAnswer(opt.label)
                 }}
@@ -396,18 +414,12 @@ export function QuestionCard({ overlay, session, onShowSessions, onDismiss, onDr
             animate={{ opacity: 1, y: 0, scale: 1 }}
             transition={{ type: 'spring', duration: 0.25, bounce: 0.12, delay: options.length * 0.03 }}
           >
-            <div
-              className="question-card__option-row question-card__option-row--other"
-              onMouseDown={() => { void showCustomInput() }}
-            >
-              <span className="question-card__option-index question-card__option-index--other">{options.length + 1}</span>
-              <div className="question-card__option-body">
-                <div className="question-card__option-label">{t('notch.typeHint', { defaultValue: 'Other' })}</div>
-              </div>
-              <svg className="question-card__option-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none">
-                <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </div>
+            <QuestionOptionRow
+              index={options.length}
+              label={t('notch.typeHint', { defaultValue: 'Other' })}
+              other
+              onActivate={() => { void showCustomInput() }}
+            />
           </motion.div>
         ) : (
           <form className="question-card__option-row question-card__option-row--custom-active" onSubmit={(e) => { e.preventDefault(); handleCustomSubmit() }}>
@@ -439,7 +451,8 @@ export function QuestionCard({ overlay, session, onShowSessions, onDismiss, onDr
           <button
             type="button"
             className="question-card__secondary-action"
-            onMouseDown={() => { void showCustomInput() }}
+            onMouseDown={handleCustomInputAction}
+            onClick={handleCustomInputAction}
           >
             {t('notch.chatAboutThis', { defaultValue: 'Chat about this' })}
           </button>
@@ -447,7 +460,7 @@ export function QuestionCard({ overlay, session, onShowSessions, onDismiss, onDr
             <button
               type="button"
               className="question-card__secondary-action"
-              onMouseDown={() => onAnswer(SKIP_INTERVIEW_ANSWER)}
+              {...islandActionProps(() => onAnswer(SKIP_INTERVIEW_ANSWER))}
             >
               {t('notch.skipInterview', { defaultValue: 'Skip interview' })}
             </button>
@@ -457,9 +470,10 @@ export function QuestionCard({ overlay, session, onShowSessions, onDismiss, onDr
         {/* Multi-select confirm */}
         {isMulti && (
           <button
+            type="button"
             className={`question-card__confirm ${selected.size === 0 ? 'question-card__confirm--disabled' : ''}`}
             disabled={selected.size === 0}
-            onMouseDown={handleConfirm}
+            {...islandActionProps(handleConfirm)}
           >
             Confirm ({selected.size})
           </button>

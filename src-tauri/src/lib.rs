@@ -1974,12 +1974,12 @@ fn toggle_notch_window(app: &tauri::AppHandle) {
     }
 }
 
-fn show_notch_window(app: &tauri::AppHandle) {
+fn show_notch_window(app: &tauri::AppHandle, source: &str) {
     if let Some(window) = app.get_webview_window("notch") {
         let _ = window.show();
         configure_notch_window_for_spaces(app);
         let _ = window.set_focus();
-        let _ = app.emit("tray-open-agentbro", ());
+        let _ = app.emit("tray-open-agentbro", source);
     }
 }
 
@@ -2321,7 +2321,7 @@ fn handle_question_skip_shortcut(app: tauri::AppHandle) {
         return;
     };
     let Some(answer) = question_shortcut_option(&question).map(str::to_owned) else {
-        show_notch_window(&app);
+        show_notch_window(&app, "question-shortcut");
         return;
     };
 
@@ -5967,6 +5967,11 @@ pub fn run() {
         Err(error) => (None, Some(error)),
     };
 
+    #[cfg(target_os = "windows")]
+    let startup = Arc::new(platform::windows_startup::StartupRecovery::default());
+    #[cfg(target_os = "windows")]
+    let startup_setup = Arc::clone(&startup);
+
     let context = tauri::generate_context!();
     #[cfg(target_os = "windows")]
     let context = {
@@ -6007,6 +6012,10 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
+            #[cfg(target_os = "windows")]
+            if !startup_setup.windows_created() {
+                return Ok(());
+            }
             log::info!("Startup: configured windows created");
             #[cfg(target_os = "windows")]
             if let Some(error) = startup_lock_error {
@@ -6203,8 +6212,8 @@ pub fn run() {
             let startup_adapters = adapters.clone();
             let startup_config_store = config_store.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                if ClaudeCodeAdapter::update_hook_script_if_needed() {
-                    log::info!("Hook script was updated to match new app version");
+                if let Err(error) = agents::hook_manager::ensure_bridge_binary() {
+                    log::warn!("Failed to prepare the Hook bridge at startup: {error}");
                 }
                 let enabled_intent = startup_config_store.get().enabled_agents;
                 for adapter in startup_adapters.iter() {
@@ -6344,7 +6353,7 @@ pub fn run() {
                     }
                     match menu_id {
                         "show" => {
-                            show_notch_window(app);
+                            show_notch_window(app, "tray");
                         }
                         "settings" => {
                             let _ = show_settings_window(app);
@@ -6505,6 +6514,7 @@ pub fn run() {
             commands::update_config,
             commands::set_language,
             commands::set_analytics_enabled,
+            commands::complete_first_run_setup,
             commands::set_launch_at_login,
             commands::set_island_feature_flags,
             commands::set_island_surface_options,
@@ -6782,6 +6792,9 @@ pub fn run() {
             skills::v2::commands::list_skill_packs_v2,
             skills::v2::commands::get_skill_pack_detail,
             skills::v2::commands::read_skill_pack_manifest,
+            skills::v2::commands::read_skill_pack_archive,
+            skills::v2::commands::write_skill_pack_archive,
+            skills::v2::commands::restore_archived_skill_pack_members,
             skills::v2::commands::read_skill_pack_manifest_link,
             skills::v2::commands::write_skill_pack_manifest,
             skills::v2::commands::get_skill_pack_fingerprints,
@@ -6832,5 +6845,9 @@ pub fn run() {
         .build(context)
         .expect("error while building AgentBro");
     log::info!("Startup: creating configured windows");
+    #[cfg(target_os = "windows")]
+    if let Err(error) = startup.watch(platform::windows_startup::WINDOW_TIMEOUT) {
+        log::warn!("Could not start the Windows startup monitor: {error}");
+    }
     app.run(|_, _| {});
 }

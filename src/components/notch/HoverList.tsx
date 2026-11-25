@@ -111,6 +111,7 @@ function getTerminalBadge(label: string): { bg: string; text: string } {
 }
 
 function canJumpToSession(session: SessionState): boolean {
+  if (session.agentType === 'qoder-desktop') return true
   const terminal = (session.terminal || '').trim()
   return Boolean(
     session.pid
@@ -1214,7 +1215,16 @@ function SessionCard({
   const inlinePermission = session.pendingPermission ?? getOverlayPermissionForSession(session, activeOverlay)
   const inlineQuestion = session.pendingQuestion
   const showInlinePlan = !!(session.planTitle || session.planContent)
-  const notice = inferSessionNotice(session)
+  const qoderApprovalFallback = session.agentType === 'qoder-desktop' && session.permissionInHostApp
+    && session.phase === 'waiting_input' && !inlinePermission && !inlineQuestion && !showInlinePlan
+  const notice: SessionNotice | null = qoderApprovalFallback
+    ? {
+        kind: 'status_warning',
+        title: t('notch.qoderApprovalFallback', 'Check the approval in Qoder'),
+        actionLabel: t('notch.openHostApp', 'Open app'),
+      }
+    : inferSessionNotice(session)
+  const jumpLabel = session.agentType === 'qoder-desktop' ? t('notch.openHostApp') : t('notch.jumpToTerminal')
   const listSubagents = getSessionListSubagents(session)
   const iconAgentType = appLabel === 'Codex App' ? 'codex' : session.agentType
   const shouldShowAgentIcon = !showPassiveDot && (isStatic || appLabel === 'Codex App' || session.agentType === 'codex')
@@ -1335,15 +1345,15 @@ function SessionCard({
                     </svg>
                   )}
                 </button>
-                {canJump && (
+                {canJump && !qoderApprovalFallback && (
                   <button
                     type="button"
                     data-no-drag
                     className="hover-list__jump"
                     onMouseDown={(e) => { e.preventDefault(); e.stopPropagation() }}
                     onClick={handleJump}
-                    title={t('notch.jumpToTerminal')}
-                    aria-label={t('notch.jumpToTerminal')}
+                    title={jumpLabel}
+                    aria-label={jumpLabel}
                   >
                     ↗
                   </button>

@@ -123,7 +123,7 @@ Agent Monitor 汇总当前和历史会话，可以按项目查看运行阶段、
 - 通过 SSH 可从远端 Codex 的 TOML 配置查看并检查 stdio 和 HTTP MCP 服务。读取配置需要远端装有 Python 3.11 或更新版本，旧版 Python 可使用已安装的 `tomli`。凭据在 SSH 主机上读取和使用。
 - 查看 Codex、Claude Code、WorkBuddy、ZCode、Kimi 等 Agent 的插件，搜索、启停、检查清单和内置能力，并预览插件文件。
 - 在校验后编辑支持的 JSON 或文本配置文件；项目页可以导入仓库，检查项目级指令、Skills、MCP 和插件。
-- 在项目页预览 skills.sh 锁文件，选择缺失的 GitHub Skill 并恢复到项目的 .agents/skills 目录。恢复时校验 v2 内容哈希，保留已有条目。 [skills.sh 锁文件格式](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
+- 在项目页预览 skills.sh 锁文件，从 GitHub、GitLab 等 HTTPS Git 仓库或已安装的 npm 依赖恢复缺失的 Skill。恢复时校验 v2 内容哈希，保留 `.agents/skills` 中已有的条目。 [skills.sh 锁文件格式](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
 
 <table>
   <tr>

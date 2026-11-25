@@ -375,10 +375,10 @@ impl Service {
                 .unwrap_or_else(|| inferred_id.clone());
             let desc = fm.description().to_string();
             let skill_id = self.db.transaction(|tx| {
-                // Git updates can change the manifest name without changing the installed directory.
+                // Git updates and archived copies can retain an ID distinct from the manifest name.
                 let skill_id = tx.query_row(
                     "SELECT s.id FROM skills s JOIN skill_sources source ON source.skill_id = s.id
-                     WHERE s.center_path = ?1 AND source.source_type IN ('github', 'git', 'skillssh')
+                     WHERE s.center_path = ?1 AND source.source_type IN ('github', 'git', 'skillssh', 'archive')
                      ORDER BY s.id LIMIT 1",
                     params![path_string],
                     |row| row.get::<_, String>(0),
@@ -5188,6 +5188,7 @@ impl Service {
                         skill_id: id.clone(),
                         missing: true,
                         fingerprint: None,
+                        occupied_by: None,
                         source: None,
                     });
                 };
@@ -5223,10 +5224,52 @@ impl Service {
                     skill_id: id.clone(),
                     missing,
                     fingerprint,
+                    occupied_by: None,
                     source,
                 })
             })
             .collect()
+    }
+
+    pub fn archive_skill_pack_fingerprints(
+        &self,
+        skill_ids: &[String],
+    ) -> Result<Vec<SkillPackFingerprint>, String> {
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        self.read_archive_skill_pack_fingerprints(skill_ids)
+    }
+
+    fn read_archive_skill_pack_fingerprints(
+        &self,
+        skill_ids: &[String],
+    ) -> Result<Vec<SkillPackFingerprint>, String> {
+        let mut current = self.read_skill_pack_fingerprints(skill_ids, false)?;
+        let mut live_ids = BTreeMap::new();
+        if current.iter().any(|member| member.missing) {
+            for id in self.scan_center_into_db()? {
+                live_ids.insert(id.to_lowercase(), id);
+            }
+            current = self.read_skill_pack_fingerprints(skill_ids, false)?;
+        }
+        let names = archive_destination_names(&self.center_path()?)?;
+        for member in &mut current {
+            let id = &member.skill_id;
+            let key = id.to_lowercase();
+            let occupied = names
+                .get(&key)
+                .filter(|spellings| member.missing || !spellings.contains(id))
+                .and_then(BTreeSet::first)
+                .or_else(|| live_ids.get(&key).filter(|_| member.missing));
+            if let Some(occupied) = occupied {
+                member.missing = false;
+                member.fingerprint = None;
+                member.occupied_by = Some(occupied.clone());
+            }
+        }
+        Ok(current)
     }
 
     pub fn import_reviewed_skill_pack(
@@ -5234,6 +5277,7 @@ impl Service {
         manifest: SkillPackManifest,
         reviewed: &[SkillPackFingerprint],
         accept_local_copies: bool,
+        archive_review: bool,
     ) -> Result<SkillPackDetail, String> {
         super::pack_manifest::validate(&manifest)?;
         if manifest.version < 2 {
@@ -5243,7 +5287,11 @@ impl Service {
             .center_import_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let current = self.read_skill_pack_fingerprints(&manifest.skill_ids, false)?;
+        let current = if archive_review {
+            self.read_archive_skill_pack_fingerprints(&manifest.skill_ids)?
+        } else {
+            self.read_skill_pack_fingerprints(&manifest.skill_ids, false)?
+        };
         super::pack_manifest::validate_review(&manifest, reviewed, &current, accept_local_copies)?;
         self.upsert_skill_pack_deferred(UpsertPackInput {
             id: String::new(),
@@ -5262,14 +5310,116 @@ impl Service {
         self.restore_pack_skill_with(manifest, skill_id, installer::checkout_skill_lock_ref)
     }
 
+    pub fn write_pack_archive(
+        &self,
+        path: &Path,
+        manifest: SkillPackManifest,
+    ) -> Result<(), String> {
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        super::pack_archive::write(path, manifest, |id| {
+            self.skill_row(id)?
+                .map(|row| PathBuf::from(row.center_path))
+                .ok_or_else(|| format!("Skill '{id}' is missing from the center library."))
+        })
+    }
+
+    pub fn restore_archived_pack_skills(
+        &self,
+        path: &Path,
+        revision: &str,
+        members: &[SkillPackArchiveRestoreMember],
+    ) -> Result<BTreeMap<String, String>, String> {
+        let mut archive = super::pack_archive::Archive::open(path)?;
+        if archive.review.revision != revision {
+            return Err("The Skill Pack ZIP changed after preview. Open it again to review the new content.".into());
+        }
+        let mut ids = BTreeSet::new();
+        let mut destinations = BTreeSet::new();
+        if members.iter().any(|member| {
+            !archive
+                .review
+                .manifest
+                .skill_fingerprints
+                .contains_key(&member.skill_id)
+                || !super::project_lock::valid_skill_name(&member.destination_id)
+                || !ids.insert(member.skill_id.as_str())
+                || !destinations.insert(member.destination_id.to_lowercase())
+        }) {
+            return Err("Choose distinct Skills from the ZIP and valid destination IDs.".into());
+        }
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let live_ids = self
+            .scan_center_into_db()?
+            .into_iter()
+            .map(|id| (id.to_lowercase(), id))
+            .collect::<BTreeMap<_, _>>();
+        let center = self.center_path()?;
+        std::fs::create_dir_all(&center).map_err(|error| error.to_string())?;
+        let names = archive_destination_names(&center)?;
+        let mut errors = BTreeMap::new();
+        for member in members {
+            let result = (|| {
+                let id = &member.destination_id;
+                let key = id.to_lowercase();
+                if let Some(occupied) = names
+                    .get(&key)
+                    .and_then(BTreeSet::first)
+                    .or_else(|| live_ids.get(&key))
+                {
+                    return Err(format!(
+                        "The destination for '{id}' is occupied by '{occupied}'."
+                    ));
+                }
+                if self
+                    .read_skill_pack_fingerprints(std::slice::from_ref(id), false)?
+                    .iter()
+                    .any(|item| !item.missing)
+                {
+                    return Err("The Skill already exists in the selected library.".into());
+                }
+                let staging = TempInstallDir::create_hidden_in(&center)?;
+                let staged = staging.path().join("skill");
+                archive.stage_member(&member.skill_id, &staged)?;
+                let input = AddCenterSkillInput {
+                    source_path: path.display().to_string(),
+                    source_type: "archive".to_string(),
+                    source_uri: None,
+                    imported_from_agent: None,
+                    imported_from_path: None,
+                    multi: Some(false),
+                    import_mode: Some("copy".to_string()),
+                };
+                self.publish_restored_pack_skill(
+                    id,
+                    &staged,
+                    &center.join(id),
+                    &staged,
+                    &input,
+                    None,
+                )
+            })();
+            if let Err(error) = result {
+                errors.insert(member.skill_id.clone(), error);
+            }
+        }
+        if errors.len() < members.len() {
+            self.refresh_snapshot_best_effort();
+        }
+        Ok(errors)
+    }
+
     pub(super) fn restore_pack_skill_with(
         &self,
         manifest: &SkillPackManifest,
         skill_id: &str,
         fetch: impl FnOnce(&str, &str) -> Result<(PathBuf, TempInstallDir), String>,
     ) -> Result<(), String> {
-        use crate::data_dir::rename_path_if_absent;
-
         super::pack_manifest::validate(manifest)?;
         let source = manifest
             .skill_sources
@@ -5308,21 +5458,42 @@ impl Service {
             multi: Some(false),
             import_mode: Some("copy".to_string()),
         };
-        rename_path_if_absent(&staged, &destination)
-            .map_err(|error| format!("Could not restore the missing Skill: {error}"))?;
-        if let Err(error) = self.record_source_after_write(
+        self.publish_restored_pack_skill(
             skill_id,
+            &staged,
             &destination,
             &directory,
             &input,
             Some(&source.commit),
+        )?;
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
+    fn publish_restored_pack_skill(
+        &self,
+        skill_id: &str,
+        staged: &Path,
+        destination: &Path,
+        source_directory: &Path,
+        input: &AddCenterSkillInput,
+        source_ref: Option<&str>,
+    ) -> Result<(), String> {
+        use crate::data_dir::rename_path_if_absent;
+        rename_path_if_absent(staged, destination)
+            .map_err(|error| format!("Could not restore the missing Skill: {error}"))?;
+        if let Err(error) = self.record_source_after_write(
+            skill_id,
+            destination,
+            source_directory,
+            input,
+            source_ref,
         ) {
-            rename_path_if_absent(&destination, &staged).map_err(|rollback| {
+            rename_path_if_absent(destination, staged).map_err(|rollback| {
                 format!("{error}. Could not roll back the new Skill: {rollback}")
             })?;
             return Err(error);
         }
-        self.refresh_snapshot_best_effort();
         Ok(())
     }
 
@@ -6732,6 +6903,22 @@ fn read_relative_file(root: &Path, rel: &Path) -> Result<Option<Vec<u8>>, String
     std::fs::read(&path)
         .map(Some)
         .map_err(|e| format!("read {}: {}", path.display(), e))
+}
+
+fn archive_destination_names(center: &Path) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let entries = match std::fs::read_dir(center) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(names),
+        Err(error) => return Err(format!("Could not read the center library: {error}")),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if let Ok(name) = entry.file_name().into_string() {
+            names.entry(name.to_lowercase()).or_default().insert(name);
+        }
+    }
+    Ok(names)
 }
 
 fn fixed_center_path(home: &Path) -> PathBuf {

@@ -29,6 +29,7 @@
     "openWslTerminal": "Open WSL terminal",
     "composerHintNoTerminal": "This session has no terminal to type into.",
     "openHostApp": "Open app",
+    "qoderApprovalFallback": "Check the approval in Qoder",
     "send": "Send",
     "dismiss": "Dismiss",
     "back": "Back to sessions",
@@ -698,6 +699,11 @@
   "skills": {
     "projectsTab": "Projects",
     "packManifest": {
+      "occupiedBy": "ID is occupied by {{id}}",
+      "exportArchive": "Export with Skill files (ZIP)",
+      "exportedArchive": "Skill Pack and files exported.",
+      "archiveReview": "Restore missing Skills from this ZIP and review any content differences before creating the Pack.",
+      "archiveMember": "Included in ZIP",
       "importFromLink": "Import from link",
       "reviewLink": "Review Skill Pack",
       "readingLink": "Loading GitHub file…",

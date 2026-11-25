@@ -122,31 +122,30 @@ impl ClaudeCodeAdapter {
         super::executable::command_exists("claude")
     }
 
-    /// Get the path where the bridge binary should be installed
-    /// Uses ~/.agentbro/bin/ to avoid spaces in path (shared across all instances)
-    fn bridge_binary_path() -> PathBuf {
-        hook_manager::bridge_binary_path()
-    }
-
     /// Get the settings.json path for this instance
     fn settings_path(&self) -> PathBuf {
         self.config_root.join("settings.json")
     }
 
     /// Build the hook command string and stamp instance metadata into the bridge env.
-    fn hook_command(&self) -> Result<String, Box<dyn std::error::Error>> {
+    fn hook_command(&self, bridge: &std::path::Path) -> String {
         // The primary instance omits label/config_root to keep the command
         // whitespace-free (see `primary` field docs). Custom engine instances
         // need them to distinguish themselves and locate their config root.
-        if self.primary {
-            profiles::managed_bridge_command_labeled(&profiles::claude_code_profile(), None, None)
+        let (label, config_root) = if self.primary {
+            (None, None)
         } else {
-            profiles::managed_bridge_command_labeled(
-                &profiles::claude_code_profile(),
-                Some(&self.label),
-                Some(&self.config_root.display().to_string()),
+            (
+                Some(self.label.as_str()),
+                Some(self.config_root.to_string_lossy()),
             )
-        }
+        };
+        profiles::bridge_command_for(
+            &profiles::claude_code_profile(),
+            bridge,
+            label,
+            config_root.as_deref(),
+        )
     }
 
     /// Remove old Python hook artifacts (migration from Python to Rust bridge)
@@ -177,7 +176,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let hook_command = self.hook_command()?;
+        let bridge = hook_manager::ensure_bridge_binary()?;
+        let hook_command = self.hook_command(&bridge);
         profiles::install_nested_json_hooks_at(
             &profiles::claude_code_profile(),
             &self.settings_path(),
@@ -914,8 +914,7 @@ impl ClaudeCodeAdapter {
     ///  2. settings.json contains our hook entries pointing to the bridge binary
     pub fn verify_hooks(&self) -> HookVerificationResult {
         // 1. Check bridge binary exists
-        let bridge_path = Self::bridge_binary_path();
-        if !bridge_path.exists() {
+        if hook_manager::ensure_bridge_binary().is_err() {
             return HookVerificationResult::NeedsReinstall;
         }
 
@@ -964,17 +963,6 @@ impl ClaudeCodeAdapter {
         }
 
         HookVerificationResult::Ok
-    }
-
-    /// Check if the deployed bridge binary differs from the bundled version.
-    /// If so, overwrite with the new version (app was updated).
-    /// Returns true if the binary was updated.
-    pub fn update_hook_script_if_needed() -> bool {
-        if let Err(e) = hook_manager::ensure_bridge_binary() {
-            log::warn!("Failed to update bridge binary: {}", e);
-            return false;
-        }
-        false
     }
 }
 
@@ -1288,7 +1276,7 @@ mod tests {
         // Code builds tokenize the command by naive whitespace split, which
         // breaks such a token and silently prevents the hook from firing.
         let adapter = ClaudeCodeAdapter::new();
-        let command = adapter.hook_command().expect("hook command builds");
+        let command = adapter.hook_command(std::path::Path::new("/tmp/agentbro-bridge"));
         assert!(
             !command.contains("AGENTBRO_ENGINE_LABEL"),
             "primary command should omit the engine label: {command}"
@@ -1305,7 +1293,7 @@ mod tests {
             PathBuf::from("/tmp/custom-claude"),
             "My Engine".into(),
         );
-        let command = adapter.hook_command().expect("hook command builds");
+        let command = adapter.hook_command(std::path::Path::new("/tmp/agentbro-bridge"));
         #[cfg(target_os = "windows")]
         {
             assert!(command.contains("--engine-label"));

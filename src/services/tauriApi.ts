@@ -100,6 +100,7 @@ export interface BackendSession {
   } | null
   lastMainAgentAt: number | null
   cacheTtlMs: number | null
+  permissionInHostApp?: boolean
   pendingPermission: {
     toolUseId?: string | null
     toolName: string
@@ -663,6 +664,20 @@ export async function setAnalyticsEnabled(enabled: boolean): Promise<void> {
     return
   }
   return invoke('set_analytics_enabled', { enabled })
+}
+
+export async function completeFirstRunSetup(islandSurfaceMode: 'island' | 'pet'): Promise<BackendConfig> {
+  if (!isTauri()) {
+    return {
+      ...await getConfig(),
+      islandSurfaceMode,
+      islandPetWindowOrigin: null,
+      islandPetWindowAnchor: null,
+      analyticsEnabled: true,
+      analyticsConsentPromptCompleted: true,
+    }
+  }
+  return invoke('complete_first_run_setup', { islandSurfaceMode })
 }
 
 export async function setLaunchAtLogin(enabled: boolean): Promise<void> {

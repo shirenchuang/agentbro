@@ -2036,6 +2036,40 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
+  it('reaches an ordinary question choice by Tab and replies with Enter', async () => {
+    const prompt = { toolUseId: 'keyboard-choice', question: 'Pick one', options: ['Ship it', 'Revise'] }
+    mountIsland({
+      id: 'question-keyboard', sessionId: 's1', type: 'question', data: prompt, createdAt: Date.now(),
+    }, { phase: 'waiting_input', pendingQuestion: prompt })
+
+    const keyboard = userEvent.setup()
+    const choice = screen.getByRole('button', { name: 'Ship it' })
+    for (let tabs = 0; tabs < 8 && document.activeElement !== choice; tabs++) await keyboard.tab()
+    expect(choice).toHaveFocus()
+    await keyboard.keyboard('{Enter}')
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Ship it', 'keyboard-choice')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+  })
+
+  it('opens and submits a custom question response from the keyboard', async () => {
+    const prompt = { toolUseId: 'keyboard-custom', question: 'What is your plan?', options: [] }
+    mountIsland({
+      id: 'question-keyboard-custom', sessionId: 's1', type: 'question', data: prompt, createdAt: Date.now(),
+    }, { phase: 'waiting_input', pendingQuestion: prompt })
+
+    const keyboard = userEvent.setup()
+    const other = screen.getByRole('button', { name: 'Other' })
+    other.focus()
+    await keyboard.keyboard('[Space]')
+    const field = await screen.findByPlaceholderText('Type your response...')
+    expect(field).toHaveFocus()
+    await keyboard.keyboard('Use the staging environment{Enter}')
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Use the staging environment', 'keyboard-custom')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+  })
+
   it('keeps a replacement question visible after the earlier reply finishes', async () => {
     const sent = deferred()
     tauriMocks.respondQuestion.mockReturnValueOnce(sent.promise)
@@ -2120,15 +2154,23 @@ describe('NotchPanel island shell', () => {
       pendingQuestion: { question: 'Pick targets', options: ['Preview', 'Production', 'Docs'], multiSelect: true },
     })
 
-    fireEvent.mouseDown(screen.getByText('Preview').closest('.question-card__option-row')!)
-    fireEvent.mouseDown(screen.getByText('Docs').closest('.question-card__option-row')!)
-    fireEvent.mouseDown(screen.getByRole('button', { name: 'Confirm (2)' }))
+    const keyboard = userEvent.setup()
+    const preview = screen.getByRole('button', { name: 'Preview' })
+    fireEvent.mouseDown(preview)
+    fireEvent.click(preview, { detail: 1 })
+    expect(preview).toHaveAttribute('aria-pressed', 'true')
+    const docs = screen.getByRole('button', { name: 'Docs' })
+    docs.focus()
+    await keyboard.keyboard('[Space]')
+    const confirm = screen.getByRole('button', { name: 'Confirm (2)' })
+    confirm.focus()
+    await keyboard.keyboard('{Enter}')
 
-    expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Preview, Docs')
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Preview, Docs')
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes multi-question answers as JSON for the AskUserQuestion hook bridge', async () => {
+  it('submits multipart answers from the keyboard as JSON for the AskUserQuestion Hook', async () => {
     mountIsland({
       id: 'question-batch-s1',
       sessionId: 's1',
@@ -2176,10 +2218,20 @@ describe('NotchPanel island shell', () => {
       },
     })
 
-    fireEvent.mouseDown(screen.getByRole('button', { name: 'Preview' }))
-    fireEvent.mouseDown(screen.getByRole('button', { name: 'Ship' }))
-    fireEvent.mouseDown(screen.getByRole('button', { name: 'No' }))
-    fireEvent.mouseDown(screen.getByRole('button', { name: '✓ Submit All' }))
+    const keyboard = userEvent.setup()
+    const preview = screen.getByRole('button', { name: 'Preview' })
+    preview.focus()
+    await keyboard.keyboard('[Space]')
+    expect(preview).toHaveAttribute('aria-pressed', 'true')
+    const ship = screen.getByRole('button', { name: 'Ship' })
+    ship.focus()
+    await keyboard.keyboard('{Enter}')
+    const no = screen.getByRole('button', { name: 'No' })
+    no.focus()
+    await keyboard.keyboard('[Space]')
+    const submit = screen.getByRole('button', { name: /Submit All/ })
+    submit.focus()
+    await keyboard.keyboard('{Enter}')
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith(
       's1',
@@ -2578,6 +2630,35 @@ describe('NotchPanel island shell', () => {
       expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(false)
     } finally {
       nowSpy.mockRestore()
+    }
+  })
+
+  it('keeps a question opened by the global shortcut visible until keyboard focus leaves', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    try {
+      tauriMocks.isTauri.mockReturnValue(true)
+      useConfigStore.setState({ autoCollapse: true, collapseDelay: 1 })
+      const question = { question: 'Choose a target', options: ['Production'] }
+      mountIsland({
+        id: 'keyboard-reveal', sessionId: 's1', type: 'question', data: question, createdAt: Date.now(),
+      }, { phase: 'waiting_input', pendingQuestion: question })
+
+      await waitFor(() => expect(tauriMocks.listen).toHaveBeenCalledWith('tray-open-agentbro', expect.any(Function)))
+      const onOpen = tauriMocks.listen.mock.calls.find(([event]) => event === 'tray-open-agentbro')![1]
+      act(() => onOpen({ event: 'tray-open-agentbro', id: 1, payload: 'question-shortcut' }))
+      vi.setSystemTime(Date.now() + 1500)
+      await act(() => new Promise((resolve) => setTimeout(resolve, 120)))
+
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalled()
+      expect(useSessionStore.getState().panelState).toBe('hover')
+      expect(screen.getByRole('button', { name: 'Production' })).toBeVisible()
+
+      hasFocus.mockReturnValue(false)
+      await waitFor(() => expect(useSessionStore.getState().panelState).toBe('collapsed'))
+    } finally {
+      hasFocus.mockRestore()
+      vi.useRealTimers()
     }
   })
 

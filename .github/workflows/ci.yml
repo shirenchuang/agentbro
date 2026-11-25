@@ -94,6 +94,13 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::programs::tests'
       - name: Test Agent launcher discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::executable::tests'
+      - name: Test Hook bridge repair
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::hook_manager::tests'
+      - name: Test Qoder sessions and permission responses
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::server::tests::qoder_'
+      - name: Test the native startup recovery dialog
+        timeout-minutes: 2
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE platform::windows_startup::tests'
       - name: Test native Codex Desktop jump fallback
         timeout-minutes: 2
         run: |
@@ -106,5 +113,14 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE --exact hooks::session_store::tests::pushed_and_polled_session_snapshots_share_revisions_across_store_clones'
       - name: Test Agent and Skill metadata writes
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::registry::tests'
+      - name: Test verification and restore of locked project Skills
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::project_lock::tests'
+      - name: Test offline Skill Pack ZIP migration
+        run: |
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::pack_archive::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::tests::offline_skill_pack_
+      - name: Test first-run configuration saves
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE config::tests::first_run_setup_'
       - name: Test OpenCode MCP configuration discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::mcp_management::opencode::tests'

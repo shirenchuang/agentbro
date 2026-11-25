@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -35,7 +35,7 @@ function cargoCommand() {
 }
 
 mkdirSync(resourceDir, { recursive: true })
-writeFileSync(resourcePath, '')
+writeFileSync(resourcePath, '', { flag: 'a' })
 
 const args = ['build', '--manifest-path', join(tauriDir, 'Cargo.toml'), '--bin', 'agentbro-bridge']
 if (release) {
@@ -56,4 +56,10 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1)
 }
 
-copyFileSync(binaryPath, resourcePath)
+const stagedPath = `${resourcePath}.${process.pid}.tmp`
+try {
+  copyFileSync(binaryPath, stagedPath)
+  renameSync(stagedPath, resourcePath)
+} finally {
+  rmSync(stagedPath, { force: true })
+}

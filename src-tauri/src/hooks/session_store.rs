@@ -317,6 +317,8 @@ pub struct SessionState {
     pub last_main_agent_at: Option<i64>,
     pub cache_ttl_ms: Option<i64>,
     pub pending_permission: Option<PendingPermission>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub permission_in_host_app: bool,
     #[serde(skip)]
     pub(crate) pending_permission_order: Option<usize>,
     pub pending_question: Option<PendingQuestion>,
@@ -378,6 +380,7 @@ impl SessionState {
             last_main_agent_at: None,
             cache_ttl_ms: None,
             pending_permission: None,
+            permission_in_host_app: false,
             pending_permission_order: None,
             pending_question: None,
             pending_question_order: None,
@@ -457,6 +460,9 @@ fn pending_request_order(
 }
 
 fn reconcile_pending_for_phase(session: &mut SessionState) {
+    if session.phase != SessionPhase::WaitingInput {
+        session.permission_in_host_app = false;
+    }
     match &session.phase {
         SessionPhase::WaitingApproval => {
             session.set_pending_question(None);
@@ -614,6 +620,7 @@ impl SessionStore {
             session.set_pending_permission(permission);
             if session.pending_permission.is_some() {
                 session.phase = SessionPhase::WaitingApproval;
+                session.permission_in_host_app = false;
             }
             session.update_duration();
         }
@@ -621,6 +628,15 @@ impl SessionStore {
     }
 
     pub fn clear_matching_permission(&self, session_id: &str, tool_use_id: Option<&str>) {
+        self.clear_matching_permission_with_fallback(session_id, tool_use_id, false);
+    }
+
+    pub(super) fn clear_matching_permission_with_fallback(
+        &self,
+        session_id: &str,
+        tool_use_id: Option<&str>,
+        permission_in_host_app: bool,
+    ) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
             let Some(permission) = session.pending_permission.as_ref() else {
                 return;
@@ -630,7 +646,12 @@ impl SessionStore {
             }
             session.set_pending_permission(None);
             if session.phase == SessionPhase::WaitingApproval && session.pending_plan.is_none() {
-                session.phase = SessionPhase::Processing;
+                session.permission_in_host_app = permission_in_host_app;
+                session.phase = if permission_in_host_app {
+                    SessionPhase::WaitingInput
+                } else {
+                    SessionPhase::Processing
+                };
             }
             session.update_duration();
         }
@@ -643,6 +664,7 @@ impl SessionStore {
             session.set_pending_question(question);
             if session.pending_question.is_some() {
                 session.phase = SessionPhase::WaitingInput;
+                session.permission_in_host_app = false;
             }
             session.update_duration();
         }

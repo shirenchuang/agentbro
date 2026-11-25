@@ -95,6 +95,223 @@ fn add_center_test_skill(svc: &Service, source_dir: &str, skill_id: &str) -> Pat
 }
 
 #[test]
+fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills() {
+    let transfer =
+        crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+    let path = transfer.path().join("技能包.agentbro-pack.zip");
+    let swapped = transfer.path().join("other.zip");
+    let manifest = SkillPackManifest {
+        format: "agentbro-skill-pack".into(),
+        version: 4,
+        name: "Portable local Skills".into(),
+        description: "Includes the author’s files".into(),
+        tags: vec!["migration".into()],
+        skill_ids: vec!["portable-clash".into(), "portable-missing".into()],
+        skill_fingerprints: Default::default(),
+        skill_sources: Default::default(),
+        suggested_agent_ids: vec!["claude-code".into(), "qoder-desktop".into()],
+    };
+    {
+        let (_home, sender, _lock) = fresh_service("pack-zip-sender");
+        let clash = add_center_test_skill(&sender, "bundle-clash", "portable-clash");
+        fs::write(clash.join("reference.md"), b"sender content\r\n").unwrap();
+        let missing = add_center_test_skill(&sender, "bundle-missing", "portable-missing");
+        fs::create_dir(missing.join("resources")).unwrap();
+        fs::write(missing.join("resources/示例.bin"), b"\0\r\n").unwrap();
+        sender.write_pack_archive(&path, manifest.clone()).unwrap();
+        let original = fs::read(&path).unwrap();
+        let mut changed = manifest.clone();
+        changed.description.push('!');
+        sender.write_pack_archive(&swapped, changed).unwrap();
+        let mut incomplete = manifest.clone();
+        incomplete.skill_ids.push("no-longer-in-library".into());
+        assert!(sender.write_pack_archive(&path, incomplete).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    let review = super::pack_archive::Archive::open(&path).unwrap().review;
+    assert_eq!(review.manifest.skill_ids, manifest.skill_ids);
+    assert_eq!(
+        review.manifest.suggested_agent_ids,
+        manifest.suggested_agent_ids
+    );
+    assert_eq!(review.manifest.skill_fingerprints.len(), 2);
+    let (_home, target, _lock) = fresh_service("pack-zip-target");
+    let local = add_center_test_skill(&target, "target-local", "portable-clash");
+    let restore = |skill_id: &str, destination_id: &str| SkillPackArchiveRestoreMember {
+        skill_id: skill_id.into(),
+        destination_id: destination_id.into(),
+    };
+    let requested = [
+        restore("portable-clash", "portable-clash"),
+        restore("portable-missing", "portable-missing"),
+    ];
+    assert!(target
+        .restore_archived_pack_skills(&swapped, &review.revision, &requested)
+        .unwrap_err()
+        .contains("changed after preview"));
+    assert!(!target
+        .center_path()
+        .unwrap()
+        .join("portable-missing")
+        .exists());
+    let errors = target
+        .restore_archived_pack_skills(&path, &review.revision, &requested)
+        .unwrap();
+    assert_eq!(errors.keys().collect::<Vec<_>>(), vec!["portable-clash"]);
+    assert_eq!(fs::read(local.join("reference.md")).unwrap(), b"center");
+    let names = [restore("portable-clash", "portable-clash-restored")];
+    assert!(target
+        .restore_archived_pack_skills(&path, &review.revision, &names)
+        .unwrap()
+        .is_empty());
+    target.scan_center_into_db().unwrap();
+    let center = target.center_path().unwrap();
+    assert_eq!(
+        fs::read(center.join("portable-missing/resources/示例.bin")).unwrap(),
+        b"\0\r\n"
+    );
+    assert_eq!(
+        fs::read(center.join("portable-clash-restored/reference.md")).unwrap(),
+        b"sender content\r\n"
+    );
+    assert_eq!(fs::read(local.join("reference.md")).unwrap(), b"center");
+    let mut imported = review.manifest;
+    imported.skill_ids[0] = "portable-clash-restored".into();
+    let hash = imported
+        .skill_fingerprints
+        .remove("portable-clash")
+        .unwrap();
+    imported
+        .skill_fingerprints
+        .insert(imported.skill_ids[0].clone(), hash);
+    let reviewed = target
+        .archive_skill_pack_fingerprints(&imported.skill_ids)
+        .unwrap();
+    let detail = target
+        .import_reviewed_skill_pack(imported.clone(), &reviewed, false, true)
+        .unwrap();
+    assert_eq!(
+        detail
+            .members
+            .into_iter()
+            .map(|member| member.skill_id)
+            .collect::<Vec<_>>(),
+        imported.skill_ids
+    );
+}
+
+#[test]
+fn offline_skill_pack_protects_case_collisions_before_and_after_review() {
+    let transfer =
+        crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+    let path = transfer.path().join("case.agentbro-pack.zip");
+    let archive_id = "Portable-Skill";
+    let local_id = "portable-skill";
+    let missing_id = "second-skill";
+    let alias = "Portable-Skill-copy";
+    let archive_ids = vec![archive_id.into(), missing_id.into()];
+    {
+        let (_home, sender, _lock) = fresh_service("portable-case-sender");
+        let directory = add_center_test_skill(&sender, "portable-source", archive_id);
+        fs::write(directory.join("reference.md"), b"archived bytes").unwrap();
+        add_center_test_skill(&sender, "portable-second-source", missing_id);
+        sender
+            .write_pack_archive(
+                &path,
+                SkillPackManifest {
+                    format: "agentbro-skill-pack".into(),
+                    version: 2,
+                    name: "Case conflict fixture".into(),
+                    description: String::new(),
+                    tags: vec![],
+                    skill_ids: archive_ids.clone(),
+                    skill_fingerprints: Default::default(),
+                    skill_sources: Default::default(),
+                    suggested_agent_ids: vec![],
+                },
+            )
+            .unwrap();
+    }
+    let archive = super::pack_archive::Archive::open(&path).unwrap().review;
+    let (_home, target, _lock) = fresh_service("portable-case-target");
+    let local = add_center_test_skill(&target, "portable-local", local_id);
+    let center = target.center_path().unwrap();
+    assert!(target.skill_pack_fingerprints(&archive_ids, false).unwrap()[0].missing);
+    let preview = target
+        .archive_skill_pack_fingerprints(&archive_ids)
+        .unwrap();
+    assert_eq!(preview[0].occupied_by.as_deref(), Some(local_id));
+    assert!(!preview[0].missing && preview[0].fingerprint.is_none());
+    assert!(preview[1].missing);
+
+    let restore = |skill_id: &str, destination_id: &str| SkillPackArchiveRestoreMember {
+        skill_id: skill_id.into(),
+        destination_id: destination_id.into(),
+    };
+    let occupied = target
+        .restore_archived_pack_skills(&path, &archive.revision, &[restore(archive_id, archive_id)])
+        .unwrap();
+    assert!(occupied[archive_id].contains(local_id));
+
+    let late_name = "SECOND-SKILL";
+    let late = write_skill(&center, late_name, late_name, Some("appeared after review"));
+    let occupied = target
+        .restore_archived_pack_skills(&path, &archive.revision, &[restore(missing_id, missing_id)])
+        .unwrap();
+    assert!(occupied[missing_id].contains(late_name));
+    let comparison = target
+        .archive_skill_pack_fingerprints(&archive_ids)
+        .unwrap();
+    assert_eq!(comparison[1].occupied_by.as_deref(), Some(late_name));
+    assert_eq!(
+        fs::read(late.join("reference.md")).unwrap(),
+        b"appeared after review"
+    );
+
+    let second_alias = "second-skill-copy";
+    assert!(target
+        .restore_archived_pack_skills(
+            &path,
+            &archive.revision,
+            &[
+                restore(archive_id, alias),
+                restore(missing_id, second_alias)
+            ],
+        )
+        .unwrap()
+        .is_empty());
+    assert_eq!(fs::read(local.join("reference.md")).unwrap(), b"center");
+    assert_eq!(
+        fs::read(center.join(alias).join("reference.md")).unwrap(),
+        b"archived bytes"
+    );
+    assert_eq!(
+        target.get_skill_detail(local_id).unwrap().summary.id,
+        local_id
+    );
+    let mut manifest = archive.manifest;
+    for (id, destination) in [(archive_id, alias), (missing_id, second_alias)] {
+        let hash = manifest.skill_fingerprints.remove(id).unwrap();
+        manifest.skill_fingerprints.insert(destination.into(), hash);
+    }
+    manifest.skill_ids = vec![alias.into(), second_alias.into()];
+    let reviewed = target
+        .archive_skill_pack_fingerprints(&manifest.skill_ids)
+        .unwrap();
+    let pack = target
+        .import_reviewed_skill_pack(manifest, &reviewed, false, true)
+        .unwrap();
+    assert_eq!(
+        pack.members
+            .into_iter()
+            .map(|member| member.skill_id)
+            .collect::<Vec<_>>(),
+        vec![alias, second_alias]
+    );
+}
+
+#[test]
 fn pack_manifest_verifies_live_skill_files_before_import() {
     let (_home, svc, _lock) = fresh_service("pack-content-review");
     let directory = add_center_test_skill(&svc, "sender-folder", "review");
@@ -135,7 +352,7 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
     text[0] = b'y';
     fs::write(docs.join("notes.txt"), &text).unwrap();
     let error = svc
-        .import_reviewed_skill_pack(manifest.clone(), &reviewed, true)
+        .import_reviewed_skill_pack(manifest.clone(), &reviewed, true, false)
         .unwrap_err();
     assert!(error.contains("changed since review"));
     let updated = svc
@@ -143,13 +360,13 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
         .unwrap();
     assert_ne!(reviewed, updated);
     let error = svc
-        .import_reviewed_skill_pack(manifest.clone(), &updated, false)
+        .import_reviewed_skill_pack(manifest.clone(), &updated, false, false)
         .unwrap_err();
     assert!(error.contains("Confirm the local copy"));
     assert_eq!(svc.list_skill_packs().unwrap().len(), initial_packs);
 
     let pack = svc
-        .import_reviewed_skill_pack(manifest, &updated, true)
+        .import_reviewed_skill_pack(manifest, &updated, true, false)
         .unwrap();
     assert_eq!(pack.name, "Shared review");
     assert_eq!(pack.members[0].skill_id, "review");
@@ -200,7 +417,7 @@ fn pack_recheck_discovers_a_manually_copied_skill_in_a_cold_library() {
         Some(fingerprint.as_str())
     );
     let pack = svc
-        .import_reviewed_skill_pack(manifest, &reviewed, false)
+        .import_reviewed_skill_pack(manifest, &reviewed, false, false)
         .unwrap();
     assert_eq!(pack.members[0].skill_id, "manual-review");
     assert!(!pack.members[0].missing);
@@ -320,7 +537,7 @@ fn pack_restore_checks_the_pinned_git_content_before_installing() {
     svc.restore_pack_skill_with(&pair, &unchanged, fetch)
         .unwrap();
     let pack = svc
-        .import_reviewed_skill_pack(manifest, &reviewed, false)
+        .import_reviewed_skill_pack(manifest, &reviewed, false, false)
         .unwrap();
     assert_eq!(pack.members[0].skill_id, skill_id);
 

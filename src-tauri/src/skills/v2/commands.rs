@@ -424,11 +424,35 @@ pub fn write_skill_pack_manifest(path: String, manifest: SkillPackManifest) -> R
 }
 
 #[tauri::command(async)]
+pub fn read_skill_pack_archive(path: String) -> Result<ReviewedSkillPackArchive, String> {
+    Ok(super::pack_archive::Archive::open(std::path::Path::new(&path))?.review)
+}
+
+#[tauri::command(async)]
+pub fn write_skill_pack_archive(path: String, manifest: SkillPackManifest) -> Result<(), String> {
+    svc()?.write_pack_archive(std::path::Path::new(&path), manifest)
+}
+
+#[tauri::command(async)]
+pub fn restore_archived_skill_pack_members(
+    path: String,
+    revision: String,
+    members: Vec<SkillPackArchiveRestoreMember>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    svc()?.restore_archived_pack_skills(std::path::Path::new(&path), &revision, &members)
+}
+
+#[tauri::command(async)]
 pub fn get_skill_pack_fingerprints(
     skill_ids: Vec<String>,
     include_sources: Option<bool>,
+    archive_review: Option<bool>,
 ) -> Result<Vec<SkillPackFingerprint>, String> {
-    svc()?.skill_pack_fingerprints(&skill_ids, include_sources.unwrap_or(false))
+    if archive_review.unwrap_or(false) {
+        svc()?.archive_skill_pack_fingerprints(&skill_ids)
+    } else {
+        svc()?.skill_pack_fingerprints(&skill_ids, include_sources.unwrap_or(false))
+    }
 }
 
 #[tauri::command(async)]
@@ -444,8 +468,14 @@ pub fn execute_import_skill_pack_manifest(
     manifest: SkillPackManifest,
     reviewed: Vec<SkillPackFingerprint>,
     accept_local_copies: bool,
+    archive_review: Option<bool>,
 ) -> Result<SkillPackDetail, String> {
-    svc()?.import_reviewed_skill_pack(manifest, &reviewed, accept_local_copies)
+    svc()?.import_reviewed_skill_pack(
+        manifest,
+        &reviewed,
+        accept_local_copies,
+        archive_review.unwrap_or(false),
+    )
 }
 
 #[tauri::command(async)]

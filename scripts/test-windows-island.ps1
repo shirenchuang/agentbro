@@ -9,6 +9,7 @@ param(
     [string]$Workspace,
     [string]$PackImportPath,
     [string]$PackExportPath,
+    [string]$PackArchivePath,
     [string]$PinnedPackImportPath,
     [string]$PinnedPackExportPath,
     [string]$PackManifestLink,
@@ -751,30 +752,69 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
         $null = Wait-IslandValue 'the native Island hidden before the global question shortcut' {
             -not [AgentBroSmokeInput]::IsWindowVisible($WindowHandle)
         }
+        $desktop = [Windows.Automation.AutomationElement]::RootElement.Current.BoundingRectangle
+        if (-not [AgentBroSmokeInput]::SetCursorPos([int]$desktop.Left + 24, [int]$desktop.Bottom - 48)) {
+            throw 'Could not move the pointer away before the global question shortcut'
+        }
         try { [AgentBroSmokeInput]::SetGlobalShortcutKey(0x79, $true) }
         finally { [AgentBroSmokeInput]::SetGlobalShortcutKey(0x79, $false) }
-        if ($multipart.Reply.Wait(600)) {
-            throw "The global shortcut completed the multipart Hook: $($multipart.Reply.GetAwaiter().GetResult())"
-        }
         $null = Wait-IslandValue 'the Island reopened with the unresolved multipart question' {
             $island = Find-VisibleIsland
             $island -and (Test-PackVisibleText $island.Element 'Pick an output?')
         }
-        Write-Output 'Ctrl+Alt+F10 reopened the Island and the original multipart Hook stayed pending.'
-
-        foreach ($label in @('Production region', 'Detailed output', 'Submit All')) {
-            Click-IslandElement $null "multipart question control $label" -FindElement {
-                $island = Find-VisibleIsland
-                if ($island) { Find-IslandButton $island.Element { param($Name) $Name.EndsWith($label) } }
-            }
+        Write-Output 'Ctrl+Alt+F10 reopened the multipart question while the pointer was away.'
+        if ($multipart.Reply.Wait(1600)) {
+            throw "The global shortcut completed the multipart Hook: $($multipart.Reply.GetAwaiter().GetResult())"
         }
-        if (-not $multipart.Reply.Wait(8000)) { throw 'The multipart Hook did not receive the manual answer' }
+        $island = Find-VisibleIsland
+        if (-not ($island -and (Test-PackVisibleText $island.Element 'Pick an output?'))) {
+            throw 'The focused multipart question collapsed while the pointer was away'
+        }
+        Write-Output 'The keyboard-opened question remained visible beyond the automatic collapse delay.'
+
+        $null = Wait-IslandValue 'the Island foreground window after the global question shortcut' {
+            [AgentBroSmokeInput]::GetForegroundWindow() -eq $WindowHandle
+        } 5
+        foreach ($target in @(
+            @{ Label = 'Production region'; Key = 0x20; KeyName = 'Space' },
+            @{ Label = 'Detailed output'; Key = 0x0D; KeyName = 'Enter' },
+            @{ Label = 'Submit All'; Key = 0x20; KeyName = 'Space' }
+        )) {
+            $button = Wait-IslandValue "$($target.Label) button in the Island" {
+                $island = Find-VisibleIsland
+                if ($island -and $island.Handle -eq $WindowHandle) {
+                    Find-IslandButton $island.Element { param($Name) $Name.EndsWith($target.Label) }
+                }
+            }
+            $hasFocus = {
+                $focused = [Windows.Automation.AutomationElement]::FocusedElement
+                $focused -and $button.Current.HasKeyboardFocus -and
+                    [Windows.Automation.Automation]::Compare($focused.GetRuntimeId(), $button.GetRuntimeId())
+            }
+            for ($tabs = 0; $tabs -lt 24 -and -not (& $hasFocus); $tabs++) {
+                [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)
+                Start-Sleep -Milliseconds 125
+            }
+            try {
+                $null = Wait-IslandValue "native Tab focus on $($target.Label)" $hasFocus 3
+            } catch {
+                $focused = [Windows.Automation.AutomationElement]::FocusedElement
+                if ($focused) {
+                    Write-Host "UI Automation focus: $($focused.Current.ControlType.ProgrammaticName) '$($focused.Current.Name)', PID $($focused.Current.ProcessId)."
+                }
+                Write-Host "Native focus: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+                throw
+            }
+            [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, $target.Key)
+            Write-Output "Sent native $($target.KeyName) to the focused $($target.Label) control."
+        }
+        if (-not $multipart.Reply.Wait(8000)) { throw 'The multipart Hook did not receive the keyboard answer' }
         $response = $multipart.Reply.GetAwaiter().GetResult() | ConvertFrom-Json
         $answers = $response.answer | ConvertFrom-Json
         if ($answers.'Pick a region?' -ne 'Production region' -or $answers.'Pick an output?' -ne 'Detailed output') {
             throw 'The manual reply did not include both selected answers'
         }
-        Write-Output 'The original multipart Hook received both manually selected answers.'
+        Write-Output 'The original multipart Hook received both answers selected and submitted with the native keyboard.'
     } finally {
         $multipart.Connection.Dispose()
     }
@@ -1119,8 +1159,11 @@ try {
     if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }
-    if ($PackImportPath) {
+    if ($PackExportPath) {
         Test-InstalledPackManifest $island $PackImportPath $PackExportPath
+    }
+    if ($PackArchivePath) {
+        Test-InstalledPackArchive $island $PackImportPath $PackArchivePath
     }
     if ($PinnedPackImportPath) {
         Test-InstalledPinnedPackManifest $island $PinnedPackImportPath $PinnedPackExportPath

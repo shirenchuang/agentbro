@@ -1124,12 +1124,14 @@ impl HookServer {
                     }
                 }
 
-                // Wait for the UI to respond. Codex uses a longer hook timeout for AgentBro
-                // approvals; other agents keep the existing five-minute fallback window.
                 let wait = tokio::time::timeout(Self::interaction_response_timeout(&raw), rx);
-                let harness = raw.get("agent").and_then(serde_json::Value::as_str)
-                    == Some("deepseek-harness");
-                let response = if harness {
+                let source = raw.get("agent").and_then(serde_json::Value::as_str);
+                let watch_bridge_disconnect = matches!(
+                    source,
+                    Some("deepseek-harness" | "qoder" | "qoder-desktop" | "qoder-cli")
+                );
+                let returns_to_qoder = source == Some("qoder-desktop");
+                let response = if watch_bridge_disconnect {
                     tokio::select! {
                         reply = wait => reply.ok().and_then(Result::ok),
                         _ = buf_reader.fill_buf() => None,
@@ -1155,9 +1157,12 @@ impl HookServer {
                             Err(err) => Err(err.to_string()),
                         };
                         let delivered = write_result.is_ok();
-                        if delivered || harness {
-                            store
-                                .clear_matching_permission(session_id, Some(&resolved_tool_use_id));
+                        if delivered || watch_bridge_disconnect {
+                            store.clear_matching_permission_with_fallback(
+                                session_id,
+                                Some(&resolved_tool_use_id),
+                                !delivered && returns_to_qoder,
+                            );
                         }
                         if let Err(err) = &write_result {
                             log::warn!(
@@ -1176,19 +1181,25 @@ impl HookServer {
                         }
                     }
                     None => {
-                        // Timeout or channel closed — let Claude Code handle it normally
                         let mut pending_map = pending.lock().await;
-                        if let Some(entries) = pending_map.get_mut(&pending_key) {
-                            entries.retain(|entry| !entry.tx.is_closed());
-                            if entries.is_empty() {
-                                pending_map.remove(&pending_key);
-                                store.clear_matching_permission(
-                                    session_id,
-                                    Some(&resolved_tool_use_id),
-                                );
+                        let clear_permission = match pending_map.get_mut(&pending_key) {
+                            Some(entries) => {
+                                entries.retain(|entry| !entry.tx.is_closed());
+                                entries.is_empty()
                             }
+                            None => watch_bridge_disconnect,
+                        };
+                        if clear_permission {
+                            pending_map.remove(&pending_key);
+                            store.clear_matching_permission_with_fallback(
+                                session_id,
+                                Some(&resolved_tool_use_id),
+                                returns_to_qoder,
+                            );
                         }
-                        log::warn!("Permission request timed out for session {}", session_id);
+                        log::warn!(
+                            "Permission request ended without a reply for session {session_id}"
+                        );
                     }
                 }
             }
@@ -2052,6 +2063,7 @@ impl HookServer {
                     Some(_raw),
                 );
                 store.update_session(session_id, |s| {
+                    s.permission_in_host_app = false;
                     s.phase = if s.has_unfinished_tasks() {
                         SessionPhase::WaitingInput
                     } else {
@@ -4400,6 +4412,150 @@ mod tests {
             .to_string()
             .starts_with("Failed to write plan response:"));
         task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn qoder_bridge_disconnect_clears_only_its_pending_permission() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![
+                Arc::new(crate::agents::qoder::QoderAdapter::desktop()),
+                Arc::new(crate::agents::qoder::QoderAdapter::new()),
+                Arc::new(crate::agents::qoder_cli::QoderCliAdapter::new()),
+            ]),
+        );
+
+        for agent in ["qoder-desktop", "qoder", "qoder-cli"] {
+            let mut requests = Vec::new();
+            for tool_id in ["expired", "active"] {
+                let (mut client, connection) = tokio::io::duplex(4096);
+                let handler = tokio::spawn(HookServer::handle_connection(
+                    connection,
+                    server.connection_context(),
+                ));
+                let event = serde_json::json!({
+                    "agent": agent,
+                    "event": "PermissionRequest",
+                    "session_id": agent,
+                    "cwd": "/workspace/qoder",
+                    "tool_name": "Bash",
+                    "tool_use_id": tool_id,
+                    "tool_input": {"command": "pwd"},
+                });
+                client
+                    .write_all(format!("{event}\n").as_bytes())
+                    .await
+                    .unwrap();
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        let pending = store.get_session(agent).and_then(|s| s.pending_permission);
+                        if pending.and_then(|p| p.tool_use_id).as_deref() == Some(tool_id) {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("the Qoder approval should reach the Island");
+                requests.push((client, handler));
+            }
+
+            let (active, active_handler) = requests.pop().unwrap();
+            let (expired, expired_handler) = requests.pop().unwrap();
+            drop(expired);
+            tokio::time::timeout(Duration::from_secs(2), expired_handler)
+                .await
+                .unwrap_or_else(|_| panic!("the disconnected {agent} approval should retire"))
+                .unwrap()
+                .unwrap();
+            assert!(server
+                .respond_permission(agent, false, false, Some("expired"))
+                .await
+                .is_err());
+            let session = store.get_session(agent).unwrap();
+            assert_eq!(session.phase, SessionPhase::WaitingApproval);
+            assert_eq!(
+                session.pending_permission.unwrap().tool_use_id.as_deref(),
+                Some("active")
+            );
+
+            server
+                .respond_permission(agent, false, false, Some("active"))
+                .await
+                .unwrap();
+            let mut response = String::new();
+            BufReader::new(active)
+                .read_line(&mut response)
+                .await
+                .unwrap();
+            let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(response["decision"], "deny");
+            active_handler.await.unwrap().unwrap();
+            assert!(store
+                .get_session(agent)
+                .unwrap()
+                .pending_permission
+                .is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn qoder_desktop_approval_disconnect_waits_in_the_app_until_the_task_continues() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![
+                Arc::new(crate::agents::qoder::QoderAdapter::desktop()),
+            ]),
+        );
+        let (mut client, connection) = tokio::io::duplex(4096);
+        let handler = tokio::spawn(HookServer::handle_connection(
+            connection,
+            server.connection_context(),
+        ));
+        client
+            .write_all(b"{\"agent\":\"qoder-desktop\",\"event\":\"PermissionRequest\",\"session_id\":\"desktop\",\"tool_name\":\"Bash\",\"tool_use_id\":\"call-1\"}\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !store
+                .get_session("desktop")
+                .is_some_and(|session| session.pending_permission.is_some())
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the approval should reach the Island");
+
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(2), handler)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let session = store.get_session("desktop").unwrap();
+        assert!(session.pending_permission.is_none());
+        assert_eq!(session.phase, SessionPhase::WaitingInput);
+        assert!(session.permission_in_host_app);
+        assert!(server
+            .respond_permission("desktop", false, false, Some("call-1"))
+            .await
+            .is_err());
+
+        store.upsert_task("desktop", "task-1", "Follow up", "pending");
+        let (mut client, connection) = tokio::io::duplex(4096);
+        client
+            .write_all(b"{\"agent\":\"qoder-desktop\",\"event\":\"Stop\",\"session_id\":\"desktop\",\"summary\":\"Task completed\"}\n")
+            .await
+            .unwrap();
+        HookServer::handle_connection(connection, server.connection_context())
+            .await
+            .unwrap();
+        let session = store.get_session("desktop").unwrap();
+        assert_eq!(session.phase, SessionPhase::WaitingInput);
+        assert!(!session.permission_in_host_app);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

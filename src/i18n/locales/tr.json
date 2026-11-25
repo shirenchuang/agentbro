@@ -29,6 +29,7 @@
     "openWslTerminal": "WSL terminalini aç",
     "composerHintNoTerminal": "Bu oturumun yazılabilir bir terminali yok.",
     "openHostApp": "Uygulamayı aç",
+    "qoderApprovalFallback": "Onay isteğini Qoder’da kontrol et",
     "send": "Gönder",
     "dismiss": "Kapat",
     "back": "Oturumlara dön",
@@ -593,6 +594,11 @@
   "skills": {
     "projectsTab": "Projeler",
     "packManifest": {
+      "occupiedBy": "Kimlik {{id}} tarafından kullanılıyor",
+      "exportArchive": "Beceri dosyalarıyla dışa aktar (ZIP)",
+      "exportedArchive": "Beceri Paketi ve dosyaları dışa aktarıldı.",
+      "archiveReview": "Eksik becerileri bu ZIP dosyasından geri yükleyin ve paketi oluşturmadan önce içerik farklarını inceleyin.",
+      "archiveMember": "ZIP dosyasına dahil",
       "importFromLink": "Bağlantıdan içe aktar",
       "reviewLink": "Beceri paketini incele",
       "readingLink": "GitHub dosyası yükleniyor…",
