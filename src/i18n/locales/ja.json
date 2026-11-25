@@ -30,6 +30,7 @@
     "openWslTerminal": "WSL ターミナルを開く",
     "composerHintNoTerminal": "このセッションには入力できるターミナルがありません。",
     "openHostApp": "アプリを開く",
+    "qoderApprovalFallback": "Qoder で承認リクエストを確認",
     "send": "送信",
     "dismiss": "閉じる",
     "back": "セッションに戻る",

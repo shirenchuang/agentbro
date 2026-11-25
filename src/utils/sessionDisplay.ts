@@ -73,6 +73,7 @@ export function getAgentDisplayName(session: SessionState): string {
     case 'claude-code': return 'Claude'
     case 'gemini-cli': return 'Gemini'
     case 'deepseek-harness': return 'DeepSeek Harness'
+    case 'qoder-desktop': return 'Qoder Desktop'
     case 'qwenwork-cn': return '千问办公'
     case 'workbuddy': return 'WorkBuddy'
     case 'workbuddy-ai': return 'WorkBuddy AI'
@@ -131,6 +132,7 @@ function normalizeTerminalLabel(value: string | null | undefined): string | null
 }
 
 export function getSessionAppLabel(session: SessionState): string | null {
+  if (session.agentType === 'qoder-desktop') return null
   const appLabel = labelFromBundle(session.termBundleId, APP_BUNDLE_LABELS)
   if (appLabel) return appLabel
 
@@ -147,6 +149,7 @@ export function getSessionAppLabel(session: SessionState): string | null {
 
 export function getSessionTerminalLabel(session: SessionState): string | null {
   if (session.wslDistribution) return `WSL · ${session.wslDistribution}`
+  if (session.agentType === 'qoder-desktop') return null
   const appLabel = getSessionAppLabel(session)
   if (appLabel) return null
 

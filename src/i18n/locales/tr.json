@@ -29,6 +29,7 @@
     "openWslTerminal": "WSL terminalini aç",
     "composerHintNoTerminal": "Bu oturumun yazılabilir bir terminali yok.",
     "openHostApp": "Uygulamayı aç",
+    "qoderApprovalFallback": "Onay isteğini Qoder’da kontrol et",
     "send": "Gönder",
     "dismiss": "Kapat",
     "back": "Oturumlara dön",

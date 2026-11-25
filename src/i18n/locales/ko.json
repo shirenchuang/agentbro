@@ -30,6 +30,7 @@
     "openWslTerminal": "WSL 터미널 열기",
     "composerHintNoTerminal": "이 세션에는 입력할 터미널이 없습니다.",
     "openHostApp": "앱 열기",
+    "qoderApprovalFallback": "Qoder에서 승인 요청 확인",
     "send": "전송",
     "dismiss": "닫기",
     "back": "세션으로 돌아가기",

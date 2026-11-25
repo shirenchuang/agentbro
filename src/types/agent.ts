@@ -179,6 +179,7 @@ export interface SessionState {
   lastMainAgentAt?: number
   cacheTtlMs?: number
   pendingPermission?: PermissionRequest
+  permissionInHostApp?: boolean
   pendingQuestion?: AskQuestion
   lastToolName?: string
   lastToolTarget?: string

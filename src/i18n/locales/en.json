@@ -29,6 +29,7 @@
     "openWslTerminal": "Open WSL terminal",
     "composerHintNoTerminal": "This session has no terminal to type into.",
     "openHostApp": "Open app",
+    "qoderApprovalFallback": "Check the approval in Qoder",
     "send": "Send",
     "dismiss": "Dismiss",
     "back": "Back to sessions",

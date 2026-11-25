@@ -100,6 +100,7 @@ export interface BackendSession {
   } | null
   lastMainAgentAt: number | null
   cacheTtlMs: number | null
+  permissionInHostApp?: boolean
   pendingPermission: {
     toolUseId?: string | null
     toolName: string
