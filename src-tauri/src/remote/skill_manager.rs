@@ -205,6 +205,146 @@ mod unix_tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn remote_npm_operations_use_the_reviewed_installation() {
+        let fixture = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("isolated remote home");
+        let home = fixture.path().canonicalize().unwrap();
+        let selected = home.join("selected 工具链");
+        let default = home.join("npm default");
+        let package = |prefix: &Path| prefix.join("lib/node_modules/@openai/codex/package.json");
+        let binary = |prefix: &Path| prefix.join("bin/codex");
+        for (prefix, version) in [(&selected, "1.0.0"), (&default, "9.0.0")] {
+            let manifest = package(prefix);
+            std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            std::fs::write(
+                &manifest,
+                serde_json::json!({
+                    "name": "@openai/codex",
+                    "version": version,
+                    "bin": {"codex": "./cli.js"}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let entry = manifest.with_file_name("cli.js");
+            std::fs::write(&entry, "#!/bin/sh\necho unexpected-version-probe\n").unwrap();
+            std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::create_dir_all(prefix.join("bin")).unwrap();
+            std::os::unix::fs::symlink(entry, binary(prefix)).unwrap();
+        }
+        std::fs::create_dir_all(home.join(".codex/skills")).unwrap();
+        let tools = home.join("tools");
+        std::fs::create_dir(&tools).unwrap();
+        let npm = tools.join("npm");
+        std::fs::write(
+            &npm,
+            r#"#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+home = pathlib.Path.home()
+prefix = pathlib.Path(args[args.index("--prefix") + 1] if "--prefix" in args else os.environ["npm_config_prefix"])
+manifest = prefix / "lib/node_modules/@openai/codex/package.json"
+if args[0] == "view":
+    print(json.dumps(home.joinpath("registry-version").read_text()))
+    sys.exit(0)
+home.joinpath("npm-args.json").write_text(json.dumps(args))
+if args[0] == "uninstall":
+    prefix.joinpath("bin/codex").unlink()
+    manifest.unlink()
+elif args[2] != "@openai/codex":
+    updated = json.loads(manifest.read_text())
+    updated["version"] = args[2].rsplit("@", 1)[-1]
+    manifest.write_text(json.dumps(updated))
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(home.join("registry-version"), "2.0.0").unwrap();
+        let current = home.join("current");
+        std::os::unix::fs::symlink(&selected, &current).unwrap();
+        let path =
+            std::env::join_paths([current.join("bin"), tools, "/usr/bin".into(), "/bin".into()])
+                .unwrap();
+        let run = |command, args| {
+            let script = format!(
+                "import os\nos.environ['PATH'] = {}\nos.environ['npm_config_prefix'] = {}\n{}",
+                serde_json::json!(path.to_str().unwrap()),
+                serde_json::json!(default),
+                render_script(command, args).unwrap(),
+            );
+            parse_script_output(execute_rendered_script(&home, &script))
+        };
+        let codex = || {
+            run("agent_list", serde_json::json!({}))
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["id"] == "codex")
+                .unwrap()
+                .clone()
+        };
+        let arguments =
+            serde_json::json!({"agentId": "codex", "expectedBinaryPath": binary(&selected)});
+        let original_default = std::fs::read(package(&default)).unwrap();
+        assert_eq!(codex()["binaryPath"], arguments["expectedBinaryPath"]);
+        assert_eq!(codex()["installedVersion"], "1.0.0");
+
+        std::fs::remove_file(&current).unwrap();
+        std::os::unix::fs::symlink(&default, &current).unwrap();
+        assert!(run("agent_uninstall", arguments.clone())
+            .unwrap_err()
+            .contains("selected a different Agent launcher"));
+        assert!(!home.join("npm-args.json").exists());
+        std::fs::remove_file(&current).unwrap();
+        std::os::unix::fs::symlink(&selected, &current).unwrap();
+
+        run("agent_update", arguments.clone()).unwrap();
+        assert_eq!(codex()["installedVersion"], "2.0.0");
+        let trace = home.join("npm-args.json");
+        let argv: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+        assert_eq!(
+            argv,
+            serde_json::json!(["install", "-g", "@openai/codex@2.0.0", "--prefix", selected])
+        );
+        std::fs::remove_file(&trace).unwrap();
+        for older in ["1.9.0", "2.0.0-rc.9", "2.0.0+build"] {
+            std::fs::write(home.join("registry-version"), older).unwrap();
+            run("agent_update", arguments.clone()).unwrap();
+            assert_eq!(codex()["installedVersion"], "2.0.0");
+            assert!(!trace.exists());
+        }
+        run("agent_uninstall", arguments).unwrap();
+        let residual = codex();
+        assert_eq!(residual["status"], "installed");
+        assert!(residual["binaryPath"].is_null());
+        assert!(residual["uninstallCommand"].is_null());
+        assert!(!binary(&selected).exists());
+        assert!(binary(&default).exists());
+        assert_eq!(std::fs::read(package(&default)).unwrap(), original_default);
+        run("agent_install", serde_json::json!({"agentId": "codex"})).unwrap();
+        let argv: Value =
+            serde_json::from_slice(&std::fs::read(home.join("npm-args.json")).unwrap()).unwrap();
+        assert_eq!(argv, serde_json::json!(["install", "-g", "@openai/codex"]));
+
+        std::fs::write(binary(&selected), "#!/bin/sh\necho standalone\n").unwrap();
+        std::fs::set_permissions(binary(&selected), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let external = codex();
+        assert_eq!(external["status"], "installed");
+        assert_eq!(external["installedVersion"], "standalone");
+        assert!(external["updateCommand"].is_null());
+        assert!(external["uninstallCommand"].is_null());
+        assert!(
+            run("agent_uninstall", serde_json::json!({"agentId": "codex"}))
+                .unwrap_err()
+                .contains("Could not identify the npm installation")
+        );
+        assert!(binary(&selected).exists());
+        assert_eq!(std::fs::read(package(&default)).unwrap(), original_default);
+    }
+
+    #[test]
     fn remote_snapshot_refresh_and_write_failure_preserve_complete_files() {
         let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
             .expect("temporary remote home");

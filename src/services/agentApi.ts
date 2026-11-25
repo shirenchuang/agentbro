@@ -278,12 +278,12 @@ export const agentApi = {
     ? invoke('agent_install', { agentId }, environmentId)
     : Promise.resolve(),
 
-  update: (agentId: string, environmentId?: string) => isTauriRuntime()
-    ? invoke('agent_update', { agentId }, environmentId)
+  update: (agentId: string, environmentId?: string, expectedBinaryPath?: string) => isTauriRuntime()
+    ? invoke('agent_update', expectedBinaryPath ? { agentId, expectedBinaryPath } : { agentId }, environmentId)
     : Promise.resolve(),
 
-  uninstall: (agentId: string, environmentId?: string) => isTauriRuntime()
-    ? invoke('agent_uninstall', { agentId }, environmentId)
+  uninstall: (agentId: string, environmentId?: string, expectedBinaryPath?: string) => isTauriRuntime()
+    ? invoke('agent_uninstall', expectedBinaryPath ? { agentId, expectedBinaryPath } : { agentId }, environmentId)
     : Promise.resolve(),
 
   openDownload: (agentId: string) => isTauriRuntime()
