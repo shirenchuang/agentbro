@@ -566,6 +566,12 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         (desktop_codex_version(launcher).await, None)
     } else if let Some(launcher) = native_claude {
         (native_claude_version(launcher).await, None)
+    } else if let ("qoder-cli", Some(launcher)) = (id.as_str(), binary_path.as_deref()) {
+        let version = selected_cli_version(launcher, |line| {
+            Some(line.strip_prefix('v').unwrap_or(line))
+        })
+        .await;
+        (version, None)
     } else if installed {
         version_info_for(&meta, app_path.as_deref(), npm.as_ref(), include_latest).await
     } else {
@@ -1431,6 +1437,9 @@ fn launch_binary(path: &Path) -> Result<(), String> {
 }
 
 fn find_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<PathBuf> {
+    if agent_id == "qoder-cli" {
+        return executable::find_qoder_cli_binary();
+    }
     binary_candidates_for_agent(agent_id, meta)
         .into_iter()
         .find_map(executable::find_binary)
@@ -1480,7 +1489,6 @@ fn binary_candidates_for_agent(agent_id: &str, meta: &ProgramMetadata) -> Vec<&'
         "cursor-cli" => vec!["cursor-agent"],
         "droid" | "factory-droid" => vec!["factory", "droid"],
         "kiro" => vec!["kiro", "kiro-cli"],
-        "qoder-cli" => vec!["qodercli", "qoder"],
         "qwen" => vec!["qwen-coder", "qwen"],
         _ => Vec::new(),
     };
@@ -1952,7 +1960,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             None,
             None,
             "~/.qoder",
-            "https://qoder.com",
+            "https://docs.qoder.com/cli/installation",
         ),
         "copilot" => cli(
             "copilot",
@@ -2408,6 +2416,74 @@ mod tests {
         );
         drop(running);
         assert!(super::claim_agent_package_operation().is_ok());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn qoder_cli_program_shows_the_selected_version() {
+        const LAUNCHER: &str = "AGENTBRO_TEST_QODER_CLI_LAUNCHER";
+        const TEST: &str = "agents::programs::tests::qoder_cli_program_shows_the_selected_version";
+
+        if let Some(launcher) = std::env::var_os(LAUNCHER) {
+            let info = super::info_for_agent_seed(
+                super::AgentProgramSeed {
+                    id: "qoder-cli".into(),
+                    display_name: "Qoder CLI".into(),
+                    icon: "qoder".into(),
+                    hooks_installed: false,
+                },
+                true,
+            )
+            .await;
+            assert_eq!(
+                info.binary_path.as_deref().map(Path::new),
+                Some(Path::new(&launcher))
+            );
+            assert_eq!(info.status, super::AgentProgramStatus::Installed);
+            assert_eq!(info.installed_version.as_deref(), Some("1.1.98"));
+            assert!(info.latest_version.is_none());
+            return;
+        }
+
+        let temp =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let bin = temp.path().join("Qoder CLI 工具");
+        std::fs::create_dir(&bin).unwrap();
+        #[cfg(windows)]
+        let (launcher, script) = (
+            bin.join("qodercli.cmd"),
+            "@echo off\r\nif not \"%~1\"==\"--version\" exit /b 1\r\necho 1.1.98\r\n",
+        );
+        #[cfg(unix)]
+        let (launcher, script) = (
+            bin.join("qodercli"),
+            "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 1\necho '1.1.98'\n",
+        );
+        std::fs::write(&launcher, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::copy(&launcher, temp.path().join(launcher.file_name().unwrap())).unwrap();
+        let path = std::env::var_os("PATH");
+        let path = std::env::join_paths(
+            std::iter::once(bin).chain(path.as_deref().into_iter().flat_map(std::env::split_paths)),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .current_dir(temp.path())
+            .env("PATH", path)
+            .env(LAUNCHER, launcher)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[cfg(any(unix, windows))]
