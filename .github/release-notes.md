@@ -2,16 +2,15 @@
 
 ## English
 
-AgentBro v{{VERSION}} adds the standalone Qoder desktop app and improves Island shortcuts, Agent Management, and Windows discovery.
+AgentBro v{{VERSION}} adds offline Skill Pack transfers and restores more project-locked Skills. It also improves Qoder approvals, keyboard use in the Island, and Windows startup.
 
 ### Highlights
 
-- **Qoder Desktop in Agent Management and the Island.** AgentBro discovers Qoder Desktop, Qoder IDE, and Qoder CLI separately on macOS and Windows. In Qoder Desktop, the Hook reports live task activity and lets you allow once or deny eligible requests in the Island. [#562](https://github.com/shirenchuang/agentbro/pull/562)
-- **Qoder CLI sessions and one-time approvals.** The CLI Hook follows session switches and exits, returns one-time decisions, and can be repaired without removing the other Qoder apps' Hooks. Hooks and Skills follow the CLI's custom user configuration directory. [#568](https://github.com/shirenchuang/agentbro/pull/568) · [#570](https://github.com/shirenchuang/agentbro/pull/570)
-- **Island shortcuts follow the request you see.** The shortcuts act once per key press, use the visible prompt when the Island is open, and pick the latest pending request when the Island is collapsed. Skip opens structured questions so you can review and answer them. [#574](https://github.com/shirenchuang/agentbro/pull/574) · [#576](https://github.com/shirenchuang/agentbro/pull/576) · [#578](https://github.com/shirenchuang/agentbro/pull/578) · [#580](https://github.com/shirenchuang/agentbro/pull/580)
-- **Agent cleanup protects shared resources.** AgentBro checks that an uninstall succeeded before removing Hooks and Skills, preserves Skills shared by other Agents, and refreshes Hook actions after cleanup. [#558](https://github.com/shirenchuang/agentbro/pull/558) · [#564](https://github.com/shirenchuang/agentbro/pull/564) · [#566](https://github.com/shirenchuang/agentbro/pull/566)
-- **Windows detects CLI installs after a refresh.** Agent Management uses current saved Windows PATH entries when scanning for agents, including installs made since AgentBro opened. [#572](https://github.com/shirenchuang/agentbro/pull/572)
-- **Claude Code Hooks follow the active profile over SSH.** AgentBro checks, installs, and removes Hooks in the directory selected by the remote login shell's `CLAUDE_CONFIG_DIR`. [#561](https://github.com/shirenchuang/agentbro/pull/561)
+- **Move a Skill Pack with a single ZIP.** Export its Skill files, member order, fingerprints, and recommended Agents together. Preview the import, restore missing Skills, or keep both copies when an existing Skill uses the same ID, including names that differ only in letter case. [#601](https://github.com/shirenchuang/agentbro/pull/601) · [#605](https://github.com/shirenchuang/agentbro/pull/605)
+- **Restore and verify more project Skills.** Restore pinned Skills from GitLab and other HTTPS Git hosts. Renamed Skills can be restored under their locked alias, and linked npm Skills can be verified against the locked package and content. [#597](https://github.com/shirenchuang/agentbro/pull/597) · [#591](https://github.com/shirenchuang/agentbro/pull/591) · [#593](https://github.com/shirenchuang/agentbro/pull/593)
+- **Qoder keeps the Island in sync.** AgentBro restores a missing or empty Hook bridge at startup. A disconnected approval is retired, and for Qoder Desktop the Island offers to open the app when the response can no longer be returned. [#600](https://github.com/shirenchuang/agentbro/pull/600) · [#585](https://github.com/shirenchuang/agentbro/pull/585) · [#609](https://github.com/shirenchuang/agentbro/pull/609)
+- **Answer Island questions by keyboard.** Use Tab, Space, and Enter to select options and submit answers. When a shortcut opens a question, it stays visible while the Island has keyboard focus. [#587](https://github.com/shirenchuang/agentbro/pull/587) · [#589](https://github.com/shirenchuang/agentbro/pull/589)
+- **Windows startup recovery and a more reliable welcome screen.** If startup stalls, Windows offers to keep waiting or close AgentBro so you can launch it again. The welcome screen closes after the display choice is saved, and a failed save can be retried. [#595](https://github.com/shirenchuang/agentbro/pull/595) · [#607](https://github.com/shirenchuang/agentbro/pull/607)
 
 ### Install and update
 
@@ -27,20 +26,19 @@ AgentBro v{{VERSION}} adds the standalone Qoder desktop app and improves Island 
 ### Notes
 
 - The Windows installers are x64 and may show a SmartScreen prompt. Intermittent startup and Island accessibility reports are tracked in [#194](https://github.com/shirenchuang/agentbro/issues/194) and [#351](https://github.com/shirenchuang/agentbro/issues/351).
-- [Full changes since v3.5.1](https://github.com/shirenchuang/agentbro/compare/v3.5.1...v{{VERSION}})
+- [Full changes since v3.6.0](https://github.com/shirenchuang/agentbro/compare/v3.6.0...v{{VERSION}})
 
 ## 中文
 
-AgentBro v{{VERSION}} 新增独立 Qoder 桌面版接入，并改进了灵动岛快捷键、Agent 管理和 Windows 上的安装检测。
+AgentBro v{{VERSION}} 新增技能包离线迁移，支持恢复更多项目锁定的技能，并改进了 Qoder 审批、灵动岛键盘操作和 Windows 启动。
 
 ### 重点更新
 
-- **Agent 管理和灵动岛支持 Qoder 桌面版。** 在 macOS 和 Windows 上分别识别 Qoder 桌面版、Qoder IDE 和 Qoder CLI。桌面版安装 Hook 后，灵动岛会显示实时任务状态，并能对支持的审批请求选择「允许一次」或「拒绝」。[#562](https://github.com/shirenchuang/agentbro/pull/562)
-- **Qoder CLI 会话和单次审批。** Hook 会跟踪会话切换和退出，回传单次审批结果。修复 CLI Hook 时会保留其他 Qoder 应用的 Hook。Hook 和技能都遵循 CLI 的自定义用户配置目录。[#568](https://github.com/shirenchuang/agentbro/pull/568) · [#570](https://github.com/shirenchuang/agentbro/pull/570)
-- **灵动岛快捷键跟随当前请求。** 每次按键只处理一次。灵动岛展开时操作当前显示的请求，收起时选取最近到达的待处理请求。「跳过」遇到结构化问题会打开问题卡片，让你查看并作答。[#574](https://github.com/shirenchuang/agentbro/pull/574) · [#576](https://github.com/shirenchuang/agentbro/pull/576) · [#578](https://github.com/shirenchuang/agentbro/pull/578) · [#580](https://github.com/shirenchuang/agentbro/pull/580)
-- **清理 Agent 时保留共享资源。** AgentBro 确认卸载成功后才会移除 Hook 和技能，保留其他 Agent 共用的技能，并在清理后刷新 Hook 操作状态。[#558](https://github.com/shirenchuang/agentbro/pull/558) · [#564](https://github.com/shirenchuang/agentbro/pull/564) · [#566](https://github.com/shirenchuang/agentbro/pull/566)
-- **Windows 刷新后可识别新安装的 CLI。** Agent 管理扫描时会读取 Windows 当前保存的 PATH，也能发现 AgentBro 启动后安装的程序。[#572](https://github.com/shirenchuang/agentbro/pull/572)
-- **SSH 上的 Claude Code Hook 跟随当前配置。** AgentBro 在远程登录 Shell 的 `CLAUDE_CONFIG_DIR` 指定的目录中检查、安装和移除 Hook。[#561](https://github.com/shirenchuang/agentbro/pull/561)
+- **用一个 ZIP 迁移技能包。** 将技能文件、成员顺序、内容指纹和推荐 Agent 一起导出。导入前可预览、恢复缺失技能，遇到同名或仅大小写不同的技能时可保留两份。[#601](https://github.com/shirenchuang/agentbro/pull/601) · [#605](https://github.com/shirenchuang/agentbro/pull/605)
+- **恢复和校验更多项目技能。** 支持从 GitLab 等 HTTPS Git 源恢复锁定版本，按锁文件中的别名恢复重命名的技能，并按锁定的 npm 包版本和内容校验链接安装的技能。[#597](https://github.com/shirenchuang/agentbro/pull/597) · [#591](https://github.com/shirenchuang/agentbro/pull/591) · [#593](https://github.com/shirenchuang/agentbro/pull/593)
+- **Qoder 与灵动岛保持同步。** 启动时恢复缺失或损坏为空文件的 Hook 桥接程序。断开的审批会自动撤下，Qoder Desktop 的审批无法回传时，灵动岛会提供打开 Qoder 的入口。[#600](https://github.com/shirenchuang/agentbro/pull/600) · [#585](https://github.com/shirenchuang/agentbro/pull/585) · [#609](https://github.com/shirenchuang/agentbro/pull/609)
+- **用键盘回答灵动岛问题。** 支持用 Tab、空格和回车选择选项并提交。快捷键打开的问题会在灵动岛拥有键盘焦点时保持可见。[#587](https://github.com/shirenchuang/agentbro/pull/587) · [#589](https://github.com/shirenchuang/agentbro/pull/589)
+- **Windows 启动可恢复，欢迎页保存更稳定。** 启动卡住时，Windows 会提供继续等待或关闭 AgentBro 的选项，方便再次启动。欢迎页会在展示模式保存后关闭，保存失败时可原地重试。[#595](https://github.com/shirenchuang/agentbro/pull/595) · [#607](https://github.com/shirenchuang/agentbro/pull/607)
 
 ### 安装与更新
 
@@ -56,4 +54,4 @@ AgentBro v{{VERSION}} 新增独立 Qoder 桌面版接入，并改进了灵动岛
 ### 说明
 
 - Windows 安装包为 x64，可能出现 SmartScreen 提示。偶发启动和灵动岛无障碍问题在 [#194](https://github.com/shirenchuang/agentbro/issues/194) 和 [#351](https://github.com/shirenchuang/agentbro/issues/351) 中跟踪。
-- [自 v3.5.1 以来的完整改动](https://github.com/shirenchuang/agentbro/compare/v3.5.1...v{{VERSION}})
+- [自 v3.6.0 以来的完整改动](https://github.com/shirenchuang/agentbro/compare/v3.6.0...v{{VERSION}})
