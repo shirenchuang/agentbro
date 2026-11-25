@@ -121,15 +121,24 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
     } finally {
         $null = New-Item -ItemType File -Path $env:AGENTBRO_PACKAGE_FIXTURE_RESUME -Force
     }
-    $null = Wait-IslandValue 'package stdout and stderr in the new Settings window' {
-        (Find-PackControl $reopened '> agentbro-package-fixture-stdout') -and
-            (Find-PackControl $reopened '! agentbro-package-fixture-stderr')
+    try {
+        $null = Wait-IslandValue 'package stdout and stderr in the new Settings window' {
+            (Find-PackControl $reopened '> agentbro-package-fixture-stdout') -and
+                (Find-PackControl $reopened '! agentbro-package-fixture-stderr')
+        }
+        $null = Wait-IslandValue 'the new installed version while the package output helper still runs' {
+            (Test-Path -LiteralPath "$env:AGENTBRO_PACKAGE_OUTPUT_HOLDER.pid" -PathType Leaf) -and
+                (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED -PathType Leaf) -and
+                (Test-PackVisibleText $reopened '当前版本 999.0.0')
+        }
+        $holderProcessId = [int](Get-Content -LiteralPath "$env:AGENTBRO_PACKAGE_OUTPUT_HOLDER.pid" -Raw)
+        if (-not (Get-Process -Id $holderProcessId -ErrorAction SilentlyContinue)) {
+            throw 'The output helper must be running when the updated version appears.'
+        }
+        Write-Output 'The recreated Settings window refreshed the installed version while the output helper still held both pipes.'
+    } finally {
+        $null = New-Item -ItemType File -Path "$env:AGENTBRO_PACKAGE_OUTPUT_HOLDER.release" -Force
     }
-    $null = Wait-IslandValue 'the new installed version in the recreated Settings window without a manual refresh' {
-        (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED -PathType Leaf) -and
-            (Test-PackVisibleText $reopened '当前版本 999.0.0')
-    }
-    Write-Output 'The recreated Settings window refreshed the installed version when the package command finished.'
     Test-InstalledCustomAgentForm $reopened
 }
 

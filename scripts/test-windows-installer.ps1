@@ -39,6 +39,24 @@ if ($VerifyAgentPackageConsole) {
     $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED = Join-Path $stage 'package-updated'
     $env:AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION = Join-Path $stage 'package-changed-version'
     $env:AGENTBRO_PACKAGE_FIXTURE_NEW_TAG = Join-Path $stage 'package-new-tag'
+    $env:AGENTBRO_PACKAGE_OUTPUT_HOLDER = Join-Path $stage 'hold-package-output.cjs'
+    @'
+const { spawn } = require('node:child_process')
+const { existsSync, writeFileSync } = require('node:fs')
+
+if (process.argv[2] === 'hold') {
+  const deadline = Date.now() + 60000
+  const check = setInterval(() => {
+    if (existsSync(__filename + '.release') || !existsSync(__dirname) || Date.now() >= deadline) {
+      clearInterval(check)
+    }
+  }, 50)
+} else {
+  const holder = spawn(process.execPath, [__filename, 'hold'], { stdio: 'inherit', windowsHide: true })
+  writeFileSync(__filename + '.pid', String(holder.pid))
+  holder.unref()
+}
+'@ | Set-Content -LiteralPath $env:AGENTBRO_PACKAGE_OUTPUT_HOLDER -Encoding ascii
     $env:npm_config_offline = 'true'
     $env:npm_config_cache = Join-Path $stage 'isolated npm cache'
     $env:npm_config_prefix = Join-Path $stage 'isolated npm prefix'
@@ -106,6 +124,10 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@999.0.0" (
     )
     echo agentbro-package-fixture-stdout
     >&2 echo agentbro-package-fixture-stderr
+    if exist "%AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION%" (
+        node "%AGENTBRO_PACKAGE_OUTPUT_HOLDER%"
+        if errorlevel 1 exit /b 1
+    )
     exit /b 0
 )
 if "%~1 %~2 %~3"=="uninstall -g @anthropic-ai/claude-code" (
