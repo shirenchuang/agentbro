@@ -3835,6 +3835,23 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('cannot verify a desktop npm update against a different detected installation', async () => {
+    const reviewed = makeProgram({ status: 'updateAvailable', installedVersion: '2.0.0', latestVersion: '3.0.0' })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([reviewed])
+      .mockResolvedValue([{ ...reviewed, status: 'installed', installedVersion: '3.0.0', binaryPath: '/other/bin/claude' }])
+    const update = vi.spyOn(agentApi, 'update').mockResolvedValue('completed')
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Claude Code')
+    expect(update).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, reviewed.binaryPath)
+    expect(screen.queryByText('Agent 更新完成')).not.toBeInTheDocument()
+  })
+
   it('reports an unchanged version and confirms a retry only after detecting the update', async () => {
     const outdated = makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })
     vi.spyOn(agentApi, 'refresh')
@@ -7925,7 +7942,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<AgentManagementPage />)
 
     fireEvent.click(await screen.findByText('更新此 Agent'))
-    await waitFor(() => expect(update).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, '/usr/local/bin/claude'))
   })
 
   it('keeps the Agent uninstall confirmation open until the operation finishes', async () => {
@@ -7953,7 +7970,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('npm uninstall -g @anthropic-ai/claude-code')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
-    await waitFor(() => expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
+    await waitFor(() => expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, '/usr/local/bin/claude'))
     expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled()
     fireEvent.click(dialog.closest('.sm2__overlay')!)
     expect(dialog).toBeInTheDocument()
@@ -8100,7 +8117,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
     const alert = await screen.findByRole('alert')
-    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, '/usr/local/bin/claude')
     expect(removeManaged).not.toHaveBeenCalled()
     expect(removeUnmanaged).not.toHaveBeenCalled()
     expect(uninstallHook).not.toHaveBeenCalled()
@@ -8137,6 +8154,12 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
   it.each([
     { issue: 'the command failed', commandError: 'Access denied', detected: [], message: 'Access denied' },
+    {
+      issue: 'the backend observes a switched npm launcher',
+      commandError: 'The selected npm Agent launcher changed.',
+      detected: [],
+      message: 'The selected npm Agent launcher changed.',
+    },
     { issue: 'the launcher remains', detected: [makeProgram()], message: '仍检测到 Claude Code' },
     { issue: 'detection failed', detected: null, message: '无法确认 Claude Code 是否已卸载' },
     { issue: 'the program record is missing', detected: [], message: '无法确认 Claude Code 是否已卸载' },
@@ -8171,6 +8194,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<AgentManagementPage />)
 
     fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(reviewed.binaryPath!)
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
     const alert = await screen.findByRole('alert')
@@ -8179,7 +8203,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(uninstallHook).not.toHaveBeenCalled()
     expect(alert).toHaveTextContent(message)
     expect(alert).toHaveTextContent('已保留 Skills 和 Hook')
-    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, reviewed.binaryPath)
     if (commandError) expect(verify).not.toHaveBeenCalled()
     else expect(verify).toHaveBeenCalledExactlyOnceWith(LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(loadDetail).toHaveBeenCalledWith('claude-code', true)
@@ -8215,7 +8239,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       finishProgramUninstall()
     })
 
-    expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, '/usr/local/bin/claude')
     expect(verify).toHaveBeenCalledExactlyOnceWith(LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(deleteManaged).toHaveBeenCalledExactlyOnceWith(agentDetail.skills.map((skill) => skill.id), LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(deleteUnmanaged).toHaveBeenCalledExactlyOnceWith('claude-code', localSkill.id, LOCAL_RUNTIME_ENVIRONMENT_ID)

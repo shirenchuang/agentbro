@@ -126,14 +126,14 @@ function isUninstallProgramPresent(program: AgentProgramInfo, environmentId: str
   return isAgentProgramInstalled(program)
 }
 
-function isRemoteNpmProgram(program: AgentProgramInfo | undefined, environmentId: string) {
-  return environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID && program?.kind === 'cli' && program.packageManager === 'npm'
+function isNpmProgram(program: AgentProgramInfo | undefined) {
+  return program?.kind === 'cli' && program.packageManager === 'npm'
 }
 
 function canCheckForProgramUpdate(program: AgentProgramInfo | undefined, environmentId: string) {
   return Boolean(program?.updateCommand && (
     program.packageManager === 'native'
-    || (isRemoteNpmProgram(program, environmentId) && program.binaryPath && !program.latestVersion)
+    || (environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID && isNpmProgram(program) && program.binaryPath && !program.latestVersion)
   ))
 }
 
@@ -547,7 +547,7 @@ export function AgentManagementPage() {
     const previousVersion = previous?.packageManager === 'native'
       ? previous.installedVersion
       : previous?.installedVersion ?? (detail?.id === agentId ? detail.version : null)
-    const expectedBinaryPath = operation === 'update' && isRemoteNpmProgram(previous, runtimeEnvironmentId)
+    const expectedBinaryPath = operation === 'update' && isNpmProgram(previous)
       ? previous?.binaryPath
       : null
     const active = { ...runtimeSelection, agentId, operation }
@@ -662,7 +662,7 @@ export function AgentManagementPage() {
       let preserveSkills = preservesSharedSkills
       if (uninstallProgram) {
         try {
-          if (isRemoteNpmProgram(program, environmentId) && program.binaryPath) {
+          if (isNpmProgram(program) && program.binaryPath) {
             await agentApi.uninstall(agent.id, environmentId, program.binaryPath)
           } else {
             await agentApi.uninstall(agent.id, environmentId)
@@ -1076,6 +1076,7 @@ export function AgentManagementPage() {
               {uninstallProgram.kind === 'app'
                 ? `移到废纸篓：${uninstallProgram.appPath}`
                 : uninstallProgram.uninstallCommand}
+              {isNpmProgram(uninstallProgram) && uninstallProgram.binaryPath && <><br /><span>{uninstallProgram.binaryPath}</span></>}
             </code>
           )}
         </PreviewDialog>

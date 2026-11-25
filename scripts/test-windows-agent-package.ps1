@@ -197,6 +197,72 @@ function Test-InstalledCustomAgentForm([Windows.Automation.AutomationElement]$Se
     Write-Output 'The installed app saved and displayed the Chinese-only custom Agent and created its Hook settings.'
 }
 
+function Test-ReviewedNpmLauncher([Windows.Automation.AutomationElement]$Settings, [string]$Stage) {
+    $reviewedPrefix = Join-Path $Stage 'bin'
+    $alternatePrefix = Join-Path $Stage 'alternate npm prefix'
+    $alias = Join-Path $Stage 'active npm prefix'
+    $packageManifest = 'node_modules\@anthropic-ai\claude-code\package.json'
+    $reviewedSettings = Join-Path $env:CLAUDE_CONFIG_DIR 'settings.json'
+    $unmanagedSkill = Join-Path $env:CLAUDE_CONFIG_DIR 'skills\uninstall-fixture\SKILL.md'
+    $paths = @($reviewedSettings, $unmanagedSkill)
+    foreach ($prefix in @($reviewedPrefix, $alternatePrefix)) {
+        $paths += @((Join-Path $prefix 'claude.cmd'), (Join-Path $prefix $packageManifest))
+    }
+    $before = Get-FileHash -LiteralPath $paths
+    $switchPrefix = {
+        param([string]$Target)
+        [IO.Directory]::Delete($alias)
+        $null = New-Item -ItemType Junction -Path $alias -Target $Target
+    }
+    $changedMessage = 'The selected npm Agent launcher changed.'
+    $refresh = {
+        Invoke-PackControl (Wait-IslandValue 'the enabled Agent Management version refresh' {
+            $button = Find-PackControl $Settings '获取版本'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        })
+        $null = Wait-IslandValue 'the reviewed Agent Management version' {
+            $button = Find-PackControl $Settings '获取版本'
+            $button -and $button.Current.IsEnabled -and
+                (Test-PackVisibleText $Settings '当前版本 2.0.0') -and
+                (Test-PackVisibleText $Settings '可更新到 999.0.0') -and
+                -not (Test-PackVisibleText $Settings $changedMessage)
+        }
+    }
+
+    try {
+        & $switchPrefix $alternatePrefix
+        Invoke-ManagedAgentButton $Settings '更新此 Agent'
+        $null = Wait-IslandValue 'rejection of the switched npm update' {
+            Test-PackVisibleText $Settings $changedMessage
+        }
+    } finally {
+        & $switchPrefix $reviewedPrefix
+    }
+    & $refresh
+    Invoke-ManagedAgentButton $Settings '卸载 Agent'
+    $reviewedLauncher = Join-Path $reviewedPrefix 'claude.cmd'
+    $null = Wait-IslandValue 'the resolved launcher in the uninstall confirmation' {
+        (Find-PackControl $Settings '确认卸载') -and
+            (Test-PackVisibleText $Settings $reviewedLauncher)
+    }
+    try {
+        & $switchPrefix $alternatePrefix
+        Invoke-ManagedAgentButton $Settings '确认卸载'
+        $null = Wait-IslandValue 'rejection of the switched npm uninstall' {
+            (Test-PackVisibleText $Settings $changedMessage) -and
+                (Test-PackVisibleText $Settings 'AgentBro kept the Skills and Hooks.')
+        }
+    } finally {
+        & $switchPrefix $reviewedPrefix
+    }
+    if ((Test-Path -LiteralPath "$env:AGENTBRO_PACKAGE_CONSOLE_RESULT.mutation") -or
+        (Compare-Object $before (Get-FileHash -LiteralPath $paths) -Property Path, Hash)) {
+        throw 'A stale npm operation started a package mutation or modified an installation, Skill, or Hook'
+    }
+    Write-Output 'Agent Management rejected update and uninstall after the same junction switched between equal-version npm copies. Both installs, Skills and Hooks were preserved.'
+    & $refresh
+}
+
 function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {
     $settings = Open-ManagedAgent $Island 'Claude Code'
     $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
@@ -256,6 +322,7 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         }
     }
     Write-Output 'The sidebar grouped the detected Claude Code CLI under Installed Agents.'
+    Test-ReviewedNpmLauncher $settings $fixtureStage
     $staleUpdate = Wait-IslandValue 'the enabled update before rolling back the registry tag' {
         $button = Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }
         if ($button -and $button.Current.IsEnabled) { $button }

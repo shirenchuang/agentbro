@@ -204,11 +204,11 @@ fn open_path_windows(target: &str) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 mod windows_shell {
-    use crate::platform::windows_shell::ShellApartment;
+    use crate::platform::windows_shell::{ordinary_path, ShellApartment};
     use std::collections::HashSet;
     use std::io;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
-    use std::path::{Component, Path, PathBuf, Prefix};
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
     use windows::core::{Interface, BSTR};
     use windows::Win32::System::Com::{CoCreateInstance, IDispatch, CLSCTX_LOCAL_SERVER};
@@ -334,26 +334,6 @@ mod windows_shell {
                 .is_ok_and(|target| path.canonicalize().is_ok_and(|original| target == original))
         });
         Ok(ordinary.unwrap_or(path))
-    }
-
-    fn ordinary_path(path: &Path) -> Option<PathBuf> {
-        let mut components = path.components();
-        let Component::Prefix(prefix) = components.next()? else {
-            return None;
-        };
-        let mut base = match prefix.kind() {
-            Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", char::from(drive))),
-            Prefix::VerbatimUNC(server, share) => {
-                let mut base = std::ffi::OsString::from(r"\\");
-                base.push(server);
-                base.push(r"\");
-                base.push(share);
-                PathBuf::from(base)
-            }
-            _ => return None,
-        };
-        base.push(components.as_path());
-        Some(base)
     }
 
     #[cfg(test)]
