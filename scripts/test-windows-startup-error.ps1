@@ -147,7 +147,7 @@ $listener.ExclusiveAddressUse = $true
 $listener.Start()
 try {
     $listenerLog = "Startup: could not open the Hook listener on port ${port}: .+"
-    Test-StartupError $start 'an occupied Hook port' "Hook port \b$port\b" $listenerLog
+    Test-StartupError $start 'an occupied Hook port' "(?s)^(?=.*\bHook\b)(?=.*\b$port\b)" $listenerLog
     if (-not $listener.Server.IsBound) { throw 'The port fixture lost its listener.' }
 } finally {
     $listener.Stop()

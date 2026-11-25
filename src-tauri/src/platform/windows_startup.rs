@@ -41,7 +41,7 @@ impl StartupRecovery {
 
     fn finish(&self, state: Phase) -> bool {
         let mut phase = self.phase();
-        if *phase != Phase::Starting {
+        if *phase != Phase::Starting && !(*phase == Phase::Ready && state == Phase::Failed) {
             return false;
         }
         *phase = state;
@@ -50,12 +50,27 @@ impl StartupRecovery {
     }
 
     pub(crate) fn fail(&self, stage: &str, error: impl Display) {
+        let language = unsafe { GetUserDefaultUILanguage() };
+        let [heading, guidance] = failure_messages(language & 0x03ff);
+        self.show_failure(stage, error, heading, guidance);
+    }
+
+    pub(crate) fn fail_hook_listener(&self, port: u16, error: impl Display) {
+        let language = unsafe { GetUserDefaultUILanguage() };
+        let (heading, guidance) = hook_failure_messages(language & 0x03ff, port);
+        self.show_failure(
+            &format!("could not open the Hook listener on port {port}"),
+            error,
+            &heading,
+            guidance,
+        );
+    }
+
+    fn show_failure(&self, stage: &str, error: impl Display, heading: &str, guidance: &str) {
         if !self.finish(Phase::Failed) {
             return;
         }
         log::error!("Startup: {stage}: {error}");
-        let language = unsafe { GetUserDefaultUILanguage() };
-        let [heading, guidance] = failure_messages(language & 0x03ff);
         let details: Vec<u16> = format!("{heading}\n\n{guidance}\n\n{error}")
             .encode_utf16()
             .chain([0])
@@ -274,6 +289,26 @@ mod tests {
             .is_some());
     }
 
+    #[tokio::test]
+    async fn hook_port_stays_reserved_without_accepting_connections_during_startup() {
+        let mut endpoint = crate::hook_endpoint::HookEndpoint {
+            tcp_port: 0,
+            socket_path: String::new(),
+        };
+        let reservation = endpoint.reserve_tcp_socket().unwrap();
+        let address = reservation.local_addr().unwrap();
+        endpoint.tcp_port = address.port();
+        assert!(endpoint.reserve_tcp_socket().is_err());
+        assert!(
+            std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_err()
+        );
+
+        let listener = reservation.listen(1024).unwrap();
+        let client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (_, peer) = listener.accept().await.unwrap();
+        assert_eq!(peer, client.local_addr().unwrap());
+    }
+
     #[test]
     fn native_dialog_handles_wait_ready_and_close() {
         if let Some(directory) = std::env::var_os(FIXTURE) {
@@ -382,5 +417,30 @@ fn failure_messages(language: u16) -> [&'static str; 2] {
             "AgentBro could not open its window",
             "Check the Microsoft Edge WebView2 Runtime installation and make sure its data folder is writable. Then reopen AgentBro.",
         ],
+    }
+}
+
+fn hook_failure_messages(language: u16, port: u16) -> (String, &'static str) {
+    match language {
+        0x04 => (
+            format!("AgentBro 无法打开 Hook 端口 {port}"),
+            "请检查是否有另一个程序占用这个端口，或 Windows 是否限制了对它的访问，然后重新打开 AgentBro。",
+        ),
+        0x11 => (
+            format!("AgentBro は Hook ポート {port} を開けません"),
+            "別のアプリがポートを使用していないか、Windows がアクセスを制限していないか確認してから、AgentBro を開き直してください。",
+        ),
+        0x12 => (
+            format!("AgentBro가 Hook 포트 {port}을(를) 열 수 없습니다"),
+            "다른 앱이 이 포트를 사용 중이거나 Windows가 액세스를 제한하는지 확인한 다음 AgentBro를 다시 여세요.",
+        ),
+        0x1f => (
+            format!("AgentBro, {port} numaralı Hook bağlantı noktasını açamadı"),
+            "Başka bir uygulamanın bu bağlantı noktasını kullanıp kullanmadığını veya Windows'un erişimi kısıtlayıp kısıtlamadığını kontrol edin. Ardından AgentBro'yu yeniden açın.",
+        ),
+        _ => (
+            format!("AgentBro could not open Hook port {port}"),
+            "Check whether another app is using this port or Windows is restricting access to it. Then reopen AgentBro.",
+        ),
     }
 }

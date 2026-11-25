@@ -6642,6 +6642,11 @@ fn diagnostic_startup_line(line: &str) -> Option<String> {
             "Startup: could not create a Windows application window"
         }
         ("agentbro_lib::platform::windows_startup", data)
+            if data.starts_with("Startup: could not open the Hook listener on port ") =>
+        {
+            "Startup: could not open the Windows Hook listener"
+        }
+        ("agentbro_lib::platform::windows_startup", data)
             if data
                 .starts_with("Startup: Windows desktop windows are still being created after ") =>
         {
@@ -7085,7 +7090,8 @@ mod tests {
              {header}[agentbro_lib][INFO] Startup: WebView2 runtime PRIVATE_FIXTURE"
         );
         let previous = format!(
-            "{header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not locate the WebView2 runtime: PRIVATE_ERROR"
+            "{header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not locate the WebView2 runtime: PRIVATE_ERROR\n\
+             {header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not open the Hook listener on port 17894: PRIVATE_ERROR"
         );
         let active_name = "agentbro.log";
         let rotated_name = "agentbro_2026-11-25_13-04-30.log";
@@ -7112,7 +7118,8 @@ mod tests {
         assert_eq!(
             logs["logs/agentbro_2026-11-25_13-04-30.log"],
             format!(
-                "{header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not locate the WebView2 runtime\n"
+                "{header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not locate the WebView2 runtime\n\
+                 {header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not open the Windows Hook listener\n"
             )
         );
     }

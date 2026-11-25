@@ -5958,14 +5958,14 @@ async fn resize_notch(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "windows")]
-    let (_startup_lock, startup_lock_error) = match data_dir::try_windows_startup_lock(
-        &data_dir::agentbro_home(),
-        hook_endpoint::current().tcp_port,
-    ) {
-        Ok(Some(lock)) => (Some(lock), None),
-        Ok(None) => return,
-        Err(error) => (None, Some(error)),
-    };
+    let endpoint = hook_endpoint::current();
+    #[cfg(target_os = "windows")]
+    let (_startup_lock, startup_lock_error) =
+        match data_dir::try_windows_startup_lock(&data_dir::agentbro_home(), endpoint.tcp_port) {
+            Ok(Some(lock)) => (Some(lock), None),
+            Ok(None) => return,
+            Err(error) => (None, Some(error)),
+        };
 
     #[cfg(target_os = "windows")]
     let startup = Arc::new(platform::windows_startup::StartupRecovery::default());
@@ -6019,10 +6019,17 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
             #[cfg(target_os = "windows")]
-            {
+            let hook_socket = {
                 if let Some(error) = startup_lock_error {
                     log::warn!("Could not acquire the Windows startup lock: {error}");
                 }
+                let socket = match endpoint.reserve_tcp_socket() {
+                    Ok(socket) => socket,
+                    Err(error) => {
+                        startup_setup.fail_hook_listener(endpoint.tcp_port, error);
+                        return Ok(());
+                    }
+                };
                 match tauri::webview_version() {
                     Ok(version) => log::info!("Startup: WebView2 runtime {version}"),
                     Err(error) => {
@@ -6044,7 +6051,8 @@ pub fn run() {
                 if !startup_setup.windows_created() {
                     return Ok(());
                 }
-            }
+                socket
+            };
             log::info!("Startup: configured windows created");
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -6287,12 +6295,21 @@ pub fn run() {
             hook_server.set_app_handle(app.handle().clone());
             hook_server.set_config_store(config_store.clone());
 
-            // Start hook server — exit if port is already in use (another instance running)
             let server = hook_server.clone();
+            #[cfg(not(target_os = "windows"))]
             let app_handle_for_server = app.handle().clone();
+            #[cfg(target_os = "windows")]
+            let startup_for_server = Arc::clone(&startup_setup);
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = server.start().await {
-                    log::error!("Failed to start HookServer: {}", e);
+                #[cfg(target_os = "windows")]
+                if let Err(error) = server.start_with_reserved_socket(hook_socket).await {
+                    tauri::async_runtime::spawn_blocking(move || {
+                        startup_for_server.fail_hook_listener(endpoint.tcp_port, error);
+                    });
+                }
+                #[cfg(not(target_os = "windows"))]
+                if let Err(error) = server.start().await {
+                    log::error!("Failed to start HookServer: {error}");
                     app_handle_for_server.exit(1);
                 }
             });
