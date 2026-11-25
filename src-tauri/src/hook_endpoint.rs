@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 pub const HOOK_SOCKET_ENV: &str = "AGENTBRO_HOOK_SOCKET";
 pub const HOOK_PORT_ENV: &str = "AGENTBRO_HOOK_PORT";
 
@@ -11,7 +13,18 @@ pub struct HookEndpoint {
 
 impl HookEndpoint {
     pub fn tcp_addr(&self) -> String {
-        format!("127.0.0.1:{}", self.tcp_port)
+        self.tcp_socket_addr().to_string()
+    }
+
+    fn tcp_socket_addr(&self) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], self.tcp_port))
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn reserve_tcp_socket(&self) -> std::io::Result<tokio::net::TcpSocket> {
+        let socket = tokio::net::TcpSocket::new_v4()?;
+        socket.bind(self.tcp_socket_addr())?;
+        Ok(socket)
     }
 }
 

@@ -893,11 +893,23 @@ impl HookServer {
         }
     }
 
-    /// Start listening on both Unix socket and TCP
+    #[cfg(not(target_os = "windows"))]
     pub async fn start(&self) -> anyhow::Result<()> {
-        let endpoint = self.endpoint.clone();
+        let listener = TcpListener::bind(self.endpoint.tcp_addr()).await?;
+        self.start_listening(listener).await
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) async fn start_with_reserved_socket(
+        &self,
+        socket: tokio::net::TcpSocket,
+    ) -> anyhow::Result<()> {
+        self.start_listening(socket.listen(1024)?).await
+    }
+
+    async fn start_listening(&self, tcp_listener: TcpListener) -> anyhow::Result<()> {
+        let endpoint = &self.endpoint;
         let tcp_addr = endpoint.tcp_addr();
-        let tcp_listener = TcpListener::bind(&tcp_addr).await?;
         let context = self.connection_context();
 
         #[cfg(unix)]

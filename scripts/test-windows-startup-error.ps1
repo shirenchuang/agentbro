@@ -72,6 +72,63 @@ public static class AgentBroStartupDialog {
 }
 '@
 
+function Test-StartupError(
+    [Diagnostics.ProcessStartInfo]$Start,
+    [string]$Description,
+    [string]$ExpectedMessage,
+    [string]$ExpectedLog
+) {
+    $launch = [Diagnostics.Process]::Start($Start)
+    try {
+        $stdout = $launch.StandardOutput.ReadToEndAsync()
+        $stderr = $launch.StandardError.ReadToEndAsync()
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        $text = ''
+        do {
+            if ($launch.HasExited) {
+                throw "AgentBro exited with code $($launch.ExitCode) before showing the startup error for $Description."
+            }
+            $dialog = [AgentBroStartupDialog]::Find($launch.Id)
+            if ($dialog -ne [IntPtr]::Zero) {
+                $text = [AgentBroStartupDialog]::ReadText($dialog)
+                if ($text -match $ExpectedMessage) { break }
+            }
+            Start-Sleep -Milliseconds 100
+        } until ([DateTime]::UtcNow -ge $deadline)
+        if ($dialog -eq [IntPtr]::Zero) { throw "Timed out waiting for the startup error for $Description." }
+        if ($text -notmatch $ExpectedMessage) {
+            throw "The startup error did not explain $Description. $text"
+        }
+        Write-Output $text.Trim()
+        [AgentBroStartupDialog]::Acknowledge($dialog)
+        if (-not $launch.WaitForExit(5000) -or $launch.ExitCode -ne 1) {
+            throw 'Acknowledging the native startup error did not close the failed launch with exit code 1.'
+        }
+        $log = $stdout.GetAwaiter().GetResult()
+        $startupError = $log -split "\r?\n" | Where-Object { $_ -match $ExpectedLog }
+        if (-not $startupError -or $log -match 'Startup: (configured windows created|scheduling Hook server)') {
+            throw "Startup did not report $Description before stopping setup."
+        }
+        Write-Output $startupError
+        Write-Output "Acknowledged the installed native startup error for $Description."
+    } catch {
+        if (-not $launch.HasExited) {
+            $launch.Kill()
+            $null = $launch.WaitForExit(3000)
+        }
+        foreach ($output in @($stdout, $stderr)) {
+            if ($output.IsCompleted) { Write-Output ($output.GetAwaiter().GetResult()) }
+        }
+        throw
+    } finally {
+        if (-not $launch.HasExited) {
+            $launch.Kill()
+            $null = $launch.WaitForExit(3000)
+        }
+        $launch.Dispose()
+    }
+}
+
 $start = [Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $AppPath
 $start.WorkingDirectory = Split-Path $AppPath
@@ -79,55 +136,19 @@ $start.UseShellExecute = $false
 $start.RedirectStandardOutput = $true
 $start.RedirectStandardError = $true
 $start.EnvironmentVariables['WEBVIEW2_BROWSER_EXECUTABLE_FOLDER'] = Join-Path $Stage 'missing-webview2-runtime'
+$webviewLog = 'Startup: could not locate the WebView2 runtime: .+'
+Test-StartupError $start 'an unavailable WebView2 runtime' 'Microsoft Edge WebView2 Runtime' $webviewLog
+$start.EnvironmentVariables.Remove('WEBVIEW2_BROWSER_EXECUTABLE_FOLDER')
 
-$launch = [Diagnostics.Process]::Start($start)
+$port = [int]$env:AGENTBRO_HOOK_PORT
+if ($port -le 0) { throw 'The startup fixture needs the installer smoke test Hook port.' }
+$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
+$listener.ExclusiveAddressUse = $true
+$listener.Start()
 try {
-    $stdout = $launch.StandardOutput.ReadToEndAsync()
-    $stderr = $launch.StandardError.ReadToEndAsync()
-    $deadline = [DateTime]::UtcNow.AddSeconds(20)
-    $text = ''
-    do {
-        if ($launch.HasExited) {
-            throw "AgentBro exited with code $($launch.ExitCode) before showing its startup error."
-        }
-        $dialog = [AgentBroStartupDialog]::Find($launch.Id)
-        if ($dialog -ne [IntPtr]::Zero) {
-            $text = [AgentBroStartupDialog]::ReadText($dialog)
-            if ($text -match 'Microsoft Edge WebView2 Runtime') { break }
-        }
-        Start-Sleep -Milliseconds 100
-    } until ([DateTime]::UtcNow -ge $deadline)
-    if ($dialog -eq [IntPtr]::Zero) { throw 'Timed out waiting for the AgentBro startup error dialog.' }
-    if ($text -notmatch 'Microsoft Edge WebView2 Runtime') {
-        throw "The startup error did not explain which runtime to check. $text"
-    }
-    Write-Output $text.Trim()
-    [AgentBroStartupDialog]::Acknowledge($dialog)
-    if (-not $launch.WaitForExit(5000) -or $launch.ExitCode -ne 1) {
-        throw 'Acknowledging the native startup error did not close the failed launch with exit code 1.'
-    }
-    $log = $stdout.GetAwaiter().GetResult()
-    $startupError = $log -split "\r?\n" | Where-Object {
-        $_ -match 'Startup: could not locate the WebView2 runtime: .+'
-    }
-    if (-not $startupError -or $log -match 'Startup: scheduling Hook server') {
-        throw 'Startup did not report the unavailable WebView2 runtime before stopping setup.'
-    }
-    Write-Output $startupError
-    Write-Output 'Acknowledged the installed native WebView2 startup error before normal AgentBro setup.'
-} catch {
-    if (-not $launch.HasExited) {
-        $launch.Kill()
-        $null = $launch.WaitForExit(3000)
-    }
-    foreach ($output in @($stdout, $stderr)) {
-        if ($output.IsCompleted) { Write-Output ($output.GetAwaiter().GetResult()) }
-    }
-    throw
+    $listenerLog = "Startup: could not open the Hook listener on port ${port}: .+"
+    Test-StartupError $start 'an occupied Hook port' "(?s)^(?=.*\bHook\b)(?=.*\b$port\b)" $listenerLog
+    if (-not $listener.Server.IsBound) { throw 'The port fixture lost its listener.' }
 } finally {
-    if (-not $launch.HasExited) {
-        $launch.Kill()
-        $null = $launch.WaitForExit(3000)
-    }
-    $launch.Dispose()
+    $listener.Stop()
 }
