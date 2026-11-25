@@ -1221,6 +1221,12 @@ fn main() {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
+            copy_optional_field(
+                obj,
+                &data,
+                "tool_use_id",
+                &["tool_use_id", "toolUseId", "tool_call_id"],
+            );
             if let Some(r) = data.get("reason").or_else(|| data.get("message")) {
                 obj.insert("denial_reason".into(), r.clone());
             }

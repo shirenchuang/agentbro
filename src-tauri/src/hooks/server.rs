@@ -3790,6 +3790,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn qoder_denials_and_failed_turns_update_the_island_state() {
+        use serde_json::{json, Value};
+
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![
+                Arc::new(crate::agents::qoder::QoderAdapter::desktop()),
+                Arc::new(crate::agents::qoder_cli::QoderCliAdapter::new()),
+            ]),
+        );
+        for agent in ["qoder-desktop", "qoder-cli"] {
+            let send_event = async |event: &str, fields: Value| {
+                let mut raw = json!({
+                    "agent": agent, "event": event, "session_id": agent, "cwd": "/workspace/qoder"
+                });
+                raw.as_object_mut()
+                    .unwrap()
+                    .extend(fields.as_object().unwrap().clone());
+                let (mut client, connection) = tokio::io::duplex(4096);
+                client
+                    .write_all(format!("{raw}\n").as_bytes())
+                    .await
+                    .unwrap();
+                HookServer::handle_connection(connection, server.connection_context())
+                    .await
+                    .unwrap();
+            };
+
+            send_event(
+                "PreToolUse",
+                json!({"tool": "Bash", "tool_use_id": "older", "tool_input": {"command": "pwd"}}),
+            )
+            .await;
+            store.set_pending_permission(
+                agent,
+                Some(PendingPermission {
+                    tool_use_id: Some("current".to_string()),
+                    tool_name: "Bash".to_string(),
+                    tool_input: String::new(),
+                    diff: None,
+                    options: None,
+                }),
+            );
+            send_event(
+                "PermissionDenied",
+                json!({"tool": "Bash", "tool_use_id": "older", "denial_reason": "Declined in Qoder"}),
+            )
+            .await;
+            let session = store.get_session(agent).unwrap();
+            assert_eq!(session.phase, SessionPhase::WaitingApproval);
+            assert_eq!(session.active_tools[0].status, "error");
+            assert_eq!(
+                session.active_tools[0].error.as_deref(),
+                Some("Declined in Qoder")
+            );
+            assert_eq!(
+                session.pending_permission.unwrap().tool_use_id.as_deref(),
+                Some("current")
+            );
+
+            send_event(
+                "PermissionDenied",
+                json!({"tool": "Bash", "tool_use_id": "current"}),
+            )
+            .await;
+            let session = store.get_session(agent).unwrap();
+            assert_eq!(session.phase, SessionPhase::Processing);
+            assert!(session.pending_permission.is_none());
+
+            send_event("StopFailure", json!({"error": "Request timed out"})).await;
+            let session = store.get_session(agent).unwrap();
+            assert_eq!(session.phase, SessionPhase::Error);
+            assert_eq!(session.description.as_deref(), Some("Request timed out"));
+            assert!(session.last_response.is_none());
+
+            send_event("Stop", json!({"summary": "Recovered"})).await;
+            let session = store.get_session(agent).unwrap();
+            assert_eq!(session.phase, SessionPhase::Ready);
+            assert_eq!(session.last_response.as_deref(), Some("Recovered"));
+        }
+    }
+
+    #[tokio::test]
     async fn harness_turn_and_permission_round_trip_share_the_island_session() {
         let store = Arc::new(SessionStore::new());
         let pending = Arc::new(Mutex::new(HashMap::new()));
