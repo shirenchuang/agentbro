@@ -395,7 +395,8 @@ function Click-IslandElement(
     [switch]$CenterAfterLayout,
     [scriptblock]$FindElement
 ) {
-    $null = Wait-IslandValue "a verified native click on $Description" {
+    $clickLabel = $Description
+    $null = Wait-IslandValue "a verified native click on $clickLabel" {
         try {
             $current = if ($FindElement) { & $FindElement } else { $Element }
             if (-not $current -or -not $current.Current.IsEnabled) { return }
@@ -410,7 +411,7 @@ function Click-IslandElement(
 
             $point = [Windows.Point]::new([int]$point.X, [int]$point.Y)
             if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
-                throw "Could not move the Windows cursor onto $Description"
+                throw "Could not move the Windows cursor onto $clickLabel"
             }
             Start-Sleep -Milliseconds 250
             $target = if ($FindElement) { & $FindElement } else { $Element }
@@ -427,10 +428,10 @@ function Click-IslandElement(
             for ($ancestor = $hit; $ancestor; $ancestor = $walker.GetParent($ancestor)) {
                 if (-not $target.Equals($ancestor)) { continue }
                 [AgentBroSmokeInput]::Click()
-                Write-Host "$Description at $($point.X), $($point.Y). Hit: $hitName. Native owner: AgentBro ($AppProcessId)."
+                Write-Host "$clickLabel at $($point.X), $($point.Y). Hit: $hitName. Native owner: AgentBro ($AppProcessId)."
                 return $true
             }
-            Write-Host "Waiting for $Description at $($point.X), $($point.Y). Current hit: $hitName."
+            Write-Host "Waiting for $clickLabel at $($point.X), $($point.Y). Current hit: $hitName."
         } catch {
             if ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
                 $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]) { throw }
