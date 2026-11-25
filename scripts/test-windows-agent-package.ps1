@@ -208,7 +208,10 @@ function Test-ReviewedNpmLauncher([Windows.Automation.AutomationElement]$Setting
     foreach ($prefix in @($reviewedPrefix, $alternatePrefix)) {
         $paths += @((Join-Path $prefix 'claude.cmd'), (Join-Path $prefix $packageManifest))
     }
-    $before = Get-FileHash -LiteralPath $paths
+    $before = @{}
+    foreach ($path in $paths) {
+        $before[$path] = [Convert]::ToBase64String([IO.File]::ReadAllBytes($path))
+    }
     $switchPrefix = {
         param([string]$Target)
         [IO.Directory]::Delete($alias)
@@ -255,9 +258,13 @@ function Test-ReviewedNpmLauncher([Windows.Automation.AutomationElement]$Setting
     } finally {
         & $switchPrefix $reviewedPrefix
     }
-    if ((Test-Path -LiteralPath "$env:AGENTBRO_PACKAGE_CONSOLE_RESULT.mutation") -or
-        (Compare-Object $before (Get-FileHash -LiteralPath $paths) -Property Path, Hash)) {
-        throw 'A stale npm operation started a package mutation or modified an installation, Skill, or Hook'
+    if (Test-Path -LiteralPath "$env:AGENTBRO_PACKAGE_CONSOLE_RESULT.mutation") {
+        throw 'A stale npm operation started a package mutation'
+    }
+    foreach ($path in $paths) {
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) -cne $before[$path]) {
+            throw "A stale npm operation modified $path"
+        }
     }
     Write-Output 'Agent Management rejected update and uninstall after the same junction switched between equal-version npm copies. Both installs, Skills and Hooks were preserved.'
     & $refresh
