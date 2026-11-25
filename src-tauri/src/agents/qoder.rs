@@ -246,7 +246,10 @@ impl QoderAdapter {
                 tool_target: None,
                 status: "success".to_string(),
             },
-            "post_tool_use_failure" | "PostToolUseFailure" => AgentEvent::ToolUse {
+            "post_tool_use_failure"
+            | "PostToolUseFailure"
+            | "permission_denied"
+            | "PermissionDenied" => AgentEvent::ToolUse {
                 session_id,
                 tool_name,
                 tool_input,
@@ -273,9 +276,9 @@ impl QoderAdapter {
                     .unwrap_or("Task completed")
                     .to_string(),
             },
-            "StopFailure" | "stop_failure" => AgentEvent::AssistantResponseComplete {
+            "StopFailure" | "stop_failure" => AgentEvent::Error {
                 session_id,
-                text: string_field(raw, &["error_message", "error", "message"])
+                message: string_field(raw, &["error_message", "error", "message"])
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or("Task failed")
                     .to_string(),
