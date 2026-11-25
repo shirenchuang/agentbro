@@ -45,6 +45,7 @@ const { spawn } = require('node:child_process')
 const { existsSync, writeFileSync } = require('node:fs')
 
 if (process.argv[2] === 'hold') {
+  writeFileSync(__filename + '.pid', String(process.pid))
   const deadline = Date.now() + 60000
   const check = setInterval(() => {
     if (existsSync(__filename + '.release') || !existsSync(__dirname) || Date.now() >= deadline) {
@@ -52,8 +53,12 @@ if (process.argv[2] === 'hold') {
     }
   }, 50)
 } else {
-  const holder = spawn(process.execPath, [__filename, 'hold'], { stdio: 'inherit', windowsHide: true })
-  writeFileSync(__filename + '.pid', String(holder.pid))
+  // On Windows, Node terminates non-detached children when the launcher exits.
+  const holder = spawn(process.execPath, [__filename, 'hold'], {
+    detached: true,
+    stdio: ['ignore', 'inherit', 'inherit'],
+    windowsHide: true,
+  })
   holder.unref()
 }
 '@ | Set-Content -LiteralPath $env:AGENTBRO_PACKAGE_OUTPUT_HOLDER -Encoding ascii

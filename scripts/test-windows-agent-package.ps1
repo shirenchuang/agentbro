@@ -122,16 +122,23 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
         $null = New-Item -ItemType File -Path $env:AGENTBRO_PACKAGE_FIXTURE_RESUME -Force
     }
     try {
+        $holderProcessId = Wait-IslandValue 'the detached package output helper to start' {
+            $holderPath = "$env:AGENTBRO_PACKAGE_OUTPUT_HOLDER.pid"
+            if (Test-Path -LiteralPath $holderPath -PathType Leaf) {
+                $processId = [int](Get-Content -LiteralPath $holderPath -Raw)
+                if ($processId -and (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { $processId }
+            }
+        }
+        Write-Output 'The detached package output helper started.'
         $null = Wait-IslandValue 'package stdout and stderr in the new Settings window' {
             (Find-PackControl $reopened '> agentbro-package-fixture-stdout') -and
                 (Find-PackControl $reopened '! agentbro-package-fixture-stderr')
         }
         $null = Wait-IslandValue 'the new installed version while the package output helper still runs' {
-            (Test-Path -LiteralPath "$env:AGENTBRO_PACKAGE_OUTPUT_HOLDER.pid" -PathType Leaf) -and
-                (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED -PathType Leaf) -and
+            (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED -PathType Leaf) -and
+                (Find-PackControl $reopened '* Operation completed') -and
                 (Test-PackVisibleText $reopened '当前版本 999.0.0')
         }
-        $holderProcessId = [int](Get-Content -LiteralPath "$env:AGENTBRO_PACKAGE_OUTPUT_HOLDER.pid" -Raw)
         if (-not (Get-Process -Id $holderProcessId -ErrorAction SilentlyContinue)) {
             throw 'The output helper must be running when the updated version appears.'
         }
