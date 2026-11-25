@@ -4931,21 +4931,9 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         },
     });
 
-    let bridge_invocations = recent_bridge_invocations(50);
-    checks.push(HookDoctorCheck {
-        id: "bridge-invocations".to_string(),
-        label: "Bridge invocation trace".to_string(),
-        status: if bridge_invocations.is_empty() {
-            "info"
-        } else {
-            "ok"
-        }
-        .to_string(),
-        detail: bridge_invocations
-            .last()
-            .cloned()
-            .unwrap_or_else(|| "No bridge invocations recorded yet".to_string()),
-    });
+    checks.push(bridge_invocation_doctor_check(
+        recent_bridge_invocations(1).map(|mut entries| entries.pop()),
+    ));
 
     let mut present_profiles = 0usize;
     let mut unhealthy_profiles = Vec::new();
@@ -4953,21 +4941,12 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         let Some(profile) = crate::agents::profiles::profile_for_agent(adapter.name()) else {
             continue;
         };
-        let health = crate::agents::profiles::install_health_for_profile(&profile);
-        if !health.is_present() {
+        let Some((health, check)) = hook_profile_doctor_check(&profile, adapter.display_name())
+        else {
             continue;
-        }
+        };
         present_profiles += 1;
-        checks.push(HookDoctorCheck {
-            id: format!("hook-profile-{}", profile.id),
-            label: format!("{} hook profile", adapter.display_name()),
-            status: doctor_status_for_hook_health(health).to_string(),
-            detail: format!(
-                "{} ({})",
-                health.as_status_str(),
-                profile.configuration_path
-            ),
-        });
+        checks.push(check);
         if health != crate::agents::profiles::HookInstallHealth::Installed {
             unhealthy_profiles.push(format!("{}={}", profile.id, health.as_status_str()));
         }
@@ -5156,6 +5135,83 @@ fn append_codex_doctor_checks(checks: &mut Vec<HookDoctorCheck>) {
             detail: check.detail,
         });
     }
+}
+
+fn bridge_invocation_doctor_check(latest: std::io::Result<Option<String>>) -> HookDoctorCheck {
+    #[derive(serde::Deserialize)]
+    struct Invocation {
+        source: String,
+        event: String,
+        forwarded: bool,
+        ts: Option<i64>,
+    }
+
+    let no_trace = ("info", "No bridge invocations recorded yet".to_string());
+    let (status, detail) = match latest {
+        Ok(Some(line)) => match serde_json::from_str::<Invocation>(&line) {
+            Ok(invocation) => {
+                let timestamp = invocation
+                    .ts
+                    .and_then(chrono::DateTime::from_timestamp_millis)
+                    .map(|at| {
+                        format!(
+                            " at {}",
+                            at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                        )
+                    })
+                    .unwrap_or_default();
+                let (status, delivery) = if invocation.forwarded {
+                    ("ok", "sent to the local Hook service")
+                } else {
+                    ("warn", "could not be sent to the local Hook service")
+                };
+                (
+                    status,
+                    format!(
+                        "{} / {} {delivery}{timestamp}",
+                        invocation.source, invocation.event
+                    ),
+                )
+            }
+            Err(_) => (
+                "warn",
+                "Could not interpret the latest bridge invocation".to_string(),
+            ),
+        },
+        Ok(None) => no_trace,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => no_trace,
+        Err(_) => (
+            "warn",
+            "Could not read the bridge invocation trace".to_string(),
+        ),
+    };
+    HookDoctorCheck {
+        id: "bridge-invocations".to_string(),
+        label: "Bridge invocation trace".to_string(),
+        status: status.to_string(),
+        detail,
+    }
+}
+
+pub(crate) fn hook_profile_doctor_check(
+    profile: &crate::agents::profiles::AgentIntegrationProfile,
+    display_name: &str,
+) -> Option<(crate::agents::profiles::HookInstallHealth, HookDoctorCheck)> {
+    use crate::agents::profiles::{configuration_url, install_health};
+
+    let path = configuration_url(profile);
+    let health = install_health(profile, &path);
+    health.is_present().then(|| {
+        (
+            health,
+            HookDoctorCheck {
+                id: format!("hook-profile-{}", profile.id),
+                label: format!("{display_name} hook profile"),
+                status: doctor_status_for_hook_health(health).to_string(),
+                detail: format!("{} ({})", health.as_status_str(), path.display()),
+            },
+        )
+    })
 }
 
 fn doctor_status_for_hook_health(
@@ -6548,11 +6604,8 @@ fn bridge_invocations_path() -> PathBuf {
     new_path
 }
 
-fn recent_bridge_invocations(limit: usize) -> Vec<String> {
-    let path = bridge_invocations_path();
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
+fn recent_bridge_invocations(limit: usize) -> std::io::Result<Vec<String>> {
+    let content = std::fs::read_to_string(bridge_invocations_path())?;
     let mut lines = content
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -6561,7 +6614,7 @@ fn recent_bridge_invocations(limit: usize) -> Vec<String> {
     if lines.len() > limit {
         lines.drain(0..lines.len() - limit);
     }
-    lines
+    Ok(lines)
 }
 
 /// Collect crash reports matching AgentBro from the system DiagnosticReports dir.
@@ -6597,7 +6650,7 @@ pub async fn export_diagnostics(
     let sessions = state.session_store.get_all_sessions();
     let diagnostic_events = state.diagnostic_buffer.all();
     let raw_event_summaries = state.hook_server.recent_raw_event_summaries(500);
-    let bridge_invocations = recent_bridge_invocations(500);
+    let bridge_invocations = recent_bridge_invocations(500).unwrap_or_default();
     let install_id = get_or_create_install_id();
     let now = chrono::Local::now();
     let timestamp = now.format("%Y-%m-%d %H:%M:%S %Z").to_string();
@@ -6933,6 +6986,58 @@ mod tests {
     use crate::remote::installer::RemoteCodexThreadSnapshot;
     use crate::remote::RemoteHost;
     use std::{collections::HashMap, fs};
+
+    #[test]
+    fn hook_doctor_reports_latest_bridge_delivery_result() {
+        for (forwarded, status, delivery) in [
+            (true, "ok", "sent to"),
+            (false, "warn", "could not be sent to"),
+        ] {
+            let record = serde_json::json!({
+                "source": "qoder-cli",
+                "event": "PermissionRequest",
+                "session_id": "private-session",
+                "ts": 1_000,
+                "forwarded": forwarded,
+            });
+            let check = super::bridge_invocation_doctor_check(Ok(Some(record.to_string())));
+            assert_eq!(check.status, status);
+            assert_eq!(
+                check.detail,
+                format!(
+                    "qoder-cli / PermissionRequest {delivery} the local Hook service at 1970-01-01T00:00:01Z"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn hook_doctor_distinguishes_missing_and_unreadable_bridge_traces() {
+        use std::io::ErrorKind;
+
+        for (trace, status, detail) in [
+            (Ok(None), "info", "No bridge invocations recorded yet"),
+            (
+                Err(ErrorKind::NotFound.into()),
+                "info",
+                "No bridge invocations recorded yet",
+            ),
+            (
+                Err(ErrorKind::InvalidData.into()),
+                "warn",
+                "Could not read the bridge invocation trace",
+            ),
+            (
+                Ok(Some("{".to_string())),
+                "warn",
+                "Could not interpret the latest bridge invocation",
+            ),
+        ] {
+            let check = super::bridge_invocation_doctor_check(trace);
+            assert_eq!(check.status, status);
+            assert_eq!(check.detail, detail);
+        }
+    }
 
     fn session(agent_type: &str, terminal: &str, tty: Option<&str>) -> SessionState {
         let mut session = SessionState::new(
