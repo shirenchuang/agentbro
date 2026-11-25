@@ -556,9 +556,16 @@ export function AgentManagementPage() {
     state.setError(null)
     try {
       let commandError: string | null = null
+      let noNewerVersion = false
       try {
-        if (expectedBinaryPath) await agentApi.update(agentId, runtimeEnvironmentId, expectedBinaryPath)
-        else await agentApi[operation](agentId, runtimeEnvironmentId)
+        if (operation === 'update') {
+          const outcome = expectedBinaryPath
+            ? await agentApi.update(agentId, runtimeEnvironmentId, expectedBinaryPath)
+            : await agentApi.update(agentId, runtimeEnvironmentId)
+          noNewerVersion = outcome === 'noNewerVersion'
+        } else {
+          await agentApi.install(agentId, runtimeEnvironmentId)
+        }
       } catch (error) {
         if (isAgentPackageOperationBusy(error)) {
           if (isCurrentRuntime()) state.setError(t('skills.agentManagement.programOperationInProgress'))
@@ -593,11 +600,11 @@ export function AgentManagementPage() {
         const checkedForUpdate = canCheckForProgramUpdate(detected, runtimeEnvironmentId)
         if (!installedVersion
           || (expectedBinaryPath && (detected.binaryPath !== expectedBinaryPath || !detected.updateCommand))
-          || (!checkedForUpdate && !previousVersion && installedVersion !== latestVersion)) {
+          || (!noNewerVersion && !checkedForUpdate && !previousVersion && installedVersion !== latestVersion)) {
           state.setError(t('skills.agentManagement.programResultUnverified', { agent }))
           return
         }
-        if (checkedForUpdate && (!previousVersion || installedVersion === previousVersion)) {
+        if (noNewerVersion || (checkedForUpdate && (!previousVersion || installedVersion === previousVersion))) {
           setNotice(t('skills.agentManagement.nativeUpdateChecked', { agent, version: installedVersion }))
           return
         }

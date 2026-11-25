@@ -101,7 +101,7 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
         }
         $reopened = Open-ManagedAgent $island.Element 'Claude Code'
         $null = Wait-IslandValue 'package output restored in the new Settings window' {
-            Find-PackControl $reopened '* $ npm install -g @anthropic-ai/claude-code@latest'
+            Find-PackControl $reopened '* $ npm install -g @anthropic-ai/claude-code@999.0.0'
         }
         $null = Wait-IslandValue 'the old version in the new Settings window before the update finishes' {
             Test-PackVisibleText $reopened '当前版本 2.0.0'
@@ -256,6 +256,26 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         }
     }
     Write-Output 'The sidebar grouped the detected Claude Code CLI under Installed Agents.'
+    $staleUpdate = Wait-IslandValue 'the enabled update before rolling back the registry tag' {
+        $button = Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Remove-Item -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_NEW_TAG
+    Invoke-PackControl $staleUpdate
+    $null = Wait-IslandValue 'the installed version after a stale update action' {
+        (Test-PackVisibleText $settings 'Update check complete. Claude Code is at 2.0.0.') -and
+            (Test-PackVisibleText $settings '当前版本 2.0.0')
+    }
+    $selectedVersion = (Get-Content -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_MANIFEST -Raw | ConvertFrom-Json).version
+    if ($selectedVersion -ne '2.0.0' -or (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT)) {
+        throw 'The stale update action ran npm install or changed the selected installation'
+    }
+    Write-Output 'The stale update action rechecked the older npm tag and kept 2.0.0 without running the installer.'
+    $null = New-Item -ItemType File -Path $env:AGENTBRO_PACKAGE_FIXTURE_NEW_TAG
+    Invoke-PackControl (Wait-IslandValue 'the enabled version refresh after a stale update' {
+        $button = Find-PackControl $settings '获取版本'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    })
     $update = Wait-IslandValue 'the Claude Code update action' {
         Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }
     }

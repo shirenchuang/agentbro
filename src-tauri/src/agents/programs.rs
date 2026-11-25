@@ -41,6 +41,18 @@ pub enum AgentProgramStatus {
     Unavailable,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentUpdateOutcome {
+    Completed,
+    NoNewerVersion,
+}
+
+enum PackageOperationOutcome {
+    Completed(&'static str),
+    NoNewerVersion,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProgramInfo {
@@ -185,7 +197,9 @@ pub async fn agent_install(
     state: State<'_, AppState>,
     agent_id: String,
 ) -> Result<(), String> {
-    run_agent_command(app, &state.adapters, &agent_id, "install").await
+    run_agent_command(app, &state.adapters, &agent_id, "install")
+        .await
+        .map(|_| ())
 }
 
 #[tauri::command]
@@ -193,8 +207,13 @@ pub async fn agent_update(
     app: AppHandle,
     state: State<'_, AppState>,
     agent_id: String,
-) -> Result<(), String> {
-    run_agent_command(app, &state.adapters, &agent_id, "update").await
+) -> Result<AgentUpdateOutcome, String> {
+    run_agent_command(app, &state.adapters, &agent_id, "update")
+        .await
+        .map(|outcome| match outcome {
+            PackageOperationOutcome::Completed(_) => AgentUpdateOutcome::Completed,
+            PackageOperationOutcome::NoNewerVersion => AgentUpdateOutcome::NoNewerVersion,
+        })
 }
 
 #[tauri::command]
@@ -203,7 +222,9 @@ pub async fn agent_uninstall(
     state: State<'_, AppState>,
     agent_id: String,
 ) -> Result<(), String> {
-    run_agent_command(app, &state.adapters, &agent_id, "uninstall").await
+    run_agent_command(app, &state.adapters, &agent_id, "uninstall")
+        .await
+        .map(|_| ())
 }
 
 #[tauri::command]
@@ -575,7 +596,9 @@ async fn selected_cli_version(
 ) -> Option<String> {
     let path = executable::augmented_path_env();
     let mut command = package_command(launcher, path.as_deref());
-    let output = package_probe_output(command.arg("--version"), Duration::from_secs(5)).await?;
+    let output = package_probe_output(command.arg("--version"), Duration::from_secs(5))
+        .await
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -613,6 +636,8 @@ async fn version_info_for(
             &installation.prefix,
         )
         .await
+        .ok()
+        .map(|version| version.to_string())
     } else {
         None
     };
@@ -723,10 +748,14 @@ async fn app_installed_version(_app_path: &str) -> Option<String> {
     None
 }
 
-async fn npm_latest_version(mut npm: Command, package: &str, prefix: &Path) -> Option<String> {
+async fn npm_latest_version(
+    mut npm: Command,
+    package: &str,
+    prefix: &Path,
+) -> Result<semver::Version, String> {
     npm.args([
         "view",
-        package,
+        &format!("{package}@latest"),
         "version",
         "--silent",
         "--no-update-notifier",
@@ -734,26 +763,71 @@ async fn npm_latest_version(mut npm: Command, package: &str, prefix: &Path) -> O
         "--fetch-timeout=4000",
     ]);
     set_npm_prefix(&mut npm, prefix);
-    let output = package_probe_output(&mut npm, Duration::from_secs(5)).await?;
+    npm.arg("--prefer-online");
+    let output = package_probe_output(&mut npm, Duration::from_secs(5))
+        .await
+        .map_err(|error| format!("Could not start package command: {error}"))?;
 
     if !output.status.success() {
-        return None;
+        return Err(format!(
+            "npm version check failed for {package} ({})",
+            output.status
+        ));
     }
 
-    String::from_utf8(output.stdout)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    let value = std::str::from_utf8(&output.stdout).ok().map(str::trim);
+    value
+        .and_then(parse_semver)
+        .ok_or_else(|| format!("npm returned no valid latest version for {package}"))
 }
 
 async fn package_probe_output(
     command: &mut Command,
     deadline: Duration,
-) -> Option<std::process::Output> {
+) -> std::io::Result<std::process::Output> {
     timeout(deadline, command.kill_on_drop(true).output())
         .await
-        .ok()?
-        .ok()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "Version check timed out"))?
+}
+
+async fn npm_update_command_line(
+    agent_id: &str,
+    meta: &ProgramMetadata,
+    installation: &NpmInstallation,
+) -> Result<Option<String>, String> {
+    let package = meta
+        .package_name
+        .ok_or_else(|| format!("No npm package configured for {agent_id}"))?;
+    let installed = parse_semver(&installation.version)
+        .ok_or_else(|| format!("Could not verify the installed npm version for {package}"))?;
+    let prefix = installation.prefix.canonicalize().map_err(|error| {
+        format!("Could not resolve the detected npm installation for {agent_id}: {error}")
+    })?;
+    let npm = executable::command_path("npm");
+    let path = executable::augmented_path_env();
+    let latest = npm_latest_version(
+        package_command(&npm, path.as_deref()),
+        package,
+        &installation.prefix,
+    )
+    .await?;
+    let current_binary = find_agent_binary(agent_id, meta);
+    if !meta
+        .npm_installation(current_binary.as_deref())
+        .is_some_and(|current| {
+            current.version == installation.version
+                && current
+                    .prefix
+                    .canonicalize()
+                    .is_ok_and(|current_prefix| current_prefix == prefix)
+        })
+    {
+        return Err("The npm Agent installation changed while checking for updates. Refresh Agent Management and try again.".to_string());
+    }
+    Ok(latest
+        .cmp_precedence(&installed)
+        .is_gt()
+        .then(|| format!("npm install -g {package}@{latest}")))
 }
 
 fn versions_indicate_update(installed: Option<&str>, latest: Option<&str>) -> bool {
@@ -822,7 +896,7 @@ async fn run_agent_command(
     _adapters: &[std::sync::Arc<dyn AgentAdapter>],
     agent_id: &str,
     operation: &str,
-) -> Result<(), String> {
+) -> Result<PackageOperationOutcome, String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let _package_operation = claim_agent_package_operation()?;
     let installed_binary = if meta.package_manager == Some("npm") || operation == "uninstall" {
@@ -843,7 +917,8 @@ async fn run_agent_command(
     )
     .await;
     let (stream, message) = match &result {
-        Ok(message) => ("info", *message),
+        Ok(PackageOperationOutcome::Completed(message)) => ("info", *message),
+        Ok(PackageOperationOutcome::NoNewerVersion) => ("info", "npm offers no newer version"),
         Err(error) => ("stderr", error.as_str()),
     };
     emit_output(
@@ -855,7 +930,7 @@ async fn run_agent_command(
         true,
         Some(result.is_ok()),
     );
-    result.map(|_| ())
+    result
 }
 
 async fn execute_package_operation(
@@ -864,7 +939,7 @@ async fn execute_package_operation(
     operation: &str,
     meta: &ProgramMetadata,
     installed_binary: Option<&Path>,
-) -> Result<&'static str, String> {
+) -> Result<PackageOperationOutcome, String> {
     if operation == "uninstall"
         && !program_is_installed_for_agent(
             agent_id,
@@ -873,13 +948,17 @@ async fn execute_package_operation(
             installed_app_path(agent_id, meta).is_some(),
         )
     {
-        return Ok("Agent is already uninstalled");
+        return Ok(PackageOperationOutcome::Completed(
+            "Agent is already uninstalled",
+        ));
     }
     if operation == "uninstall"
         && meta.kind == AgentProgramKind::App
         && meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND)
     {
-        return trash_agent_app(app, agent_id, meta).await;
+        return trash_agent_app(app, agent_id, meta)
+            .await
+            .map(PackageOperationOutcome::Completed);
     }
     let (command_line, mut command) = if let Some(launcher) =
         native_claude_launcher(agent_id, installed_binary)
@@ -891,7 +970,7 @@ async fn execute_package_operation(
     } else if agent_id == "aider" && operation == "uninstall" {
         aider_uninstall_command(RuntimePlatform::current(), executable::find_binary).await?
     } else {
-        let command_line = match operation {
+        let mut command_line = match operation {
             "install" => meta.install_command,
             "update" => meta.update_command,
             "uninstall" => meta.uninstall_command,
@@ -920,6 +999,13 @@ async fn execute_package_operation(
                 false,
                 None,
             );
+            if operation == "update" {
+                let Some(update) = npm_update_command_line(agent_id, meta, installation).await?
+                else {
+                    return Ok(PackageOperationOutcome::NoNewerVersion);
+                };
+                command_line = update;
+            }
         }
         let command =
             package_operation_command(&command_line, npm.as_ref().map(|npm| npm.prefix.as_path()));
@@ -975,7 +1061,7 @@ async fn execute_package_operation(
 
     let status = status.map_err(|error| format!("Could not wait for package command: {error}"))?;
     if status.success() {
-        Ok("Operation completed")
+        Ok(PackageOperationOutcome::Completed("Operation completed"))
     } else {
         Err(format!("{operation} failed for {agent_id} ({status})"))
     }
@@ -1058,7 +1144,7 @@ async fn aider_uninstall_command(
         };
         let mut probe = command_for_launcher();
         let output = package_probe_output(probe.args(probe_args), Duration::from_secs(5)).await;
-        let package_found = output.is_some_and(|output| {
+        let package_found = output.is_ok_and(|output| {
             output.status.success()
                 && (is_pip || String::from_utf8_lossy(&output.stdout).contains("aider-chat"))
         });
@@ -2475,7 +2561,7 @@ mod tests {
     }
 
     #[test]
-    fn npm_agent_updates_install_latest_package_directly() {
+    fn npm_agents_expose_update_metadata() {
         let claude = metadata_for("claude-code").expect("claude metadata");
         assert_eq!(
             claude.update_command,
@@ -2706,9 +2792,27 @@ esac
                 info.binary_path.as_deref(),
                 prefix.join("bin/claude").to_str()
             );
+            let installation = meta
+                .npm_installation(Some(&prefix.join("bin/claude")))
+                .unwrap();
+            let update_command = npm_update_command_line("claude-code", &meta, &installation)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                update_command,
+                "npm install -g @anthropic-ai/claude-code@3.0.0"
+            );
+            for registry_version in ["1.0.0", "2.0.0+registry", "2.0.0-rc.1"] {
+                std::fs::write(prefix.join("registry-version"), registry_version).unwrap();
+                assert!(npm_update_command_line("claude-code", &meta, &installation)
+                    .await
+                    .unwrap()
+                    .is_none());
+            }
             for (command, prefix_arg) in [
                 (meta.install_command.unwrap(), None),
-                (meta.update_command.unwrap(), Some(prefix.as_path())),
+                (update_command.as_str(), Some(prefix.as_path())),
                 (meta.uninstall_command.unwrap(), Some(prefix.as_path())),
             ] {
                 let output = super::package_operation_command(command, prefix_arg)
@@ -2774,9 +2878,14 @@ case "$2" in
     printf '%s\n' '{"dependencies":{"@anthropic-ai/claude-code":{"version":"9.0.0"}}}'
     ;;
   view)
+    [ "$3" = "@anthropic-ai/claude-code@latest" ] || exit 1
     [ "$6 $7 $8" = "--no-update-notifier --fetch-retries=0 --fetch-timeout=4000" ] || exit 1
     [ "$9" = "--prefix" ] && [ "${10}" = "$AGENTBRO_TEST_NPM_CHILD_PROBE" ] || exit 1
-    printf '%s\n' '3.0.0'
+    if [ -f "${10}/registry-version" ]; then
+        cat "${10}/registry-version"
+    else
+        printf '%s\n' '3.0.0'
+    fi
     ;;
   install|uninstall) shift; printf 'selected npm %s\n' "$*" ;;
   *) exit 1 ;;
@@ -2830,7 +2939,7 @@ esac
         assert!(
             super::package_probe_output(&mut npm, tokio::time::Duration::from_millis(500))
                 .await
-                .is_none()
+                .is_err()
         );
         let pid = std::fs::read_to_string(&pid_file).expect("npm probe process started");
         std::fs::remove_file(&pid_file).unwrap();

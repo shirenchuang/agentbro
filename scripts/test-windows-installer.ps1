@@ -74,7 +74,7 @@ if /i "%~1"=="list" (
     exit /b 0
 )
 if /i "%~1"=="view" (
-    if "%~2"=="@anthropic-ai/claude-code" (
+    if "%~2"=="@anthropic-ai/claude-code@latest" (
         if not "%~5 %~6 %~7"=="--no-update-notifier --fetch-retries=0 --fetch-timeout=4000" exit /b 1
         if exist "%AGENTBRO_PACKAGE_FIXTURE_NEW_TAG%" (
             echo 999.0.0
@@ -84,7 +84,7 @@ if /i "%~1"=="view" (
     )
     exit /b 0
 )
-if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
+if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@999.0.0" (
     if /i not "%npm_config_prefix%"=="%AGENTBRO_PACKAGE_FIXTURE_PREFIX%" exit /b 2
     >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo npm fixture entered the update
     set "agentbro_retry="
