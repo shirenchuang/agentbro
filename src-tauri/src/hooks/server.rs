@@ -152,10 +152,11 @@ pub struct PermissionResponse {
     pub always: Option<bool>,
 }
 
-/// A pending permission waiting for UI response
-pub(crate) struct PendingPermissionEntry {
-    pub(crate) received_at_ms: u64,
-    pub(crate) tx: oneshot::Sender<PermissionReply>,
+struct PendingPermissionRequest {
+    permission: PendingPermission,
+    order: usize,
+    responders: Vec<oneshot::Sender<PermissionReply>>,
+    returns_to_qoder: bool,
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -164,7 +165,7 @@ struct PendingPermissionKey {
     tool_use_id: String,
 }
 
-type PendingPermissions = HashMap<PendingPermissionKey, Vec<PendingPermissionEntry>>;
+type PendingPermissions = HashMap<PendingPermissionKey, PendingPermissionRequest>;
 
 pub(crate) struct PermissionReply {
     pub(crate) response: PermissionResponse,
@@ -388,21 +389,15 @@ impl HookServer {
         let mut tools = recent_tools.lock().await;
         Self::prune_recent_tools(&mut tools, now);
 
-        if !signature.is_empty() {
-            if let Some(tool) = tools.iter().rev().find(|tool| {
-                tool.session_id == session_id
-                    && tool.tool_name == tool_name
-                    && tool.signature == signature
-            }) {
-                return Some(tool.tool_use_id.clone());
-            }
-        }
-
-        tools
-            .iter()
-            .rev()
-            .find(|tool| tool.session_id == session_id && tool.tool_name == tool_name)
-            .map(|tool| tool.tool_use_id.clone())
+        let mut candidates = tools.iter().rev().filter(|tool| {
+            tool.session_id == session_id
+                && tool.tool_name == tool_name
+                && (signature.is_empty() || tool.signature == signature)
+        });
+        let matched = &candidates.next()?.tool_use_id;
+        candidates
+            .all(|candidate| &candidate.tool_use_id == matched)
+            .then(|| matched.clone())
     }
 
     fn prune_recent_tools(tools: &mut VecDeque<RecentToolInvocation>, now_ms: u64) {
@@ -451,21 +446,20 @@ impl HookServer {
 
     fn clear_pending_permission_after_tool_resolution(
         store: &SessionStore,
+        pending: &mut PendingPermissions,
         session_id: &str,
         raw: &serde_json::Value,
     ) {
-        let Some(session) = store.get_session(session_id) else {
-            return;
-        };
-        let Some(pending) = session.pending_permission else {
-            return;
-        };
-
-        let raw_tool_use_id = Self::raw_tool_use_id(raw);
-        if let Some(id) = raw_tool_use_id.as_deref() {
-            store.clear_matching_permission(session_id, Some(id));
+        if let Some(tool_use_id) = Self::raw_tool_use_id(raw) {
+            let key = PendingPermissionKey {
+                session_id: session_id.to_owned(),
+                tool_use_id,
+            };
+            pending.remove(&key);
+            Self::advance_pending_permission(store, pending, &key, false);
         } else if Self::is_permission_resolution_event(raw) {
-            store.clear_matching_permission(session_id, pending.tool_use_id.as_deref());
+            // A late notification without an ID may belong to an already answered request.
+            store.clear_matching_permission(session_id, None);
         }
     }
 
@@ -1107,24 +1101,35 @@ impl HookServer {
                     session_id: session_id.clone(),
                     tool_use_id: resolved_tool_use_id.clone(),
                 };
+                let source = raw.get("agent").and_then(serde_json::Value::as_str);
+                let returns_to_qoder = source == Some("qoder-desktop");
                 {
                     let mut pending_map = pending.lock().await;
-                    pending_map.entry(pending_key.clone()).or_default().push(
-                        PendingPermissionEntry {
-                            received_at_ms: current_time_ms(),
-                            tx,
-                        },
-                    );
-                    store.set_pending_permission(
-                        session_id,
-                        Some(PendingPermission {
+                    if let Some(request) = pending_map.get_mut(&pending_key) {
+                        request.responders.push(tx);
+                    } else {
+                        let permission = PendingPermission {
                             tool_use_id: Some(resolved_tool_use_id.clone()),
                             tool_name: tool_name.clone(),
                             tool_input: Self::permission_tool_input_from_raw(&raw),
                             diff: diff.clone(),
                             options: options.clone(),
-                        }),
-                    );
+                        };
+                        let Some(order) =
+                            store.set_pending_permission(session_id, Some(permission.clone()))
+                        else {
+                            return Ok(());
+                        };
+                        pending_map.insert(
+                            pending_key.clone(),
+                            PendingPermissionRequest {
+                                permission,
+                                order,
+                                responders: vec![tx],
+                                returns_to_qoder,
+                            },
+                        );
+                    }
                 }
                 Self::update_session_metadata_from_raw(&store, &raw);
                 Self::dispatch_webhook_event(
@@ -1154,21 +1159,17 @@ impl HookServer {
                     }
                 }
 
-                let wait = tokio::time::timeout(Self::interaction_response_timeout(&raw), rx);
-                let source = raw.get("agent").and_then(serde_json::Value::as_str);
-                let watch_bridge_disconnect = matches!(
-                    source,
-                    Some("deepseek-harness" | "qoder" | "qoder-desktop" | "qoder-cli")
-                );
-                let returns_to_qoder = source == Some("qoder-desktop");
-                let response = if watch_bridge_disconnect {
-                    tokio::select! {
-                        reply = wait => reply.ok().and_then(Result::ok),
-                        _ = buf_reader.fill_buf() => None,
-                    }
-                } else {
-                    wait.await.ok().and_then(Result::ok)
-                };
+                let response = Self::wait_for_hook_reply(
+                    &mut buf_reader,
+                    rx,
+                    Self::interaction_response_timeout(&raw),
+                    keep_write_open
+                        || matches!(
+                            source,
+                            Some("deepseek-harness" | "qoder" | "qoder-desktop" | "qoder-cli")
+                        ),
+                )
+                .await;
 
                 match response {
                     Some(reply) => {
@@ -1187,13 +1188,6 @@ impl HookServer {
                             Err(err) => Err(err.to_string()),
                         };
                         let delivered = write_result.is_ok();
-                        if delivered || watch_bridge_disconnect {
-                            store.clear_matching_permission_with_fallback(
-                                session_id,
-                                Some(&resolved_tool_use_id),
-                                !delivered && returns_to_qoder,
-                            );
-                        }
                         if let Err(err) = &write_result {
                             log::warn!(
                                 "Permission response write failed for session {} tool {}: {}",
@@ -1212,24 +1206,23 @@ impl HookServer {
                     }
                     None => {
                         let mut pending_map = pending.lock().await;
-                        let clear_permission = match pending_map.get_mut(&pending_key) {
-                            Some(entries) => {
-                                entries.retain(|entry| !entry.tx.is_closed());
-                                entries.is_empty()
-                            }
-                            None => watch_bridge_disconnect,
-                        };
-                        if clear_permission {
+                        if pending_map.get_mut(&pending_key).is_some_and(|request| {
+                            request
+                                .responders
+                                .retain(|responder| !responder.is_closed());
+                            request.responders.is_empty()
+                        }) {
                             pending_map.remove(&pending_key);
-                            store.clear_matching_permission_with_fallback(
-                                session_id,
-                                Some(&resolved_tool_use_id),
+                            Self::advance_pending_permission(
+                                &store,
+                                &pending_map,
+                                &pending_key,
                                 returns_to_qoder,
                             );
+                            log::warn!(
+                                "Permission request ended without a reply for session {session_id}"
+                            );
                         }
-                        log::warn!(
-                            "Permission request ended without a reply for session {session_id}"
-                        );
                     }
                 }
             }
@@ -1497,6 +1490,25 @@ impl HookServer {
             Some(ref agent_event) => {
                 // Process non-permission events (with sound)
                 Self::process_event(agent_event, &raw, &store, &sound, &app, &config_store);
+                match agent_event {
+                    AgentEvent::ToolUse {
+                        session_id, status, ..
+                    } if status != "running" => {
+                        let mut pending_map = pending.lock().await;
+                        Self::clear_pending_permission_after_tool_resolution(
+                            &store,
+                            &mut pending_map,
+                            session_id,
+                            &raw,
+                        );
+                    }
+                    AgentEvent::SessionEnd { session_id } => {
+                        let mut pending_map = pending.lock().await;
+                        pending_map.retain(|key, _| key.session_id != *session_id);
+                        store.set_pending_permission(session_id, None);
+                    }
+                    _ => {}
+                }
             }
             None => {
                 // No adapter matched — try generic processing (with sound)
@@ -1999,10 +2011,6 @@ impl HookServer {
                         _ => {}
                     }
                 }
-                if status != "running" {
-                    Self::clear_pending_permission_after_tool_resolution(store, session_id, _raw);
-                }
-
                 if Self::is_subagent_tool(tool_name)
                     && Self::is_codex_session(store, session_id, _raw)
                 {
@@ -3383,43 +3391,40 @@ impl HookServer {
         tool_use_id: Option<&str>,
         response: PermissionResponse,
     ) -> anyhow::Result<()> {
-        let entries = {
+        let (key, request) = {
             let mut pending_map = self.pending_permissions.lock().await;
-            let key = if let Some(tool_use_id) = tool_use_id {
-                Some(PendingPermissionKey {
-                    session_id: session_id.to_string(),
-                    tool_use_id: tool_use_id.to_string(),
-                })
-            } else {
-                Self::latest_pending_permission_key(&pending_map, session_id).cloned()
+            let shown_id = || {
+                self.session_store
+                    .get_session(session_id)?
+                    .pending_permission?
+                    .tool_use_id
             };
-            let Some(entries) = key.and_then(|key| pending_map.remove(&key)) else {
+            let key = tool_use_id
+                .map(str::to_owned)
+                .or_else(shown_id)
+                .map(|tool_use_id| PendingPermissionKey {
+                    session_id: session_id.to_owned(),
+                    tool_use_id,
+                });
+            let Some((key, request)) = key.and_then(|key| pending_map.remove_entry(&key)) else {
                 anyhow::bail!("No pending permission for session {}", session_id);
             };
-            entries
+            (key, request)
         };
 
         let mut ack_receivers = Vec::new();
         let mut send_failures = 0usize;
-        for entry in entries {
+        for responder in request.responders {
             let (ack_tx, ack_rx) = oneshot::channel();
             let reply = PermissionReply {
                 response: response.clone(),
                 ack: ack_tx,
             };
-            if entry.tx.send(reply).is_ok() {
+            if responder.send(reply).is_ok() {
                 ack_receivers.push(ack_rx);
             } else {
                 send_failures += 1;
             }
-        }
-
-        if ack_receivers.is_empty() {
-            anyhow::bail!(
-                "No active permission hook receivers for session {} ({} send failures)",
-                session_id,
-                send_failures
-            );
         }
 
         let mut successes = 0usize;
@@ -3435,6 +3440,17 @@ impl HookServer {
             }
         }
 
+        {
+            let pending_map = self.pending_permissions.lock().await;
+            if !pending_map.contains_key(&key) {
+                Self::advance_pending_permission(
+                    &self.session_store,
+                    &pending_map,
+                    &key,
+                    successes == 0 && request.returns_to_qoder,
+                );
+            }
+        }
         if successes > 0 {
             if !failures.is_empty() {
                 log::warn!(
@@ -3446,6 +3462,12 @@ impl HookServer {
                 );
             }
             Ok(())
+        } else if failures.is_empty() {
+            anyhow::bail!(
+                "No active permission hook receivers for session {} ({} send failures)",
+                session_id,
+                send_failures
+            );
         } else {
             anyhow::bail!(
                 "Permission response failed to reach hook for session {}: {}",
@@ -3455,22 +3477,26 @@ impl HookServer {
         }
     }
 
-    fn latest_pending_permission_key<'a>(
-        pending_map: &'a PendingPermissions,
-        session_id: &str,
-    ) -> Option<&'a PendingPermissionKey> {
-        pending_map
+    fn advance_pending_permission(
+        store: &SessionStore,
+        pending: &PendingPermissions,
+        resolved: &PendingPermissionKey,
+        returns_to_qoder: bool,
+    ) {
+        let next = pending
             .iter()
-            .filter(|(key, _)| key.session_id == session_id)
-            .filter_map(|(key, entries)| {
-                entries
-                    .iter()
-                    .map(|entry| entry.received_at_ms)
-                    .max()
-                    .map(|received_at_ms| (key, received_at_ms))
+            .filter(|(key, request)| {
+                key.session_id == resolved.session_id
+                    && request.responders.iter().any(|sender| !sender.is_closed())
             })
-            .max_by_key(|(_, received_at_ms)| *received_at_ms)
-            .map(|(key, _)| key)
+            .max_by_key(|(_, request)| request.order)
+            .map(|(_, request)| (request.permission.clone(), request.order));
+        store.replace_matching_permission(
+            &resolved.session_id,
+            Some(&resolved.tool_use_id),
+            next,
+            returns_to_qoder,
+        );
     }
 }
 
@@ -3759,6 +3785,17 @@ mod tests {
             .as_deref(),
             Some("call-date-1")
         );
+        let different_input = serde_json::json!({ "tool_input": { "command": "pwd" } });
+        assert_eq!(
+            HookServer::resolve_permission_tool_use_id(
+                &recent_tools,
+                "codex-s1",
+                "Bash",
+                &different_input
+            )
+            .await,
+            None
+        );
     }
 
     #[tokio::test]
@@ -3917,21 +3954,14 @@ mod tests {
     #[tokio::test]
     async fn harness_turn_and_permission_round_trip_share_the_island_session() {
         let store = Arc::new(SessionStore::new());
-        let pending = Arc::new(Mutex::new(HashMap::new()));
-        let context = HookConnectionContext {
-            pending: pending.clone(),
-            pending_q: Arc::new(Mutex::new(HashMap::new())),
-            pending_plan: Arc::new(Mutex::new(HashMap::new())),
-            store: store.clone(),
-            adapters: Arc::new(vec![Arc::new(
+        let hook_server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
                 crate::agents::deepseek_harness::DeepSeekHarnessAdapter::new(),
             )]),
-            sound: Arc::new(std::sync::Mutex::new(None)),
-            app: Arc::new(std::sync::Mutex::new(None)),
-            raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
-            config_store: Arc::new(std::sync::Mutex::new(None)),
-            recent_tools: Arc::new(Mutex::new(VecDeque::new())),
-        };
+        );
+        let context = hook_server.connection_context();
+        let pending = &context.pending;
         let id = "deepseek-harness:fixture";
         let (mut client, server) = tokio::io::duplex(4096);
         let event = serde_json::json!({
@@ -3988,21 +4018,9 @@ mod tests {
                 SessionPhase::WaitingApproval
             );
             if let Some(decision) = reply {
-                let mut entries = pending.lock().await.remove(&key).unwrap();
-                let (ack, acknowledged) = oneshot::channel();
-                entries
-                    .pop()
-                    .unwrap()
-                    .tx
-                    .send(PermissionReply {
-                        response: PermissionResponse {
-                            decision: decision.to_string(),
-                            reason: None,
-                            always: None,
-                        },
-                        ack,
-                    })
-                    .ok()
+                hook_server
+                    .respond_permission(id, decision == "allow", false, Some(tool_id))
+                    .await
                     .unwrap();
                 let mut response = String::new();
                 BufReader::new(client)
@@ -4011,7 +4029,6 @@ mod tests {
                     .unwrap();
                 let result: serde_json::Value = serde_json::from_str(&response).unwrap();
                 assert_eq!(result["decision"], decision);
-                assert!(acknowledged.await.unwrap().is_ok());
             } else {
                 drop(client);
             }
@@ -4144,7 +4161,7 @@ mod tests {
                     .lock()
                     .await
                     .values()
-                    .map(Vec::len)
+                    .map(|request| request.responders.len())
                     .sum::<usize>();
                 if queued == requests.len() {
                     break;
@@ -4177,6 +4194,174 @@ mod tests {
             assert_eq!(response["decision"], expected);
             task.await.unwrap().unwrap();
         }
+    }
+
+    async fn open_qoder_approval(
+        server: &HookServer,
+        tool_id: &str,
+    ) -> (
+        tokio::net::TcpStream,
+        tokio::task::JoinHandle<anyhow::Result<()>>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (connection, _) = listener.accept().await.unwrap();
+        let task = tokio::spawn(HookServer::handle_connection(
+            connection,
+            server.connection_context(),
+        ));
+        let event = serde_json::json!({
+            "agent": "qoder-desktop",
+            "event": "PermissionRequest",
+            "session_id": "qoder-parallel",
+            "cwd": "/workspace/qoder",
+            "tool_name": "Bash",
+            "tool_use_id": tool_id,
+            "tool_input": {"command": format!("echo {tool_id}")},
+        });
+        client
+            .write_all(format!("{event}\n").as_bytes())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if server
+                    .session_store
+                    .get_session("qoder-parallel")
+                    .and_then(|session| session.pending_permission)
+                    .and_then(|permission| permission.tool_use_id)
+                    .as_deref()
+                    == Some(tool_id)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Qoder approval should become visible");
+        (client, task)
+    }
+
+    #[tokio::test]
+    async fn qoder_overlapping_approvals_restore_the_unanswered_request() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![
+                Arc::new(crate::agents::qoder::QoderAdapter::desktop()),
+            ]),
+        );
+        let first = open_qoder_approval(&server, "first").await;
+        let first_order = store
+            .get_session("qoder-parallel")
+            .unwrap()
+            .pending_permission_order;
+        let second = open_qoder_approval(&server, "second").await;
+
+        server
+            .respond_permission("qoder-parallel", false, false, Some("second"))
+            .await
+            .unwrap();
+        qoder_parallel_denial(&server, None).await;
+        let session = store.get_session("qoder-parallel").unwrap();
+        assert_eq!(session.phase, SessionPhase::WaitingApproval);
+        assert_eq!(session.pending_permission_order, first_order);
+        let permission = session.pending_permission.unwrap();
+        assert_eq!(permission.tool_use_id.as_deref(), Some("first"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&permission.tool_input).unwrap()["command"],
+            "echo first"
+        );
+
+        server
+            .respond_permission("qoder-parallel", true, false, Some("first"))
+            .await
+            .unwrap();
+        let session = store.get_session("qoder-parallel").unwrap();
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert!(session.pending_permission.is_none());
+        for ((client, task), decision) in [(first, "allow"), (second, "deny")] {
+            let mut reply = String::new();
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                BufReader::new(client).read_line(&mut reply),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+            assert_eq!(reply["decision"], decision);
+            task.await.unwrap().unwrap();
+        }
+    }
+
+    async fn qoder_parallel_denial(server: &HookServer, tool_use_id: Option<&str>) {
+        let (mut client, connection) = tokio::io::duplex(4096);
+        let event = serde_json::json!({
+            "agent": "qoder-desktop",
+            "event": "PermissionDenied",
+            "session_id": "qoder-parallel",
+            "cwd": "/workspace/qoder",
+            "tool_name": "Bash",
+            "tool_use_id": tool_use_id,
+            "tool_input": {"command": "echo second"},
+        });
+        client
+            .write_all(format!("{event}\n").as_bytes())
+            .await
+            .unwrap();
+        HookServer::handle_connection(connection, server.connection_context())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn qoder_overlapping_approvals_skip_resolved_requests_on_disconnect() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![
+                Arc::new(crate::agents::qoder::QoderAdapter::desktop()),
+            ]),
+        );
+        let (first, first_task) = open_qoder_approval(&server, "first").await;
+        let (second, second_task) = open_qoder_approval(&server, "second").await;
+        let (third, third_task) = open_qoder_approval(&server, "third").await;
+
+        qoder_parallel_denial(&server, Some("second")).await;
+        tokio::time::timeout(Duration::from_secs(2), second_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        drop(second);
+        drop(third);
+        tokio::time::timeout(Duration::from_secs(2), third_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let session = store.get_session("qoder-parallel").unwrap();
+        assert_eq!(session.phase, SessionPhase::WaitingApproval);
+        assert!(!session.permission_in_host_app);
+        assert_eq!(
+            session.pending_permission.unwrap().tool_use_id.as_deref(),
+            Some("first")
+        );
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(2), first_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let session = store.get_session("qoder-parallel").unwrap();
+        assert_eq!(session.phase, SessionPhase::WaitingInput);
+        assert!(session.permission_in_host_app);
+        assert!(session.pending_permission.is_none());
     }
 
     #[tokio::test]
@@ -4237,6 +4422,7 @@ mod tests {
             .is_err());
         HookServer::clear_pending_permission_after_tool_resolution(
             &store,
+            &mut *server.pending_permissions.lock().await,
             "same-session",
             &serde_json::json!({"event": "PermissionDenied", "tool_use_id": "first"}),
         );
@@ -5043,9 +5229,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn workbuddy_permission_resolution_clears_matching_pending_permission() {
+    #[tokio::test]
+    async fn workbuddy_permission_resolution_clears_matching_pending_permission() {
         let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::workbuddy::WorkBuddyAdapter::new(),
+            )]),
+        );
         store.get_or_create_session("s1", "workbuddy", "project", "/tmp/project", "");
         store.set_pending_permission(
             "s1",
@@ -5057,9 +5249,6 @@ mod tests {
                 options: None,
             }),
         );
-        let sound = Arc::new(std::sync::Mutex::new(None));
-        let app = Arc::new(std::sync::Mutex::new(None));
-        let config_store = Arc::new(std::sync::Mutex::new(None));
         let raw = serde_json::json!({
             "agent": "workbuddy",
             "sessionId": "s1",
@@ -5068,15 +5257,14 @@ mod tests {
             "eventType": "file-safety.approved",
             "decision": "approved"
         });
-        let event = AgentEvent::ToolUse {
-            session_id: "s1".to_string(),
-            tool_name: "File Safety".to_string(),
-            tool_input: "{}".to_string(),
-            tool_target: None,
-            status: "success".to_string(),
-        };
-
-        HookServer::process_event(&event, &raw, &store, &sound, &app, &config_store);
+        let (mut client, connection) = tokio::io::duplex(4096);
+        client
+            .write_all(format!("{raw}\n").as_bytes())
+            .await
+            .unwrap();
+        HookServer::handle_connection(connection, server.connection_context())
+            .await
+            .unwrap();
 
         let session = store.get_session("s1").expect("session should exist");
         assert!(session.pending_permission.is_none());
@@ -5160,39 +5348,6 @@ mod tests {
             &raw,
             Some(3600)
         ));
-    }
-
-    #[test]
-    fn latest_pending_permission_key_prefers_newest_entry_for_session() {
-        let mut pending = HashMap::new();
-        let (old_tx, _old_rx) = oneshot::channel();
-        let (new_tx, _new_rx) = oneshot::channel();
-        pending.insert(
-            PendingPermissionKey {
-                session_id: "s1".to_string(),
-                tool_use_id: "old-tool".to_string(),
-            },
-            vec![PendingPermissionEntry {
-                received_at_ms: 10,
-                tx: old_tx,
-            }],
-        );
-        pending.insert(
-            PendingPermissionKey {
-                session_id: "s1".to_string(),
-                tool_use_id: "new-tool".to_string(),
-            },
-            vec![PendingPermissionEntry {
-                received_at_ms: 20,
-                tx: new_tx,
-            }],
-        );
-
-        assert_eq!(
-            HookServer::latest_pending_permission_key(&pending, "s1")
-                .map(|key| key.tool_use_id.as_str()),
-            Some("new-tool")
-        );
     }
 
     #[test]

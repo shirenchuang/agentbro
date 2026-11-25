@@ -615,26 +615,33 @@ impl SessionStore {
     }
 
     /// Set pending permission on a session
-    pub fn set_pending_permission(&self, session_id: &str, permission: Option<PendingPermission>) {
-        if let Some(mut session) = self.sessions.get_mut(session_id) {
+    pub fn set_pending_permission(
+        &self,
+        session_id: &str,
+        permission: Option<PendingPermission>,
+    ) -> Option<usize> {
+        let order = self.sessions.get_mut(session_id).and_then(|mut session| {
             session.set_pending_permission(permission);
             if session.pending_permission.is_some() {
                 session.phase = SessionPhase::WaitingApproval;
                 session.permission_in_host_app = false;
             }
             session.update_duration();
-        }
+            session.pending_permission_order
+        });
         self.emit_update();
+        order
     }
 
     pub fn clear_matching_permission(&self, session_id: &str, tool_use_id: Option<&str>) {
-        self.clear_matching_permission_with_fallback(session_id, tool_use_id, false);
+        self.replace_matching_permission(session_id, tool_use_id, None, false);
     }
 
-    pub(super) fn clear_matching_permission_with_fallback(
+    pub(super) fn replace_matching_permission(
         &self,
         session_id: &str,
         tool_use_id: Option<&str>,
+        next: Option<(PendingPermission, usize)>,
         permission_in_host_app: bool,
     ) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
@@ -644,14 +651,22 @@ impl SessionStore {
             if permission.tool_use_id.as_deref() != tool_use_id {
                 return;
             }
-            session.set_pending_permission(None);
-            if session.phase == SessionPhase::WaitingApproval && session.pending_plan.is_none() {
-                session.permission_in_host_app = permission_in_host_app;
-                session.phase = if permission_in_host_app {
-                    SessionPhase::WaitingInput
-                } else {
-                    SessionPhase::Processing
-                };
+            if let Some((permission, order)) = next {
+                session.pending_permission = Some(permission);
+                session.pending_permission_order = Some(order);
+                session.phase = SessionPhase::WaitingApproval;
+                session.permission_in_host_app = false;
+            } else {
+                session.set_pending_permission(None);
+                if session.phase == SessionPhase::WaitingApproval && session.pending_plan.is_none()
+                {
+                    session.permission_in_host_app = permission_in_host_app;
+                    session.phase = if permission_in_host_app {
+                        SessionPhase::WaitingInput
+                    } else {
+                        SessionPhase::Processing
+                    };
+                }
             }
             session.update_duration();
         }
