@@ -204,6 +204,16 @@ function Open-InstalledAgentSkills([Windows.Automation.AutomationElement]$Island
         Click-IslandElement $null 'Start AgentBro' -FindElement {
             Find-PackControl $settings 'Start AgentBro' ([Windows.Automation.ControlType]::Button)
         } | Out-Host
+        $null = Wait-IslandValue 'the completed first-run dialog to close' {
+            -not (Find-PackControl $settings 'Set up your island')
+        }
+        $configPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'agentbro\config.json'
+        $persisted = Get-Content -LiteralPath $configPath -Encoding UTF8 -Raw | ConvertFrom-Json
+        if (-not $persisted.analyticsConsentPromptCompleted -or -not $persisted.analyticsEnabled -or
+            $persisted.islandSurfaceMode -cne 'island') {
+            throw 'First-run setup closed before the selected surface and completion were saved.'
+        }
+        Write-Host 'First-run setup saved the selected surface and completion before opening Agent Skills.'
     }
     Click-IslandElement $null 'Agent Skills section' -FindElement {
         if (-not (Find-PackControl $settings 'Start AgentBro')) {

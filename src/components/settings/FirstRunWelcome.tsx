@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useConfigStore } from '../../stores/configStore'
-import { setAnalyticsEnabled as setAnalyticsEnabledBackend, setIslandSurfaceOptions } from '../../services/tauriApi'
+import { completeFirstRunSetup } from '../../services/tauriApi'
 
 type SurfaceMode = 'island' | 'pet'
 
@@ -13,35 +13,26 @@ const surfaceOptions: Array<{ value: SurfaceMode; labelKey: string; mark: string
 export function FirstRunWelcome() {
   const { t } = useTranslation()
   const initialSurfaceMode = useConfigStore((s) => s.islandSurfaceMode)
-  const initialPetScale = useConfigStore((s) => s.islandPetScale)
-  const updateConfig = useConfigStore((s) => s.updateConfig)
   const [surfaceMode, setSurfaceMode] = useState<SurfaceMode>(initialSurfaceMode)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const complete = async () => {
     if (saving) return
-    const previous = useConfigStore.getState()
     setSaving(true)
     setError(null)
-    updateConfig('islandSurfaceMode', surfaceMode)
-    updateConfig('islandPetWindowOrigin', null)
-    updateConfig('islandPetWindowAnchor', null)
-    updateConfig('analyticsEnabled', true)
-    updateConfig('analyticsConsentPromptCompleted', true)
 
     try {
-      await setIslandSurfaceOptions({
-        islandSurfaceMode: surfaceMode,
-        islandPetScale: initialPetScale,
+      const config = await completeFirstRunSetup(surfaceMode)
+      useConfigStore.setState({
+        islandSurfaceMode: config.islandSurfaceMode,
+        islandPetScale: config.islandPetScale,
+        islandPetWindowOrigin: config.islandPetWindowOrigin ?? null,
+        islandPetWindowAnchor: config.islandPetWindowAnchor ?? null,
+        analyticsEnabled: config.analyticsEnabled,
+        analyticsConsentPromptCompleted: config.analyticsConsentPromptCompleted,
       })
-      await setAnalyticsEnabledBackend(true)
     } catch (err) {
-      updateConfig('islandSurfaceMode', previous.islandSurfaceMode)
-      updateConfig('islandPetWindowOrigin', previous.islandPetWindowOrigin)
-      updateConfig('islandPetWindowAnchor', previous.islandPetWindowAnchor)
-      updateConfig('analyticsEnabled', previous.analyticsEnabled)
-      updateConfig('analyticsConsentPromptCompleted', previous.analyticsConsentPromptCompleted)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setSaving(false)
@@ -54,6 +45,7 @@ export function FirstRunWelcome() {
         className="first-run-dialog"
         role="dialog"
         aria-modal="true"
+        aria-busy={saving}
         aria-labelledby="first-run-title"
       >
         <div className="first-run-dialog__brand">
@@ -79,6 +71,7 @@ export function FirstRunWelcome() {
                 type="button"
                 role="radio"
                 aria-checked={surfaceMode === option.value}
+                disabled={saving}
                 onClick={() => setSurfaceMode(option.value)}
               >
                 <span className="first-run-surface__mark" aria-hidden="true">{option.mark}</span>
