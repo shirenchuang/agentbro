@@ -27,15 +27,12 @@
             $about = Find-PackControl $settings 'About' $button
             if ($about) { $about } else { Find-PackControl $settings '关于' $button }
         })
-        $bounds = $settings.Current.BoundingRectangle
-        $null = [AgentBroSmokeInput]::SetCursorPos([int]($bounds.Left + $bounds.Width * 0.75), [int]($bounds.Top + $bounds.Height * 0.75))
-        $export = Wait-IslandValue 'the visible Export Diagnostics button' {
-            $action = Find-PackControl $settings 'Export' $button
-            if (-not $action) { $action = Find-PackControl $settings '导出' $button }
-            if ($action -and $action.Current.IsEnabled) { return $action }
-            if ([AgentBroSmokeInput]::ProcessAtCursor() -eq $AppProcessId) {
-                [AgentBroSmokeInput]::ScrollWheel(-360)
-            }
+        $buttonCondition = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, $button)
+        $export = Wait-IslandValue 'the accessible Export Diagnostics button' {
+            $settings.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition) |
+                Where-Object { $_.Current.Name -in 'Export', '导出' -and $_.Current.IsEnabled } |
+                Select-Object -First 1
         }
         Invoke-PackControl $export
         Set-PackDialogFile 'Save' $ArchivePath
