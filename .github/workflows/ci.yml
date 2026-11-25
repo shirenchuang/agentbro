@@ -96,6 +96,11 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::executable::tests'
       - name: Test Hook bridge repair
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::hook_manager::tests'
+      - name: Test Hook Doctor and the active Qoder CLI profile
+        run: |
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE commands::tests::hook_doctor_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::qoder_cli::tests
       - name: Test Qoder sessions and permission responses
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::server::tests::qoder_'
       - name: Test the native startup recovery dialog
