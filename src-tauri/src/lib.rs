@@ -5974,19 +5974,25 @@ pub fn run() {
 
     let context = tauri::generate_context!();
     #[cfg(target_os = "windows")]
-    let context = {
+    let (context, configured_windows) = {
         let mut context = context;
-        if let Some(island) = context
+        let configured_windows: Vec<_> = context
             .config_mut()
             .app
             .windows
             .iter_mut()
-            .find(|window| window.label == "notch" && !window.visible)
-        {
-            // Wry 0.55 can abort WebView2 creation when the host cannot take focus.
-            island.focus = false;
-        }
-        context
+            .filter(|window| window.create)
+            .map(|window| {
+                if window.label == "notch" && !window.visible {
+                    // Wry 0.55 can abort WebView2 creation when the host cannot take focus.
+                    window.focus = false;
+                }
+                // Tauri panics on a configured window error before invoking our setup hook.
+                window.create = false;
+                window.clone()
+            })
+            .collect();
+        (context, configured_windows)
     };
 
     let app = tauri::Builder::default()
@@ -6013,14 +6019,23 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
             #[cfg(target_os = "windows")]
-            if !startup_setup.windows_created() {
-                return Ok(());
+            {
+                if let Some(error) = startup_lock_error {
+                    log::warn!("Could not acquire the Windows startup lock: {error}");
+                }
+                for config in &configured_windows {
+                    let result = tauri::WebviewWindowBuilder::from_config(app.handle(), config)
+                        .and_then(|builder| builder.build());
+                    if let Err(error) = result {
+                        startup_setup.window_creation_failed(&config.label, &error);
+                        return Ok(());
+                    }
+                }
+                if !startup_setup.windows_created() {
+                    return Ok(());
+                }
             }
             log::info!("Startup: configured windows created");
-            #[cfg(target_os = "windows")]
-            if let Some(error) = startup_lock_error {
-                log::warn!("Could not acquire the Windows startup lock: {error}");
-            }
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 

@@ -11,7 +11,9 @@ use windows_sys::Win32::UI::Controls::{
     TDF_ALLOW_DIALOG_CANCELLATION, TDF_CALLBACK_TIMER, TDM_CLICK_BUTTON, TDN_CREATED, TDN_TIMER,
     TD_WARNING_ICON,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, IDCANCEL};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    MessageBoxW, PostMessageW, IDCANCEL, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
+};
 
 pub(crate) const WINDOW_TIMEOUT: Duration = Duration::from_secs(45);
 const CLOSE_BUTTON: i32 = 100;
@@ -22,6 +24,7 @@ enum Phase {
     Starting,
     Ready,
     Closing,
+    Failed,
 }
 
 #[derive(Default)]
@@ -32,13 +35,39 @@ pub(crate) struct StartupRecovery {
 
 impl StartupRecovery {
     pub(crate) fn windows_created(&self) -> bool {
+        self.finish(Phase::Ready)
+    }
+
+    fn finish(&self, state: Phase) -> bool {
         let mut phase = self.phase();
-        if *phase == Phase::Closing {
+        if *phase != Phase::Starting {
             return false;
         }
-        *phase = Phase::Ready;
+        *phase = state;
         self.changed.notify_one();
         true
+    }
+
+    pub(crate) fn window_creation_failed(&self, label: &str, error: &tauri::Error) {
+        if !self.finish(Phase::Failed) {
+            return;
+        }
+        log::error!("Startup: could not create Windows window '{label}': {error}");
+        let language = unsafe { GetUserDefaultUILanguage() };
+        let [heading, guidance] = failure_messages(language & 0x03ff);
+        let details: Vec<u16> = format!("{heading}\n\n{guidance}\n\n{error}")
+            .encode_utf16()
+            .chain([0])
+            .collect();
+        unsafe {
+            MessageBoxW(
+                null_mut(),
+                details.as_ptr(),
+                windows::core::w!("AgentBro").as_ptr(),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+            )
+        };
+        std::process::exit(1);
     }
 
     pub(crate) fn watch(self: Arc<Self>, timeout: Duration) -> io::Result<JoinHandle<()>> {
@@ -67,13 +96,8 @@ impl StartupRecovery {
             );
             match self.show_dialog() {
                 Ok(true) => {
-                    {
-                        let mut phase = self.phase();
-                        if *phase != Phase::Starting {
-                            return;
-                        }
-                        // Prevent late WebView completion from starting normal setup during exit.
-                        *phase = Phase::Closing;
+                    if !self.finish(Phase::Closing) {
+                        return;
                     }
                     log::warn!("Startup: closing AgentBro at the user's request");
                     std::process::exit(1);
@@ -113,7 +137,7 @@ impl StartupRecovery {
             cButtons: buttons.len() as u32,
             pButtons: buttons.as_ptr(),
             nDefaultButton: IDCANCEL,
-            pfCallback: Some(dismiss_when_ready),
+            pfCallback: Some(dismiss_when_startup_finishes),
             lpCallbackData: self as *const Self as isize,
             ..Default::default()
         };
@@ -126,7 +150,7 @@ impl StartupRecovery {
     }
 }
 
-unsafe extern "system" fn dismiss_when_ready(
+unsafe extern "system" fn dismiss_when_startup_finishes(
     window: HWND,
     message: u32,
     _: usize,
@@ -135,7 +159,7 @@ unsafe extern "system" fn dismiss_when_ready(
 ) -> i32 {
     if matches!(message as i32, TDN_CREATED | TDN_TIMER) {
         let startup = unsafe { &*(state as *const StartupRecovery) };
-        if *startup.phase() == Phase::Ready {
+        if *startup.phase() != Phase::Starting {
             unsafe { PostMessageW(window, TDM_CLICK_BUTTON as u32, IDCANCEL as usize, 0) };
         }
     }
@@ -232,6 +256,24 @@ mod tests {
     }
 
     #[test]
+    fn startup_lock_excludes_only_the_same_port_and_releases_on_drop() {
+        let directory = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let launch = try_windows_startup_lock(directory.path(), PORT)
+            .unwrap()
+            .unwrap();
+        assert!(try_windows_startup_lock(directory.path(), PORT)
+            .unwrap()
+            .is_none());
+        assert!(try_windows_startup_lock(directory.path(), PORT + 1)
+            .unwrap()
+            .is_some());
+        drop(launch);
+        assert!(try_windows_startup_lock(directory.path(), PORT)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
     fn native_dialog_handles_wait_ready_and_close() {
         if let Some(directory) = std::env::var_os(FIXTURE) {
             let directory = Path::new(&directory);
@@ -313,6 +355,31 @@ fn messages(language: u16) -> [&'static str; 4] {
             "Windows is still initializing WebView2. You can keep waiting or close AgentBro and open it again from the Start menu.",
             "Keep waiting",
             "Close AgentBro",
+        ],
+    }
+}
+
+fn failure_messages(language: u16) -> [&'static str; 2] {
+    match language {
+        0x04 => [
+            "AgentBro 无法打开窗口",
+            "请检查 Microsoft Edge WebView2 Runtime 是否已安装、WebView2 数据目录是否可写，然后重新打开 AgentBro。",
+        ],
+        0x11 => [
+            "AgentBro のウィンドウを開けません",
+            "Microsoft Edge WebView2 Runtime のインストールと WebView2 データフォルダーへの書き込み権限を確認してから、AgentBro を開き直してください。",
+        ],
+        0x12 => [
+            "AgentBro 창을 열 수 없습니다",
+            "Microsoft Edge WebView2 Runtime 설치와 WebView2 데이터 폴더의 쓰기 권한을 확인한 다음 AgentBro를 다시 여세요.",
+        ],
+        0x1f => [
+            "AgentBro penceresi açılamadı",
+            "Microsoft Edge WebView2 Runtime kurulumunu ve WebView2 veri klasörünün yazılabilir olduğunu kontrol edip AgentBro’yu yeniden açın.",
+        ],
+        _ => [
+            "AgentBro could not open its window",
+            "Check the Microsoft Edge WebView2 Runtime installation and make sure its data folder is writable. Then reopen AgentBro.",
         ],
     }
 }
