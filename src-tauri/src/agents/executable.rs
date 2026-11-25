@@ -239,11 +239,15 @@ fn find_windows_binary_in_dirs(
     binary: &str,
     candidates: &[String],
 ) -> Option<PathBuf> {
+    let qoder_cli = binary.eq_ignore_ascii_case("qoder") || binary.eq_ignore_ascii_case("qodercli");
+    let is_launcher = |path: &Path| {
+        path.is_file() && (!qoder_cli || super::qoder::windows_qoder_app_source(path).is_none())
+    };
     if candidates.len() == 1 {
         return directories
             .into_iter()
             .map(|dir| dir.join(binary))
-            .find(|path| path.is_file());
+            .find(|path| is_launcher(path));
     }
 
     let mut extensionless = None;
@@ -252,14 +256,14 @@ fn find_windows_binary_in_dirs(
             .iter()
             .filter(|candidate| candidate.as_str() != binary)
             .map(|candidate| directory.join(candidate))
-            .find(|path| path.is_file())
+            .find(|path| is_launcher(path))
         {
             return Some(path);
         }
         // npm also installs extensionless shims for POSIX shells.
         if extensionless.is_none() {
             let path = directory.join(binary);
-            extensionless = path.is_file().then_some(path);
+            extensionless = is_launcher(&path).then_some(path);
         }
     }
     extensionless
@@ -898,6 +902,41 @@ mod tests {
         assert_eq!(npm[0], "npm.cmd");
         assert_eq!(npx[0], "npx.cmd");
         assert_eq!(node[0], "node.exe");
+    }
+
+    #[test]
+    fn windows_qoder_cli_lookup_skips_desktop_editions_on_path() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let desktop = fixture.path().join("Qoder");
+        let ide = fixture.path().join("Legacy Qoder IDE");
+        let cli = fixture.path().join("User CLI");
+        std::fs::create_dir_all(desktop.join("resources")).unwrap();
+        std::fs::write(desktop.join("resources/app.asar"), []).unwrap();
+        std::fs::create_dir_all(ide.join("resources/app")).unwrap();
+        std::fs::write(ide.join("resources/app/product.json"), "{}").unwrap();
+        std::fs::create_dir(&cli).unwrap();
+        for directory in [&desktop, &ide] {
+            std::fs::write(directory.join("qoder.exe"), []).unwrap();
+        }
+
+        let candidates = ["qoder.exe", "qoder.cmd", "qoder"].map(String::from);
+        let find_cli = || {
+            super::find_windows_binary_in_dirs(
+                [desktop.clone(), ide.clone(), cli.clone()],
+                "qoder",
+                &candidates,
+            )
+        };
+        assert_eq!(find_cli(), None);
+
+        let shim = cli.join("qoder.cmd");
+        std::fs::write(&shim, "@echo Qoder CLI\r\n").unwrap();
+        assert_eq!(find_cli(), Some(shim));
+
+        let native = cli.join("qoder.exe");
+        std::fs::write(&native, []).unwrap();
+        assert_eq!(find_cli(), Some(native));
     }
 
     #[test]
