@@ -13,6 +13,7 @@ param(
     [string]$PinnedPackImportPath,
     [string]$PinnedPackExportPath,
     [string]$PackManifestLink,
+    [string]$DiagnosticsExportPath,
     [switch]$TracePermissionUi,
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
@@ -1156,7 +1157,7 @@ try {
     }
     Test-InstalledQuestionReply $island
     Test-InstalledPlanReview $island
-    if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {
+    if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $DiagnosticsExportPath -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }
     if ($PackExportPath) {
@@ -1170,6 +1171,10 @@ try {
     }
     if ($PackManifestLink) {
         Test-InstalledPackManifestLink $island $PackManifestLink
+    }
+    if ($DiagnosticsExportPath) {
+        . (Join-Path $PSScriptRoot 'test-windows-diagnostics-export.ps1')
+        Test-InstalledDiagnosticsExport $island $DiagnosticsExportPath
     }
     if ($VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
         . (Join-Path $PSScriptRoot 'test-windows-agent-package.ps1')
@@ -1202,7 +1207,7 @@ try {
                     Write-Host "$($_.Name) ($($_.ProcessId)) parent: $($parent.ProcessName) ($($_.ParentProcessId))."
                 }
         }
-        if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
+        if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $DiagnosticsExportPath -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
             foreach ($window in Get-IslandWindows) {
                 Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"
                 $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
