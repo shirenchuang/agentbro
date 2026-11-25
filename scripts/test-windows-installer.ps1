@@ -41,6 +41,25 @@ if ($VerifyAgentPackageConsole) {
     $env:npm_config_offline = 'true'
     $env:npm_config_cache = Join-Path $stage 'isolated npm cache'
     $env:npm_config_prefix = Join-Path $stage 'isolated npm prefix'
+    $env:AGENTBRO_PACKAGE_FIXTURE_PREFIX = $fixtureBin
+    $packageRelative = 'node_modules\@anthropic-ai\claude-code'
+    $env:AGENTBRO_PACKAGE_FIXTURE_MANIFEST = Join-Path $fixtureBin "$packageRelative\package.json"
+    $fixtureLauncherText = @'
+@ECHO off
+SET "dp0=%~dp0"
+node "%dp0%\node_modules\@anthropic-ai\claude-code\cli.js" %*
+'@
+    $fixtureLauncherBackup = Join-Path $stage 'claude.cmd.fixture'
+    Set-Content -LiteralPath $fixtureLauncherBackup -Value $fixtureLauncherText -Encoding ascii
+    foreach ($prefix in @($fixtureBin, $env:npm_config_prefix)) {
+        $package = Join-Path $prefix $packageRelative
+        $null = New-Item -ItemType Directory -Path $package -Force
+        $version = if ($prefix -eq $fixtureBin) { '2.0.0' } else { '9.0.0' }
+        "{`"name`":`"@anthropic-ai/claude-code`",`"version`":`"$version`",`"bin`":{`"claude`":`"./cli.js`"}}" |
+            Set-Content -LiteralPath (Join-Path $package 'package.json') -Encoding ascii
+        Set-Content -LiteralPath (Join-Path $package 'cli.js') -Value 'console.log(require("./package.json").version)' -Encoding ascii
+        Copy-Item -LiteralPath $fixtureLauncherBackup -Destination (Join-Path $prefix 'claude.cmd') -Force
+    }
     $fallbackBin = Join-Path $stage 'fallback bin'
     $null = New-Item -ItemType Directory -Path $fallbackBin
     Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\whoami.exe') -Destination (Join-Path $fallbackBin 'claude.exe')
@@ -50,11 +69,7 @@ if ($VerifyAgentPackageConsole) {
 if /i "%~1"=="list" (
     if "%~3"=="@anthropic-ai/claude-code" (
         if not "%~6"=="--no-update-notifier" exit /b 1
-        if exist "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%" (
-            echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"999.0.0"}}}
-        ) else (
-            echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}
-        )
+        echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"9.0.0"}}}
     )
     exit /b 0
 )
@@ -70,6 +85,7 @@ if /i "%~1"=="view" (
     exit /b 0
 )
 if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
+    if /i not "%npm_config_prefix%"=="%AGENTBRO_PACKAGE_FIXTURE_PREFIX%" exit /b 2
     >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo npm fixture entered the update
     set "agentbro_retry="
     if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%" set "agentbro_retry=1"
@@ -79,20 +95,24 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
         exit /b 1
     )
     if exist "%AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION%" set "agentbro_retry=1"
-    if defined agentbro_retry type nul > "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%"
+    if defined agentbro_retry (
+        >"%npm_config_prefix%\node_modules\@anthropic-ai\claude-code\package.json" echo {"name":"@anthropic-ai/claude-code","version":"999.0.0","bin":{"claude":"./cli.js"}}
+        type nul > "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%"
+    )
     echo agentbro-package-fixture-stdout
     >&2 echo agentbro-package-fixture-stderr
     exit /b 0
 )
 if "%~1 %~2 %~3"=="uninstall -g @anthropic-ai/claude-code" (
+    if /i not "%npm_config_prefix%"=="%AGENTBRO_PACKAGE_FIXTURE_PREFIX%" exit /b 2
     if not exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall-failed" (
         type nul > "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall-failed"
         >&2 echo fixture uninstall failed
         exit /b 1
     )
     if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall" (
-        del /q "%~dp0claude.cmd"
-        if exist "%~dp0claude.cmd" exit /b 1
+        del /q "%npm_config_prefix%\claude.cmd"
+        if exist "%npm_config_prefix%\claude.cmd" exit /b 1
     ) else (
         type nul > "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall"
     )

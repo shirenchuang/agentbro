@@ -13,8 +13,11 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::{timeout, Duration};
 
+mod npm_installation;
 #[cfg(target_os = "windows")]
 mod windows_app_paths;
+
+use npm_installation::{npm_installation, NpmInstallation};
 
 static AGENT_PACKAGE_OPERATION: Mutex<()> = Mutex::const_new(());
 static AGENT_PACKAGE_OUTPUT: std::sync::Mutex<BTreeMap<String, AgentPackageOutput>> =
@@ -120,6 +123,15 @@ struct ProgramMetadata {
     app_path: Option<&'static str>,
     config_dir: Option<&'static str>,
     download_url: Option<&'static str>,
+}
+
+impl ProgramMetadata {
+    fn npm_installation(&self, launcher: Option<&Path>) -> Option<NpmInstallation> {
+        if self.package_manager != Some("npm") {
+            return None;
+        }
+        npm_installation(launcher?, self.package_name?)
+    }
 }
 
 #[derive(Clone)]
@@ -465,6 +477,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     };
     let desktop_codex = desktop_codex_launcher(&id, binary_path.as_deref());
     let native_claude = native_claude_launcher(&id, binary_path.as_deref());
+    let npm = meta.npm_installation(binary_path.as_deref());
     if desktop_codex.is_some() || native_claude.is_some() {
         meta.package_manager = Some(if desktop_codex.is_some() {
             "app"
@@ -474,6 +487,9 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         meta.package_name = None;
         meta.install_command = None;
         meta.update_command = native_claude.map(|_| CLAUDE_NATIVE_UPDATE_COMMAND);
+        meta.uninstall_command = None;
+    } else if binary_path.is_some() && meta.package_manager == Some("npm") && npm.is_none() {
+        meta.update_command = None;
         meta.uninstall_command = None;
     }
     let app_path = match &meta.kind {
@@ -497,7 +513,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     } else if let Some(launcher) = native_claude {
         (native_claude_version(launcher).await, None)
     } else if installed {
-        version_info_for(&meta, app_path.as_deref(), include_latest).await
+        version_info_for(&meta, app_path.as_deref(), npm.as_ref(), include_latest).await
     } else {
         (None, None)
     };
@@ -575,6 +591,7 @@ async fn selected_cli_version(
 async fn version_info_for(
     meta: &ProgramMetadata,
     app_path: Option<&str>,
+    npm: Option<&NpmInstallation>,
     include_latest: bool,
 ) -> (Option<String>, Option<String>) {
     if meta.kind == AgentProgramKind::App {
@@ -584,21 +601,22 @@ async fn version_info_for(
         };
         return (installed, None);
     }
-    if meta.package_manager != Some("npm") {
+    let (Some(installation), Some(package)) = (npm, meta.package_name) else {
         return (None, None);
-    }
-    let package = match meta.package_name {
-        Some(package) => package,
-        None => return (None, None),
     };
-    let npm = executable::command_path("npm");
-    let path = executable::augmented_path_env();
-    let installed = npm_installed_version(package_command(&npm, path.as_deref()), package);
-    if !include_latest {
-        return (installed.await, None);
-    }
-    let latest = npm_latest_version(package_command(&npm, path.as_deref()), package);
-    tokio::join!(installed, latest)
+    let latest = if include_latest {
+        let npm = executable::command_path("npm");
+        let path = executable::augmented_path_env();
+        npm_latest_version(
+            package_command(&npm, path.as_deref()),
+            package,
+            &installation.prefix,
+        )
+        .await
+    } else {
+        None
+    };
+    (Some(installation.version.clone()), latest)
 }
 
 #[cfg(target_os = "macos")]
@@ -705,42 +723,18 @@ async fn app_installed_version(_app_path: &str) -> Option<String> {
     None
 }
 
-async fn npm_installed_version(mut npm: Command, package: &str) -> Option<String> {
-    let output = package_probe_output(
-        npm.args([
-            "list",
-            "-g",
-            package,
-            "--depth=0",
-            "--json",
-            "--no-update-notifier",
-        ]),
-        Duration::from_secs(4),
-    )
-    .await?;
-
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    json.get("dependencies")?
-        .get(package)?
-        .get("version")?
-        .as_str()
-        .map(ToString::to_string)
-}
-
-async fn npm_latest_version(mut npm: Command, package: &str) -> Option<String> {
-    let output = package_probe_output(
-        npm.args([
-            "view",
-            package,
-            "version",
-            "--silent",
-            "--no-update-notifier",
-            "--fetch-retries=0",
-            "--fetch-timeout=4000",
-        ]),
-        Duration::from_secs(5),
-    )
-    .await?;
+async fn npm_latest_version(mut npm: Command, package: &str, prefix: &Path) -> Option<String> {
+    npm.args([
+        "view",
+        package,
+        "version",
+        "--silent",
+        "--no-update-notifier",
+        "--fetch-retries=0",
+        "--fetch-timeout=4000",
+    ]);
+    set_npm_prefix(&mut npm, prefix);
+    let output = package_probe_output(&mut npm, Duration::from_secs(5)).await?;
 
     if !output.status.success() {
         return None;
@@ -831,12 +825,11 @@ async fn run_agent_command(
 ) -> Result<(), String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let _package_operation = claim_agent_package_operation()?;
-    let installed_binary =
-        if matches!(agent_id, "codex" | "claude-code") || operation == "uninstall" {
-            find_agent_binary(agent_id, &meta)
-        } else {
-            None
-        };
+    let installed_binary = if meta.package_manager == Some("npm") || operation == "uninstall" {
+        find_agent_binary(agent_id, &meta)
+    } else {
+        None
+    };
     if desktop_codex_launcher(agent_id, installed_binary.as_deref()).is_some() {
         return Err("The selected Codex installation is managed by its desktop client".to_string());
     }
@@ -888,26 +881,50 @@ async fn execute_package_operation(
     {
         return trash_agent_app(app, agent_id, meta).await;
     }
-    let (command_line, mut command) =
-        if let Some(launcher) = native_claude_launcher(agent_id, installed_binary) {
-            (
-                CLAUDE_NATIVE_UPDATE_COMMAND.to_string(),
-                native_claude_package_command(launcher, operation)?,
-            )
-        } else if agent_id == "aider" && operation == "uninstall" {
-            aider_uninstall_command(RuntimePlatform::current(), executable::find_binary).await?
+    let (command_line, mut command) = if let Some(launcher) =
+        native_claude_launcher(agent_id, installed_binary)
+    {
+        (
+            CLAUDE_NATIVE_UPDATE_COMMAND.to_string(),
+            native_claude_package_command(launcher, operation)?,
+        )
+    } else if agent_id == "aider" && operation == "uninstall" {
+        aider_uninstall_command(RuntimePlatform::current(), executable::find_binary).await?
+    } else {
+        let command_line = match operation {
+            "install" => meta.install_command,
+            "update" => meta.update_command,
+            "uninstall" => meta.uninstall_command,
+            _ => None,
+        }
+        .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
+        .to_string();
+        let npm = if meta.package_manager == Some("npm")
+            && (installed_binary.is_some() || operation != "install")
+        {
+            Some(meta.npm_installation(installed_binary).ok_or_else(|| {
+                format!(
+                    "Could not locate the npm installation for the detected {agent_id} launcher"
+                )
+            })?)
         } else {
-            let command_line = match operation {
-                "install" => meta.install_command,
-                "update" => meta.update_command,
-                "uninstall" => meta.uninstall_command,
-                _ => None,
-            }
-            .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
-            .to_string();
-            let command = package_operation_command(&command_line);
-            (command_line, command)
+            None
         };
+        if let Some(installation) = &npm {
+            emit_output(
+                app,
+                agent_id,
+                operation,
+                "info",
+                &format!("npm global directory: {}", installation.prefix.display()),
+                false,
+                None,
+            );
+        }
+        let command =
+            package_operation_command(&command_line, npm.as_ref().map(|npm| npm.prefix.as_path()));
+        (command_line, command)
+    };
 
     emit_output(
         app,
@@ -1152,12 +1169,22 @@ fn package_command(program: impl AsRef<OsStr>, path: Option<&OsStr>) -> Command 
     command
 }
 
-fn package_operation_command(command: &str) -> Command {
+fn set_npm_prefix(command: &mut Command, prefix: &Path) {
+    #[cfg(target_os = "windows")]
+    command.env("npm_config_prefix", prefix);
+    #[cfg(not(target_os = "windows"))]
+    command.arg("--prefix").arg(prefix);
+}
+
+fn package_operation_command(command: &str, npm_prefix: Option<&Path>) -> Command {
     let path = executable::augmented_path_env();
     if let Some(arguments) = command.strip_prefix("npm ") {
         let launcher = executable::command_path("npm");
         let mut process = package_command(&launcher, path.as_deref());
         process.args(arguments.split_ascii_whitespace());
+        if let Some(prefix) = npm_prefix {
+            set_npm_prefix(&mut process, prefix);
+        }
         #[cfg(target_os = "windows")]
         if launcher
             .extension()
@@ -2659,25 +2686,43 @@ esac
         use std::os::unix::fs::PermissionsExt;
 
         const CHILD_PROBE: &str = "AGENTBRO_TEST_NPM_CHILD_PROBE";
-        if std::env::var_os(CHILD_PROBE).is_some() {
+        if let Some(prefix) = std::env::var_os(CHILD_PROBE).map(PathBuf::from) {
             let meta = metadata_for("claude-code").unwrap();
+            let info = super::info_for_agent_seed(
+                super::AgentProgramSeed {
+                    id: "claude-code".to_string(),
+                    display_name: "Claude Code".to_string(),
+                    icon: "claude".to_string(),
+                    hooks_installed: false,
+                },
+                true,
+            )
+            .await;
             assert_eq!(
-                version_info_for(&meta, None, true).await,
+                (info.installed_version, info.latest_version),
                 (Some("2.0.0".to_string()), Some("3.0.0".to_string()))
             );
-            for command in [
-                meta.install_command.unwrap(),
-                meta.update_command.unwrap(),
-                meta.uninstall_command.unwrap(),
+            assert_eq!(
+                info.binary_path.as_deref(),
+                prefix.join("bin/claude").to_str()
+            );
+            for (command, prefix_arg) in [
+                (meta.install_command.unwrap(), None),
+                (meta.update_command.unwrap(), Some(prefix.as_path())),
+                (meta.uninstall_command.unwrap(), Some(prefix.as_path())),
             ] {
-                let output = super::package_operation_command(command)
+                let output = super::package_operation_command(command, prefix_arg)
                     .output()
                     .await
                     .unwrap();
                 assert!(output.status.success(), "{command}");
                 assert_eq!(
                     String::from_utf8_lossy(&output.stdout).trim(),
-                    format!("selected {command}")
+                    if prefix_arg.is_some() {
+                        format!("selected {command} --prefix {}", prefix.display())
+                    } else {
+                        format!("selected {command}")
+                    }
                 );
             }
             return;
@@ -2687,6 +2732,22 @@ esac
         let launcher = home.join("agent launchers");
         let login_launcher = home.join("login tools");
         let toolchain = home.join(".nvm/versions/node/v22.0.0/bin");
+        let prefix = home.join("selected prefix");
+        let package = prefix.join("lib/node_modules/@anthropic-ai/claude-code");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@anthropic-ai/claude-code","version":"2.0.0","bin":{"claude":"cli.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(package.join("cli.js"), "#!/bin/sh\necho 2.0.0\n").unwrap();
+        std::fs::set_permissions(
+            package.join("cli.js"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(package.join("cli.js"), prefix.join("bin/claude")).unwrap();
         std::fs::create_dir_all(&launcher).unwrap();
         std::fs::create_dir_all(&login_launcher).unwrap();
         std::fs::create_dir_all(&toolchain).unwrap();
@@ -2710,10 +2771,11 @@ esac
 case "$2" in
   list)
     [ "$7" = "--no-update-notifier" ] || exit 1
-    printf '%s\n' '{"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}'
+    printf '%s\n' '{"dependencies":{"@anthropic-ai/claude-code":{"version":"9.0.0"}}}'
     ;;
   view)
     [ "$6 $7 $8" = "--no-update-notifier --fetch-retries=0 --fetch-timeout=4000" ] || exit 1
+    [ "$9" = "--prefix" ] && [ "${10}" = "$AGENTBRO_TEST_NPM_CHILD_PROBE" ] || exit 1
     printf '%s\n' '3.0.0'
     ;;
   install|uninstall) shift; printf 'selected npm %s\n' "$*" ;;
@@ -2725,12 +2787,17 @@ esac
             std::fs::write(&path, contents).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let path =
-            std::env::join_paths([launcher.as_path(), Path::new("/usr/bin"), Path::new("/bin")])
-                .unwrap();
+        let path = std::env::join_paths([
+            prefix.join("bin").as_path(),
+            launcher.as_path(),
+            Path::new("/usr/bin"),
+            Path::new("/bin"),
+        ])
+        .unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .current_dir(&home)
-            .env(CHILD_PROBE, "1")
+            .env(CHILD_PROBE, &prefix)
+            .env("npm_config_prefix", home.join("default prefix"))
             .env("HOME", &home)
             .env("SHELL", "/bin/sh")
             .env("PATH", path)

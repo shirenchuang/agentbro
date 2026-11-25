@@ -91,7 +91,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "AGENTBRO_WINDOWS_AGENT_TEST_EXE=$testExecutable" >> $env:GITHUB_ENV
       - name: Test Agent program management
-        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::programs::tests'
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::programs'
       - name: Test Agent launcher discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::executable::tests'
       - name: Test Hook bridge repair
