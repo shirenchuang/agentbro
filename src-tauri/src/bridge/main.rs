@@ -911,6 +911,24 @@ fn main() {
             return;
         }
     }
+    #[cfg(target_os = "macos")]
+    let (agent, pid, term_bundle_id) = if is_antigravity_source(&source) {
+        use agentbro_lib::agents::gemini_desktop;
+
+        if let Some(host) = pid.and_then(gemini_desktop::coding_host_pid) {
+            (
+                gemini_desktop::ID,
+                Some(host),
+                Some(gemini_desktop::BUNDLE_ID.to_string()),
+            )
+        } else {
+            (source.as_str(), pid, term_bundle_id)
+        }
+    } else {
+        (source.as_str(), pid, term_bundle_id)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let agent = source.as_str();
     let tty = wsl_distribution.is_none().then(get_tty).flatten();
     let engine_label =
         arg_value("--engine-label").or_else(|| std::env::var("AGENTBRO_ENGINE_LABEL").ok());
@@ -926,7 +944,7 @@ fn main() {
 
     // Build event state matching what the Python script produced
     let mut state = serde_json::json!({
-        "agent": source,
+        "agent": agent,
         "session_id": session_id,
         "cwd": cwd,
         "event": hook_event,
@@ -974,7 +992,7 @@ fn main() {
     {
         obj.insert("transcript_path".into(), transcript_path.clone());
     }
-    copy_optional_field(obj, &data, "model", &["model"]);
+    copy_optional_field(obj, &data, "model", &["model", "modelName"]);
     copy_optional_field(obj, &data, "turn_id", &["turn_id", "turnId"]);
     copy_optional_field(
         obj,
@@ -997,6 +1015,9 @@ fn main() {
     copy_optional_field(obj, &data, "fully_idle", &["fullyIdle"]);
     copy_optional_field(obj, &data, "error", &["error"]);
     if is_antigravity_source(&source) {
+        if hook_event == "PreInvocation" {
+            copy_optional_field(obj, &data, "prompt", &["lastUserInput"]);
+        }
         if let Some(step_idx) = data.get("stepIdx").and_then(|value| value.as_u64()) {
             obj.insert(
                 "tool_use_id".into(),

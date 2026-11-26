@@ -345,6 +345,7 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "codex",
         "gemini",
         "gemini-cli",
+        "gemini-desktop",
         "cursor",
         "cursor-cli",
         "hermes",

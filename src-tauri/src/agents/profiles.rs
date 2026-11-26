@@ -943,6 +943,8 @@ pub fn profile_for_agent(id: &str) -> Option<AgentIntegrationProfile> {
         "cline" => Some(cline_profile()),
         "codex" => Some(codex_profile()),
         "antigravity" => Some(antigravity_profile()),
+        #[cfg(target_os = "macos")]
+        "gemini-desktop" => Some(antigravity_profile()),
         "codebuddy" => Some(codebuddy_profile()),
         "codebuddycn" | "codybuddycn" => Some(codebuddycn_profile()),
         "copilot" => Some(copilot_profile()),

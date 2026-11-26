@@ -4505,6 +4505,7 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
           <strong>Hook 接入</strong>
           <span>{statusLabel}</span>
           {hook.configPath && <code>{hook.configPath}</code>}
+          {agentId === 'gemini-desktop' && <span>{t('skills.agentManagement.geminiSharedHook')}</span>}
         </div>
         <div className="sm2__btn-row sm2__hook-actions">
           {hook.configPath && (

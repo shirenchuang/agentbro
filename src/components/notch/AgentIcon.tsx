@@ -4,9 +4,11 @@ import workbuddyIcon from '../../assets/cli-icons/workbuddy.png'
 import qwenIcon from '../../assets/cli-icons/qwen.png'
 import zcodeIcon from '../../assets/cli-icons/zcode.svg'
 import doubaoIcon from '../../assets/cli-icons/doubao.svg'
+import geminiIcon from '../../assets/cli-icons/gemini.png'
 
 const agentIcons: Partial<Record<AgentType, string>> = {
   'qwenwork-cn': qwenIcon,
+  'gemini-desktop': geminiIcon,
   workbuddy: workbuddyIcon,
   'workbuddy-ai': workbuddyIcon,
   zcode: zcodeIcon,
