@@ -4401,33 +4401,53 @@ extern "C" {
 }
 
 #[cfg(target_os = "macos")]
-static DISPLAY_RECONFIG_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+static DISPLAY_RECONFIG_EVENTS: OnceLock<tokio::sync::mpsc::Sender<()>> = OnceLock::new();
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" fn display_reconfig_callback(
     _display: u32,
-    _flags: u32,
+    flags: u32,
     _user_info: *mut std::ffi::c_void,
 ) {
-    // The callback fires before and after reconfiguration.
-    // Only reposition after the change settles.
-    if _flags & 1 != 0 {
+    if flags & 1 != 0 {
         return; // kCGDisplayBeginConfigurationFlag — skip, wait for completion callback
     }
-    if let Some(handle) = DISPLAY_RECONFIG_APP_HANDLE.get() {
-        let handle = handle.clone();
-        // Delay briefly so macOS finishes updating internal display state
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(600));
-            let h = handle.clone();
-            let _ = handle.run_on_main_thread(move || {
-                let _ = reposition_notch_to_display(&h, None, None);
-                if let Some(window) = h.get_webview_window("pet") {
+    if let Some(events) = DISPLAY_RECONFIG_EVENTS.get() {
+        let _ = events.try_send(());
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn watch_macos_display_changes(app: &tauri::AppHandle) {
+    let (sender, mut events) = tokio::sync::mpsc::channel(1);
+    if DISPLAY_RECONFIG_EVENTS.set(sender).is_err() {
+        return;
+    }
+    let result = unsafe {
+        CGDisplayRegisterReconfigurationCallback(display_reconfig_callback, std::ptr::null_mut())
+    };
+    if result != 0 {
+        log::warn!("Could not subscribe to macOS display changes: {result}");
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while events.recv().await.is_some() {
+            // CoreGraphics can send one completion callback per affected screen.
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            let _ = events.try_recv();
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(window) = handle.get_webview_window("notch") {
+                    apply_notch_window_for_spaces(&window);
+                }
+                if let Some(window) = handle.get_webview_window("pet") {
                     apply_pet_window_for_spaces(&window);
                 }
+                let _ = handle.emit("display-changed", ());
             });
-        });
-    }
+        }
+    });
 }
 
 // ── Opacity helpers ─────────────────────────────────────────────
@@ -6092,15 +6112,7 @@ pub fn run() {
                     log::warn!("{error}");
                 }
                 #[cfg(target_os = "macos")]
-                {
-                    let _ = DISPLAY_RECONFIG_APP_HANDLE.set(app.handle().clone());
-                    unsafe {
-                        CGDisplayRegisterReconfigurationCallback(
-                            display_reconfig_callback,
-                            std::ptr::null_mut(),
-                        );
-                    }
-                }
+                watch_macos_display_changes(app.handle());
             }
 
             // Settings window is created on demand by `show_settings_window`.

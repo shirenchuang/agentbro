@@ -348,8 +348,8 @@ describe('NotchPanel island shell', () => {
     }
   })
 
-  it('reapplies the fixed Windows Island frame when the display changes during a resize', async () => {
-    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+  it.each(['Win32', 'MacIntel'])('reapplies the fixed Island frame on %s when the display changes during a resize', async (nativePlatform) => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue(nativePlatform)
     try {
       const originalResize = deferred<{ anchorOffsetX: number }>()
       tauriMocks.isTauri.mockReturnValue(true)
@@ -362,7 +362,7 @@ describe('NotchPanel island shell', () => {
       expect(frame?.slice(2)).toEqual([36, 'primary'])
 
       await act(async () => {
-        onDisplayChange({ event: 'display-changed', id: 1, payload: [] })
+        onDisplayChange({ event: 'display-changed', id: 1, payload: null })
       })
       expect(tauriMocks.resizeNotch.mock.calls).toEqual([frame, frame])
 
