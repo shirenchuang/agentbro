@@ -7,7 +7,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{WM_DISPLAYCHANGE, WM_DPICHANGE
 
 pub(crate) fn watch(window: &WebviewWindow) -> Result<(), String> {
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
-    let (sender, mut changes) = mpsc::channel(1);
+    let (sender, mut changes) = mpsc::channel::<()>(1);
     let sender = Box::into_raw(Box::new(sender));
     // Setup runs on the window's owning thread. WM_NCDESTROY releases this sender.
     if unsafe { SetWindowSubclass(hwnd, Some(display_event), 0, sender as usize) } == 0 {
