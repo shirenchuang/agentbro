@@ -17,6 +17,7 @@ param(
     [switch]$TracePermissionUi,
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
+    [switch]$VerifyDisplayChange,
     [switch]$CloseStartupSettings,
     [switch]$AutomationFocusPermission,
     [switch]$VerifyGlobalShortcuts,
@@ -1141,6 +1142,11 @@ $islandWindow = $null
 try {
     if ($CloseStartupSettings) { Close-StartupSettings }
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
+    if ($VerifyDisplayChange) {
+        . "$PSScriptRoot/test-windows-display-change.ps1"
+        Test-InstalledIslandDisplayChange $islandWindow.Handle
+        $islandWindow = Wait-IslandValue 'the visible native Island region after the display mode change' { Find-VisibleIsland }
+    }
     $island = $islandWindow.Element
     Move-ToIslandHoverPoint $islandWindow.Handle $island
     if ($VerifyQwenWork) {
