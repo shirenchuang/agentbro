@@ -1890,7 +1890,19 @@ impl HookServer {
                 }
                 let harness_turn = event_name == "processing"
                     && _raw.get("agent").and_then(|v| v.as_str()) == Some("deepseek-harness");
-                if event_name == "UserPromptSubmit" || event_name == "BeforeAgent" || harness_turn {
+                let gemini_turn = event_name == "PreInvocation"
+                    && _raw.get("agent").and_then(|value| value.as_str())
+                        == Some(crate::agents::gemini_desktop::ID)
+                    && store.get_session(session_id).is_some_and(|session| {
+                        session.phase != SessionPhase::Processing
+                            || session.last_user_message
+                                != Self::extract_user_prompt_preview(_raw, 100)
+                    });
+                if event_name == "UserPromptSubmit"
+                    || event_name == "BeforeAgent"
+                    || harness_turn
+                    || gemini_turn
+                {
                     if let Some(prompt) = Self::extract_user_prompt_preview(_raw, 100) {
                         store.set_last_user_message(session_id, Some(prompt));
                     }
@@ -2725,7 +2737,13 @@ impl HookServer {
             .and_then(|value| value.as_str())
             .unwrap_or_default();
         let project = if cwd.trim().is_empty() {
-            "Unknown".to_string()
+            if raw.get("agent").and_then(|value| value.as_str())
+                == Some(crate::agents::gemini_desktop::ID)
+            {
+                String::new()
+            } else {
+                "Unknown".to_string()
+            }
         } else {
             crate::agents::project_name_from_path(cwd)
         };
@@ -4063,6 +4081,108 @@ mod tests {
         let session = store.get_session(id).unwrap();
         assert_eq!(session.phase, SessionPhase::Done);
         assert_eq!(session.last_response.as_deref(), Some("**1 + 1 = 2**"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn gemini_desktop_coding_hooks_share_one_island_session() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::antigravity::AntiGravityAdapter::gemini_desktop(),
+            )]),
+        );
+        let id = "gemini-test-conversation";
+        let send = async |event, fields: serde_json::Value| {
+            let mut raw = serde_json::json!({
+                "agent": "gemini-desktop", "event": event, "session_id": id,
+                "cwd": "/workspace/project",
+            });
+            raw.as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let (mut client, connection) = tokio::io::duplex(4096);
+            client
+                .write_all(format!("{raw}\n").as_bytes())
+                .await
+                .unwrap();
+            let task = tokio::spawn(HookServer::handle_connection(
+                connection,
+                server.connection_context(),
+            ));
+            (client, task)
+        };
+
+        let (_client, task) = send(
+            "PreInvocation",
+            serde_json::json!({
+                "prompt": "Check this repository",
+            }),
+        )
+        .await;
+        task.await.unwrap().unwrap();
+        let session = store.get_session(id).unwrap();
+        assert_eq!(session.agent_type, "gemini-desktop");
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert_eq!(
+            session.last_user_message.as_deref(),
+            Some("Check this repository")
+        );
+
+        let (client, task) = send(
+            "PreToolUse",
+            serde_json::json!({
+                "tool": "run_command", "tool_use_id": "call-1",
+                "tool_input": {"command": "printf test"}
+            }),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while store.get_session(id).unwrap().pending_permission.is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        server
+            .respond_permission(id, false, false, Some("call-1"))
+            .await
+            .unwrap();
+        let mut reply = String::new();
+        BufReader::new(client).read_line(&mut reply).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&reply).unwrap()["decision"],
+            "deny"
+        );
+        task.await.unwrap().unwrap();
+
+        let (_client, task) = send(
+            "Stop",
+            serde_json::json!({"terminationReason": "NO_TOOL_CALL", "fullyIdle": false}),
+        )
+        .await;
+        task.await.unwrap().unwrap();
+        assert_eq!(
+            store.get_session(id).unwrap().phase,
+            SessionPhase::Processing
+        );
+
+        let (_client, task) = send(
+            "Stop",
+            serde_json::json!({
+                "terminationReason": "NO_TOOL_CALL", "fullyIdle": true,
+            }),
+        )
+        .await;
+        task.await.unwrap().unwrap();
+        let session = store.get_session(id).unwrap();
+        assert_eq!(session.phase, SessionPhase::Done);
+        assert_eq!(
+            session.description.as_deref(),
+            Some("Gemini coding turn completed")
+        );
+        assert!(session.pending_permission.is_none());
     }
 
     #[tokio::test]

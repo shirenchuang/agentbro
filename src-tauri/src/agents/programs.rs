@@ -573,7 +573,14 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         .await;
         (version, None)
     } else if installed {
-        version_info_for(&meta, app_path.as_deref(), npm.as_ref(), include_latest).await
+        version_info_for(
+            &id,
+            &meta,
+            app_path.as_deref(),
+            npm.as_ref(),
+            include_latest,
+        )
+        .await
     } else {
         (None, None)
     };
@@ -655,12 +662,20 @@ async fn selected_cli_version(
 }
 
 async fn version_info_for(
+    _agent_id: &str,
     meta: &ProgramMetadata,
     app_path: Option<&str>,
     npm: Option<&NpmInstallation>,
     include_latest: bool,
 ) -> (Option<String>, Option<String>) {
     if meta.kind == AgentProgramKind::App {
+        #[cfg(target_os = "windows")]
+        if _agent_id == super::gemini_desktop::ID {
+            let version = app_path
+                .and_then(|path| super::gemini_desktop::windows_release(Path::new(path)))
+                .map(|version| version.to_string());
+            return (version, None);
+        }
         let installed = match app_path {
             Some(path) => app_installed_version(path).await,
             None => None,
@@ -1437,6 +1452,9 @@ fn launch_binary(path: &Path) -> Result<(), String> {
 }
 
 fn find_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<PathBuf> {
+    if agent_id == super::gemini_desktop::ID {
+        return None;
+    }
     if agent_id == "qoder-cli" {
         return executable::find_qoder_cli_binary();
     }
@@ -1583,6 +1601,12 @@ pub(crate) fn installed_app_path_for_agent(agent_id: &str) -> Option<String> {
 }
 
 fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    if agent_id == super::gemini_desktop::ID {
+        if let Some(path) = windows_app_paths::gemini_install_location() {
+            return Some(path);
+        }
+    }
     let existing = app_path_candidates(agent_id, meta)
         .into_iter()
         .find(|path| {
@@ -1603,6 +1627,14 @@ fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> 
 }
 
 fn app_path_matches_agent(agent_id: &str, path: &Path) -> bool {
+    if agent_id == super::gemini_desktop::ID {
+        #[cfg(target_os = "macos")]
+        return super::gemini_desktop::is_macos_bundle(path);
+        #[cfg(target_os = "windows")]
+        return super::gemini_desktop::windows_release(path).is_some();
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        return false;
+    }
     if !matches!(agent_id, "qoder" | "qoder-desktop") {
         return true;
     }
@@ -1713,6 +1745,12 @@ fn windows_app_path_candidates(agent_id: &str, meta: &ProgramMetadata) -> Vec<St
     let exe_names = windows_executable_names(agent_id, meta);
 
     if let Some(local_app_data) = windows_local_app_data_dir() {
+        if agent_id == super::gemini_desktop::ID {
+            paths.push(windows_join(
+                &local_app_data,
+                &["Google", "Gemini", "Gemini.exe"],
+            ));
+        }
         for dir in &dirs {
             for exe in &exe_names {
                 paths.push(windows_join(&local_app_data, &["Programs", dir, exe]));
@@ -1725,6 +1763,9 @@ fn windows_app_path_candidates(agent_id: &str, meta: &ProgramMetadata) -> Vec<St
         let Some(root) = std::env::var(env_key).ok().filter(|v| !v.is_empty()) else {
             continue;
         };
+        if agent_id == super::gemini_desktop::ID {
+            paths.push(windows_join(&root, &["Google", "Gemini", "Gemini.exe"]));
+        }
         for dir in &dirs {
             for exe in &exe_names {
                 paths.push(windows_join(&root, &[dir, exe]));
@@ -1857,6 +1898,7 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "cline" => "Cline",
         "codex" => "OpenAI Codex",
         "gemini" | "gemini-cli" => "Gemini CLI",
+        super::gemini_desktop::ID => "Gemini Desktop",
         "cursor" => "Cursor",
         "cursor-cli" => "Cursor CLI",
         "opencode" => "OpenCode",
@@ -1900,7 +1942,7 @@ fn display_name_for_agent(id: &str) -> &'static str {
 fn icon_for_agent(id: &str) -> String {
     match id {
         "codebuddycn" | "codybuddycn" => "codebuddy".to_string(),
-        "gemini-cli" => "gemini".to_string(),
+        "gemini-cli" | super::gemini_desktop::ID => "gemini".to_string(),
         "cursor-cli" => "cursor".to_string(),
         "qoder-cli" | "qoder-desktop" => "qoder".to_string(),
         "qwenwork-cn" => "qwen".to_string(),
@@ -1943,6 +1985,15 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "~/.gemini",
             "https://github.com/google-gemini/gemini-cli",
         ),
+        super::gemini_desktop::ID => ProgramMetadata {
+            config_dir: cfg!(target_os = "macos").then_some("~/.gemini/config"),
+            ..app_no_uninstall(
+                "Gemini",
+                "/Applications/Gemini.app",
+                "",
+                "https://gemini.google/desktop/",
+            )
+        },
         "opencode" => cli(
             "opencode",
             "npm",
@@ -2288,6 +2339,56 @@ fn app_no_uninstall(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gemini_desktop_versions_come_from_the_packaged_app() {
+        let home =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let launcher = home.path().join("Gemini.exe");
+        std::fs::write(&launcher, "").unwrap();
+        let release = super::super::gemini_desktop::windows_release;
+        assert!(release(&launcher).is_none());
+        for (version, complete) in [("1.9.0", true), ("1.21.1", true), ("1.23.0", false)] {
+            let app = home.path().join(format!("app-{version}"));
+            std::fs::create_dir(&app).unwrap();
+            std::fs::write(app.join("Gemini.exe"), "").unwrap();
+            if complete {
+                std::fs::write(app.join("GEMINI_BUILD_INFO.txt"), "").unwrap();
+            }
+        }
+        assert_eq!(release(&launcher).unwrap().to_string(), "1.21.1");
+        assert_eq!(
+            release(&home.path().join("app-1.9.0/Gemini.exe"))
+                .unwrap()
+                .to_string(),
+            "1.9.0"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gemini_desktop_requires_its_bundle_identifier() {
+        let temp =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let bundle = temp.path().join("Gemini.app");
+        std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+        let plist = bundle.join("Contents/Info.plist");
+        for (id, detected) in [
+            ("com.google.GeminiMacOS", true),
+            ("com.google.Chrome.app.gemini", false),
+        ] {
+            std::fs::write(
+                &plist,
+                format!(
+                    r#"<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{id}</string></dict></plist>"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                super::app_path_matches_agent("gemini-desktop", &bundle),
+                detected
+            );
+        }
+    }
 
     #[tokio::test]
     async fn package_output_continues_after_non_utf8_bytes() {

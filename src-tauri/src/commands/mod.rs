@@ -2645,6 +2645,9 @@ pub async fn send_message(
     if session.agent_type == "qoder-desktop" {
         return Err("Open Qoder Desktop to continue the conversation.".to_string());
     }
+    if session.agent_type == crate::agents::gemini_desktop::ID {
+        return Err("Open Gemini Desktop to continue the conversation.".to_string());
+    }
 
     if let Some(err) = app_host_message_unsupported_error(&session) {
         return Err(err);
@@ -4214,7 +4217,10 @@ pub async fn jump_to_terminal(
     if let Some(distribution) = &session.wsl_distribution {
         return crate::platform::wsl::open_workspace(distribution, &session.cwd);
     }
-    if session.agent_type == "qoder-desktop" {
+    if matches!(
+        session.agent_type.as_str(),
+        "qoder-desktop" | crate::agents::gemini_desktop::ID
+    ) {
         return crate::agents::programs::open_agent_app(&session.agent_type);
     }
     #[cfg(target_os = "windows")]

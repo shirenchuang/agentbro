@@ -162,7 +162,7 @@ AgentBro supports agents at two levels. Runtime hook adapters send session event
 
 | Scope | Agents |
 | --- | --- |
-| Island / hook integration | Claude Code, Codex, Gemini CLI, Cursor / Cursor CLI, GitHub Copilot, Cline, Qoder Desktop / Qoder IDE / Qoder CLI, CodeBuddy / CodeBuddy CN, Qwen, Kimi, DeepSeek, OpenCode, Factory Droid, StepFun, AntiGravity, WorkBuddy / WorkBuddy AI, Hermes, Pi, Kiro, ZCode |
+| Island / hook integration | Claude Code, Codex, Gemini CLI, Gemini Desktop's Antigravity coding mode (macOS), Cursor / Cursor CLI, GitHub Copilot, Cline, Qoder Desktop / Qoder IDE / Qoder CLI, CodeBuddy / CodeBuddy CN, Qwen, Kimi, DeepSeek, OpenCode, Factory Droid, StepFun, Antigravity, WorkBuddy / WorkBuddy AI, Hermes, Pi, Kiro, ZCode |
 | Agent Management scan | Everything above, plus Doubao, the `.agents` shared folder, Junie, Windsurf, Augment, KiloCode, OB1, Amp, Aider, OpenClaw / QClaw / EasyClaw / AutoClaw, and custom agents |
 | Project-level scan | Currently focused on common Claude Code and Codex project config: project-level skills, MCP servers, plugins, and instruction files |
 

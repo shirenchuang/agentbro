@@ -3,6 +3,7 @@ import type { SessionState } from '../types/agent'
 export type ComposerLockReason =
   | 'codex-app'
   | 'qoder-app'
+  | 'gemini-desktop'
   | 'remote'
   | 'wsl'
   | 'no-terminal'
@@ -10,6 +11,7 @@ export type ComposerLockReason =
 export const composerHints: Record<ComposerLockReason, { messageKey: string; actionKey?: string }> = {
   'codex-app': { messageKey: 'notch.composerHintCodexApp', actionKey: 'notch.openHostApp' },
   'qoder-app': { messageKey: 'notch.composerHintQoderApp', actionKey: 'notch.openHostApp' },
+  'gemini-desktop': { messageKey: 'notch.composerHintGeminiDesktop', actionKey: 'notch.openHostApp' },
   remote: { messageKey: 'notch.composerHintRemote' },
   wsl: { messageKey: 'notch.composerHintWsl', actionKey: 'notch.openWslTerminal' },
   'no-terminal': { messageKey: 'notch.composerHintNoTerminal' },
@@ -25,7 +27,7 @@ export interface ComposerCapabilityOptions {
 }
 
 export function supportsPersistentPermissionActions(agentType: SessionState['agentType']): boolean {
-  return !['codex', 'deepseek-harness', 'qoder', 'qoder-desktop', 'qoder-cli'].includes(agentType)
+  return !['codex', 'deepseek-harness', 'gemini-desktop', 'qoder', 'qoder-desktop', 'qoder-cli'].includes(agentType)
 }
 
 function bundleIdMatchesCodexApp(termBundleId: string | undefined): boolean {
@@ -97,6 +99,10 @@ export function getComposerCapability(
 
   if (session.agentType === 'qoder-desktop' || isQoderAppSession(session)) {
     return { kind: 'locked', reason: 'qoder-app' }
+  }
+
+  if (session.agentType === 'gemini-desktop') {
+    return { kind: 'locked', reason: 'gemini-desktop' }
   }
 
   if (hasNoTerminalAffinity(session)) {

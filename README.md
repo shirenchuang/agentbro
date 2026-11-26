@@ -162,7 +162,7 @@ AgentBro 的支持分为两层。运行时 Hook 适配器负责把会话事件�
 
 | 范围 | Agent |
 | --- | --- |
-| 灵动岛 / Hook 接入 | Claude Code、Codex、Gemini CLI、Cursor / Cursor CLI、GitHub Copilot、Cline、Qoder Desktop / Qoder IDE / Qoder CLI、CodeBuddy / CodeBuddy CN、Qwen、Kimi、DeepSeek、OpenCode、Factory Droid、StepFun、AntiGravity、WorkBuddy / WorkBuddy AI、Hermes、Pi、Kiro、ZCode |
+| 灵动岛 / Hook 接入 | Claude Code、Codex、Gemini CLI、Gemini Desktop 内置 Antigravity 编码模式（macOS）、Cursor / Cursor CLI、GitHub Copilot、Cline、Qoder Desktop / Qoder IDE / Qoder CLI、CodeBuddy / CodeBuddy CN、Qwen、Kimi、DeepSeek、OpenCode、Factory Droid、StepFun、Antigravity、WorkBuddy / WorkBuddy AI、Hermes、Pi、Kiro、ZCode |
 | Agent 管理扫描 | 上面所有 Agent，另支持豆包、`.agents` 共享目录、Junie、Windsurf、Augment、KiloCode、OB1、Amp、Aider、OpenClaw / QClaw / EasyClaw / AutoClaw，以及自定义 Agent |
 | 项目级扫描 | 目前聚焦 Claude Code 与 Codex 常见项目配置：项目级 Skills、MCP、插件和指令文件 |
 

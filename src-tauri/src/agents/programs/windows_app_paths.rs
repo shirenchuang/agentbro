@@ -28,8 +28,9 @@ pub(super) fn find_registered(
         (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6432KEY),
     ] {
         for key in &keys {
-            if let Some(path) =
-                read_registered_path(hive, view, key).filter(|path| matches_agent(path))
+            if let Some(path) = read_registered_path(hive, view, key, None)
+                .and_then(executable_path)
+                .filter(|path| matches_agent(path))
             {
                 return Some(path);
             }
@@ -38,14 +39,43 @@ pub(super) fn find_registered(
     None
 }
 
-fn read_registered_path(hive: HKEY, view: u32, key: &[u16]) -> Option<String> {
+pub(super) fn gemini_install_location() -> Option<String> {
+    let key: Vec<_> = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Gemini"
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let name: Vec<_> = "InstallLocation".encode_utf16().chain([0]).collect();
+    [
+        (HKEY_CURRENT_USER, 0),
+        (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6464KEY),
+        (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6432KEY),
+    ]
+    .into_iter()
+    .find_map(|(hive, view)| {
+        let root = PathBuf::from(read_registered_path(hive, view, &key, Some(&name))?);
+        if !root.is_absolute() {
+            return None;
+        }
+        let launcher = root.join("Gemini.exe");
+        super::super::gemini_desktop::windows_release(&launcher)?;
+        launcher.into_os_string().into_string().ok()
+    })
+}
+
+fn read_registered_path(
+    hive: HKEY,
+    view: u32,
+    key: &[u16],
+    name: Option<&[u16]>,
+) -> Option<String> {
+    let name = name.map_or(null(), <[u16]>::as_ptr);
     let flags = view | RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
     let mut bytes = 0;
     let status = unsafe {
         RegGetValueW(
             hive,
             key.as_ptr(),
-            null(),
+            name,
             flags,
             null_mut(),
             null_mut(),
@@ -60,7 +90,7 @@ fn read_registered_path(hive: HKEY, view: u32, key: &[u16]) -> Option<String> {
         RegGetValueW(
             hive,
             key.as_ptr(),
-            null(),
+            name,
             flags,
             null_mut(),
             value.as_mut_ptr().cast(),
@@ -76,10 +106,15 @@ fn read_registered_path(hive: HKEY, view: u32, key: &[u16]) -> Option<String> {
     }
     let text = String::from_utf16(text).ok()?;
     let text = text.trim();
-    let target = text
-        .strip_prefix('"')
-        .and_then(|path| path.strip_suffix('"'))
-        .unwrap_or(text);
+    Some(
+        text.strip_prefix('"')
+            .and_then(|path| path.strip_suffix('"'))
+            .unwrap_or(text)
+            .to_owned(),
+    )
+}
+
+fn executable_path(target: String) -> Option<String> {
     let mut path = PathBuf::from(target);
     if !path.is_absolute() {
         return None;

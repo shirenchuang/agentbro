@@ -20,6 +20,13 @@ pub fn detect_installed_tools() -> Vec<DetectedTool> {
         detect_tool("claude-code", "Claude Code", &["claude"], &[".claude"]),
         detect_tool("codex", "OpenAI Codex", &["codex"], &[".codex"]),
         detect_tool("gemini", "Google Gemini", &["gemini"], &[".gemini"]),
+        DetectedTool {
+            name: super::gemini_desktop::ID.to_string(),
+            display_name: "Gemini Desktop".to_string(),
+            status: super::programs::detected_status_for_agent_program(super::gemini_desktop::ID),
+            binary_path: None,
+            config_dir: None,
+        },
         detect_cursor(),
         detect_copilot(),
         detect_qoder_app("qoder-desktop", "Qoder Desktop"),

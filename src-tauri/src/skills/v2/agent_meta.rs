@@ -48,6 +48,7 @@ pub fn managed_agent_ids() -> Vec<String> {
         "claude-code",
         "codex",
         "gemini",
+        "gemini-desktop",
         "antigravity",
         "cursor",
         "opencode",
@@ -119,6 +120,11 @@ fn table() -> &'static [AgentMeta] {
         AgentMeta {
             id: "gemini",
             display_name: "Gemini CLI",
+            icon_key: "gemini",
+        },
+        AgentMeta {
+            id: "gemini-desktop",
+            display_name: "Gemini Desktop",
             icon_key: "gemini",
         },
         AgentMeta {
@@ -449,8 +455,10 @@ pub fn agent_installed(home: &std::path::Path, agent: &str) -> bool {
     #[cfg(target_os = "windows")]
     {
         // Check the desktop launcher directly without scanning PATH.
-        matches!(agent, "qwenwork-cn" | "workbuddy" | "workbuddy-ai")
-            && is_runtime_home(home)
+        matches!(
+            agent,
+            "gemini-desktop" | "qwenwork-cn" | "workbuddy" | "workbuddy-ai"
+        ) && is_runtime_home(home)
             && crate::agents::programs::installed_app_path_for_agent(agent).is_some()
     }
 
