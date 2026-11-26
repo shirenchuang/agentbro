@@ -611,7 +611,7 @@ function Test-KeyboardPermissionDenial(
     }
 }
 
-function Open-GlobalHookFixture([hashtable]$Event) {
+function Open-HookFixture([hashtable]$Event) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
@@ -628,7 +628,7 @@ function Open-GlobalHookFixture([hashtable]$Event) {
 
 function Open-GlobalPermissionFixture([string]$Label, [string]$TargetSession) {
     $command = "echo AgentBro global shortcut $Label"
-    $fixture = Open-GlobalHookFixture @{
+    $fixture = Open-HookFixture @{
         agent = 'claude-code'
         event = 'PermissionRequest'
         session_id = $TargetSession
@@ -731,7 +731,7 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
         question = 'Pick a single answer for the global shortcut'
         options = @('Suggested answer', 'Alternative answer')
     }
-    $simple = Open-GlobalHookFixture $event
+    $simple = Open-HookFixture $event
     try {
         $null = Wait-IslandValue 'the single-choice question' {
             $island = Find-VisibleIsland
@@ -753,7 +753,7 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
         @{ question = 'Pick a region?'; options = @(@{ label = 'Preview region' }, @{ label = 'Production region' }) },
         @{ question = 'Pick an output?'; options = @(@{ label = 'Summary output' }, @{ label = 'Detailed output' }) }
     )
-    $multipart = Open-GlobalHookFixture $event
+    $multipart = Open-HookFixture $event
     try {
         $null = Wait-IslandValue 'both parts of the multipart question' {
             $island = Find-VisibleIsland
@@ -832,6 +832,26 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
     }
 }
 
+function Send-BackgroundToolFixture([string]$ToolUseId) {
+    foreach ($event in @('PreToolUse', 'PostToolUse')) {
+        $fixture = Open-HookFixture @{
+            agent = 'claude-code'
+            event = $event
+            session_id = $SessionId
+            cwd = $Workspace
+            tool_use_id = $ToolUseId
+            tool_name = 'Read'
+            tool_input = @{ file_path = 'smoke.txt' }
+        }
+        try {
+            if (-not $fixture.Reply.Wait(5000)) { throw "The $event Hook did not finish" }
+            $null = $fixture.Reply.GetAwaiter().GetResult()
+        } finally {
+            $fixture.Connection.Dispose()
+        }
+    }
+}
+
 function Test-InstalledQuestionReply(
     [Windows.Automation.AutomationElement]$Island,
     [switch]$Disconnect
@@ -872,11 +892,12 @@ function Test-InstalledQuestionReply(
         if ($view.ShowSessions) {
             Click-IslandElement $view.ShowSessions 'Question card session list button' -CenterAfterLayout
         }
-        $option = Wait-IslandValue 'the inline answer in the waiting session' $findOption
+        $null = Wait-IslandValue 'the inline answer in the waiting session' $findOption
         if ($Disconnect) {
             $connection.Dispose()
         } else {
-            Click-IslandElement $option 'Inline question answer' -CenterAfterLayout
+            Send-BackgroundToolFixture 'question-background-read'
+            Click-IslandElement -Description 'Inline question answer after background tool activity' -CenterAfterLayout -FindElement $findOption
             if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive an answer from the Windows Island' }
             $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
             if ($response.answer -ne $answer) { throw "Unexpected Hook question answer: $($response.answer)" }
@@ -918,13 +939,15 @@ function Test-InstalledPlanReview(
         $reader = [System.IO.StreamReader]::new($stream)
         $reply = $reader.ReadLineAsync()
 
-        $manual = Wait-IslandValue 'the plan manual review button' {
+        $findManualReview = {
             Find-IslandButton $Island { param($Name) $Name -eq 'Manual Review' }
         }
+        $null = Wait-IslandValue 'the plan manual review button' $findManualReview
         if ($Disconnect) {
             $connection.Dispose()
         } else {
-            Click-IslandElement $manual 'Plan manual review' -CenterAfterLayout
+            Send-BackgroundToolFixture 'plan-background-read'
+            Click-IslandElement -Description 'Plan manual review after background tool activity' -CenterAfterLayout -FindElement $findManualReview
             if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive the review decision from the Windows Island' }
             $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
             if ($response.mode -ne 'manual') { throw "Unexpected Hook plan decision: $($response.mode)" }

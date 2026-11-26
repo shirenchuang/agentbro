@@ -287,6 +287,9 @@ jobs:
           & $testExecutable hooks::server::tests::plan_responses_
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable --exact hooks::server::tests::hook_reply_disconnect_and_legacy_half_close_use_the_original_socket
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable terminal::jump::windows_terminal::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

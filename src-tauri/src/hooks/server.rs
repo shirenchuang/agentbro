@@ -1959,7 +1959,10 @@ impl HookServer {
                     s.last_tool_name = Some(tool_name.clone());
                     s.last_tool_target = tool_target.clone();
                     s.last_tool_status = Some(status.clone());
-                    if s.pending_permission.is_none() {
+                    if s.pending_permission.is_none()
+                        && s.pending_question.is_none()
+                        && s.pending_plan.is_none()
+                    {
                         s.phase = SessionPhase::Processing;
                     }
                 });
@@ -4908,6 +4911,51 @@ mod tests {
                 })
                 .await
                 .expect("the fixture interaction should appear in the Island");
+
+                for (tool_event, status) in [("PreToolUse", "running"), ("PostToolUse", "success")]
+                {
+                    let mut tool_client =
+                        tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                            .await
+                            .unwrap();
+                    let (tool_connection, _) = listener.accept().await.unwrap();
+                    let payload = serde_json::json!({
+                        "agent": "claude-code",
+                        "event": tool_event,
+                        "session_id": session_id,
+                        "tool_use_id": "background-read",
+                        "tool_name": "Read",
+                        "tool_input": {"file_path": "notes.txt"},
+                    });
+                    tool_client
+                        .write_all(format!("{payload}\n").as_bytes())
+                        .await
+                        .unwrap();
+                    HookServer::handle_connection(tool_connection, server.connection_context())
+                        .await
+                        .unwrap();
+
+                    let session = store.get_session(&session_id).unwrap();
+                    if event == "AskQuestion" {
+                        assert_eq!(session.phase, SessionPhase::WaitingInput, "{tool_event}");
+                        assert_eq!(
+                            session.pending_question.unwrap().tool_use_id.as_deref(),
+                            Some(request_id.as_str())
+                        );
+                    } else {
+                        assert_eq!(session.phase, SessionPhase::WaitingApproval, "{tool_event}");
+                        assert_eq!(
+                            session.pending_plan.unwrap().request_id.as_deref(),
+                            Some(request_id.as_str())
+                        );
+                    }
+                    let tool = session
+                        .active_tools
+                        .iter()
+                        .find(|tool| tool.tool_use_id == "background-read")
+                        .unwrap();
+                    assert_eq!(tool.status, status);
+                }
 
                 if scenario == "disconnect" {
                     drop(client);
