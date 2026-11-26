@@ -10,6 +10,7 @@ param(
     [switch]$TracePermissionUi,
     [string]$SymbolsDirectory,
     [switch]$VerifyDrag,
+    [switch]$VerifyDisplayChange,
     [switch]$CloseStartupSettings,
     [switch]$AutomationFocusPermission,
     [switch]$VerifyGlobalShortcuts,
@@ -675,6 +676,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     if ($VerifyRegisteredAgentApp) { $start.ArgumentList.Add('-VerifyRegisteredAgentApp') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
+    if ($VerifyDisplayChange) { $start.ArgumentList.Add('-VerifyDisplayChange') }
     if ($CloseStartupSettings) { $start.ArgumentList.Add('-CloseStartupSettings') }
     if ($AutomationFocusPermission) { $start.ArgumentList.Add('-AutomationFocusPermission') }
     if ($VerifyGlobalShortcuts) { $start.ArgumentList.Add('-VerifyGlobalShortcuts') }
@@ -773,7 +775,7 @@ try {
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
     if ($VerifyIsland -or $VerifyPackManifest -or $VerifyPackArchive -or $VerifyPinnedPackManifest -or $PackManifestLink -or
-        $VerifyDrag -or $VerifyQwenWork -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyDiagnosticsExport) {
+        $VerifyDrag -or $VerifyDisplayChange -or $VerifyQwenWork -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyDiagnosticsExport) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
         $event.session_id = $restoredSession

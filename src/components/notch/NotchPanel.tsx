@@ -73,8 +73,8 @@ interface NotchDragGesture {
   started: Promise<number | null>
 }
 
-function nativeHostResizeKey(width: number, height: number, horizontalOffset: number, displayId?: string): string {
-  return `${width.toFixed(2)}:${height.toFixed(2)}:${horizontalOffset.toFixed(2)}:${displayId ?? ''}`
+function nativeHostResizeKey(width: number, height: number, horizontalOffset: number, displayId: string | undefined, displayRevision: number): string {
+  return `${width.toFixed(2)}:${height.toFixed(2)}:${horizontalOffset.toFixed(2)}:${displayId ?? ''}:${displayRevision}`
 }
 
 function scaleTransitionDuration<T extends { duration?: number }>(transition: T, scale: number): T {
@@ -322,6 +322,8 @@ export function NotchPanel() {
   const hoverContentRef = useRef<HTMLDivElement | null>(null)
   const [persistentIdleHidden, setPersistentIdleHidden] = useState(false)
   const [displayChanging, setDisplayChanging] = useState(false)
+  const displayRevisionRef = useRef(0)
+  const [displayRevision, setDisplayRevision] = useState(0)
   const [isDragging, setIsDragging] = useState(false)
   const [layoutPreview, setLayoutPreview] = useState<IslandLayoutPreview | null>(null)
   const [measuredHoverContentHeight, setMeasuredHoverContentHeight] = useState(0)
@@ -470,20 +472,29 @@ export function NotchPanel() {
     return () => window.clearTimeout(timer)
   }, [hasActiveSession, idleCompactDwellSeconds])
 
-  // Display-change listener: fade-out → pause → fade-in
   useEffect(() => {
     if (!isTauri()) return
+    let cancelled = false
     let unlisten: (() => void) | undefined
     let fadeInTimer: ReturnType<typeof setTimeout> | undefined
 
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen('display-changed', () => {
-        setDisplayChanging(true)
-        fadeInTimer = setTimeout(() => setDisplayChanging(false), 600)
-      }).then((fn) => { unlisten = fn })
+    listenTauriEvent('display-changed', () => {
+      if (cancelled) return
+      if (isWindowsPlatform()) {
+        displayRevisionRef.current += 1
+        setDisplayRevision(displayRevisionRef.current)
+        return
+      }
+      setDisplayChanging(true)
+      if (fadeInTimer) clearTimeout(fadeInTimer)
+      fadeInTimer = setTimeout(() => setDisplayChanging(false), 600)
+    }).then((fn) => {
+      if (cancelled) fn()
+      else unlisten = fn
     }).catch(() => {})
 
     return () => {
+      cancelled = true
       unlisten?.()
       if (fadeInTimer) clearTimeout(fadeInTimer)
     }
@@ -1721,7 +1732,7 @@ export function NotchPanel() {
     options?: { force?: boolean },
   ) {
     if (isWindowsPlatform() && (activeDragRef.current || pendingDragEndRef.current)) return
-    const key = nativeHostResizeKey(width, height, horizontalOffset, displayId)
+    const key = nativeHostResizeKey(width, height, horizontalOffset, displayId, displayRevisionRef.current)
     nativeHostResizeTargetRef.current = { key, width, height, horizontalOffset, displayId }
     if (!options?.force && lastNativeHostResizeKeyRef.current === key) {
       onComplete(hostAnchorOffsetXRef.current)
@@ -1819,7 +1830,7 @@ export function NotchPanel() {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [hostTargetHitboxWidth, hostTargetHitboxHeight, hostUsesStableCanvas, effectiveHorizontalOffset, displayMonitor, finishPreparedOpen, islandAnimationScale, isDragging, preparingOpen, requestNativeHostResize, updateHostAnchorOffset])
+  }, [hostTargetHitboxWidth, hostTargetHitboxHeight, hostUsesStableCanvas, effectiveHorizontalOffset, displayMonitor, displayRevision, finishPreparedOpen, islandAnimationScale, isDragging, preparingOpen, requestNativeHostResize, updateHostAnchorOffset])
 
   useEffect(() => {
     if (!isTauri() || displayMonitor !== 'auto' || isDragging) return

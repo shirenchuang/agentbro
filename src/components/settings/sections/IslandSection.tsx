@@ -809,13 +809,26 @@ function DisplayTab() {
   const compactPillWidthValue = Math.round(config.compactPillWidth * (config.collapsedWidthScale / 100))
 
   useEffect(() => {
-    listDisplays().then(setDisplays)
-    if (!isTauri()) return
+    let cancelled = false
+    let receivedUpdate = false
     let unlisten: (() => void) | undefined
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<BackendDisplayInfo[]>('display-changed', (e) => { setDisplays(e.payload) }).then((fn) => { unlisten = fn })
-    })
-    return () => { unlisten?.() }
+    void listDisplays().then((initial) => {
+      if (!cancelled && !receivedUpdate) setDisplays(initial)
+    }).catch(() => {})
+    if (isTauri()) {
+      void import('@tauri-apps/api/event').then(({ listen }) => listen<BackendDisplayInfo[]>('display-changed', ({ payload }) => {
+        if (cancelled) return
+        receivedUpdate = true
+        setDisplays(payload)
+      })).then((dispose) => {
+        if (cancelled) dispose()
+        else unlisten = dispose
+      }).catch(() => {})
+    }
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
   }, [])
 
   const previewLayout = useCallback((mode: IslandLayoutPreviewMode, overrides: IslandLayoutPreviewOptions = {}) => {

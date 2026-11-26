@@ -6087,6 +6087,10 @@ pub fn run() {
                 apply_notch_window_for_spaces(&window);
 
                 // Reposition the island when display configuration changes (e.g. external monitor connected/disconnected).
+                #[cfg(target_os = "windows")]
+                if let Err(error) = platform::windows_display::watch(&window) {
+                    log::warn!("{error}");
+                }
                 #[cfg(target_os = "macos")]
                 {
                     let _ = DISPLAY_RECONFIG_APP_HANDLE.set(app.handle().clone());

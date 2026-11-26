@@ -348,6 +348,31 @@ describe('NotchPanel island shell', () => {
     }
   })
 
+  it('reapplies the fixed Windows Island frame when the display changes during a resize', async () => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    try {
+      const originalResize = deferred<{ anchorOffsetX: number }>()
+      tauriMocks.isTauri.mockReturnValue(true)
+      tauriMocks.resizeNotch.mockImplementationOnce(() => originalResize.promise)
+      useConfigStore.setState({ displayMonitor: 'primary', allowHorizontalDrag: true, panelHorizontalOffset: 36 })
+      mountIsland()
+      await waitFor(() => expect(tauriMocks.listen).toHaveBeenCalledWith('display-changed', expect.any(Function)))
+      const onDisplayChange = tauriMocks.listen.mock.calls.find(([event]) => event === 'display-changed')![1]
+      const frame = tauriMocks.resizeNotch.mock.calls[0]
+      expect(frame?.slice(2)).toEqual([36, 'primary'])
+
+      await act(async () => {
+        onDisplayChange({ event: 'display-changed', id: 1, payload: [] })
+      })
+      expect(tauriMocks.resizeNotch.mock.calls).toEqual([frame, frame])
+
+      await act(async () => { originalResize.resolve({ anchorOffsetX: 0 }) })
+      expect(tauriMocks.resizeNotch.mock.calls).toEqual([frame, frame, frame])
+    } finally {
+      platform.mockRestore()
+    }
+  })
+
   it('keeps a stable native host canvas while collapsed, then sizes to hitbox on hover', () => {
     vi.useFakeTimers()
     try {

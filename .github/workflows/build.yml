@@ -58,6 +58,10 @@ on:
         description: Move the installed Island with native pointer input and verify that it stops on release
         type: boolean
         default: false
+      windows_verify_display_change:
+        description: Change and restore the native display mode while the Island is running
+        type: boolean
+        default: false
       windows_close_startup_settings:
         description: Close the first-run settings window before exercising the installed Island
         type: boolean
@@ -420,6 +424,7 @@ jobs:
           VERIFY_REGISTERED_AGENT_APP: ${{ inputs.windows_verify_registered_agent_app }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
+          VERIFY_DISPLAY_CHANGE: ${{ inputs.windows_verify_display_change }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
           AUTOMATION_FOCUS_PERMISSION: ${{ inputs.windows_automation_focus_permission }}
           VERIFY_GLOBAL_SHORTCUTS: ${{ inputs.windows_verify_global_shortcuts }}
@@ -446,6 +451,7 @@ jobs:
                   -VerifyRegisteredAgentApp:($env:VERIFY_REGISTERED_AGENT_APP -eq 'true') `
                   -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
                   -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
+                  -VerifyDisplayChange:($env:VERIFY_DISPLAY_CHANGE -eq 'true') `
                   -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
                   -AutomationFocusPermission:($env:AUTOMATION_FOCUS_PERMISSION -eq 'true') `
                   -VerifyGlobalShortcuts:($env:VERIFY_GLOBAL_SHORTCUTS -eq 'true') `
