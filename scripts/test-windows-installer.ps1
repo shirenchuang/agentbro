@@ -511,6 +511,7 @@ if ($TraceQuestionUi) {
     $questionTracePort = $debugListener.LocalEndpoint.Port
     $debugListener.Stop()
     $appEnvironment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = "--remote-debugging-port=$questionTracePort --remote-debugging-address=127.0.0.1"
+    $appEnvironment['WEBVIEW2_USER_DATA_FOLDER'] = Join-Path $stage 'question trace WebView2 profile'
 }
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -Environment $appEnvironment

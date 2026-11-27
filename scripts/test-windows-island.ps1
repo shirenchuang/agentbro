@@ -933,7 +933,12 @@ function Test-InstalledQuestionReply(
             Write-Host "Could not capture the pending question desktop: $_"
         }
         if ($QuestionTracePort) {
-            & node (Join-Path $PSScriptRoot 'probe-windows-question-ui.mjs') $QuestionTracePort $SessionId $answer
+            $debugOutput = & node (Join-Path $PSScriptRoot 'probe-windows-question-ui.mjs') $QuestionTracePort $SessionId $answer 2>&1
+            $debugOutput | ForEach-Object { Write-Host "$_" }
+            if ($LASTEXITCODE -ne 0) {
+                Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe' AND ParentProcessId = $AppProcessId" |
+                    ForEach-Object { Write-Host "WebView2 has requested trace port: $($_.CommandLine.Contains("--remote-debugging-port=$QuestionTracePort"))." }
+            }
         }
         throw
     } finally {
