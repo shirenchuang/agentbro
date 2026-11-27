@@ -341,6 +341,7 @@
     "sendFeedback": "Geri Bildirim Gönder",
     "feedbackEmail": "shi_rc@foxmail.com",
     "latestVersion": "En son sürümdesiniz",
+    "updateInstallerPending": "{{version}} yükleyicisinin yayımlanması bekleniyor.",
     "updateChecking": "Güncellemeler kontrol ediliyor...",
     "updateAvailable": "{{version}} güncellemesi mevcut",
     "updateAvailableHomebrew": "{{version}} güncellemesi mevcut. AgentBro Homebrew ile yüklendiği için şunu çalıştırın: {{command}}",

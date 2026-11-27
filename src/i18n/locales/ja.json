@@ -361,6 +361,7 @@
     "sendFeedback": "フィードバックを送信",
     "feedbackEmail": "shi_rc@foxmail.com",
     "latestVersion": "最新バージョンを使用しています",
+    "updateInstallerPending": "{{version}} のインストーラーの公開を待っています。",
     "checkNow": "今すぐ確認",
     "exportDiagnostics": "診断をエクスポート",
     "exportDiagnosticsDesc": "プライバシー保護された診断ZIP（パスとシークレットはマスク済み）を生成してトラブルシューティングに使用",
