@@ -1,3 +1,5 @@
+mod download;
+
 use super::models::{
     ProjectLockedSkill, ProjectLockedSkillStatus, ProjectSkillLock, ProjectSkillRestoreResult,
 };
@@ -54,6 +56,13 @@ struct RestoreSource {
 enum RestoreLocation {
     Git(GitSkill),
     NodeModules(NodeModuleSkill),
+    Download(DownloadedSkill),
+}
+
+struct DownloadedSkill {
+    url: reqwest::Url,
+    skill_path: PathBuf,
+    skill_name: String,
 }
 
 struct GitSkill {
@@ -120,7 +129,7 @@ pub(super) fn preview(root: &Path) -> Option<ProjectSkillLock> {
             .map(|(name, entry)| {
                 let source_type = entry.get("sourceType").and_then(|value| value.as_str());
                 let source = match source_type {
-                    Some("git" | "gitlab") => entry
+                    Some("git" | "gitlab" | "download") => entry
                         .get("sourceUrl")
                         .and_then(|value| value.as_str())
                         .or_else(|| entry.get("source").and_then(|value| value.as_str())),
@@ -129,6 +138,8 @@ pub(super) fn preview(root: &Path) -> Option<ProjectSkillLock> {
                 .unwrap_or("");
                 let reference = if source_type == Some("node_modules") {
                     entry.get("version").and_then(|value| value.as_str())
+                } else if source_type == Some("download") {
+                    entry.get("skillPath").and_then(|value| value.as_str())
                 } else {
                     ["commit", "ref"]
                         .into_iter()
@@ -244,7 +255,11 @@ fn restore_source(
         return Err(Legacy);
     }
     let source_type = match raw.get("sourceType").and_then(|value| value.as_str()) {
-        Some(kind @ ("github" | "gitlab" | "git" | "node_modules")) if version == 2 => kind,
+        Some(kind @ ("github" | "gitlab" | "git" | "node_modules" | "download"))
+            if version == 2 =>
+        {
+            kind
+        }
         _ => return Err(Unsupported),
     };
     let entry: LockEntry = serde_json::from_value(raw.clone()).map_err(|_| Invalid)?;
@@ -268,6 +283,32 @@ fn restore_source(
                 .transpose()?,
             version: hints.version,
             skill_path: skill_path.ok_or(Invalid)?,
+        })
+    } else if source_type == "download" {
+        let url = entry.source_url.as_deref().ok_or(Invalid)?;
+        if !url.starts_with("https://") {
+            return Err(Unsupported);
+        }
+        if url.chars().any(|ch| ch.is_control() || ch == '\\') {
+            return Err(Invalid);
+        }
+        let url = reqwest::Url::parse(url).map_err(|_| Invalid)?;
+        if url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(Invalid);
+        }
+        let skill_name = entry.skill_name.as_deref().unwrap_or(name);
+        if !valid_skill_name(skill_name) {
+            return Err(Invalid);
+        }
+        RestoreLocation::Download(DownloadedSkill {
+            url,
+            skill_path: skill_path.ok_or(Invalid)?,
+            skill_name: skill_name.to_string(),
         })
     } else {
         RestoreLocation::Git(git_lock_source(&entry, source_type, name, skill_path)?)
@@ -423,9 +464,13 @@ pub(super) fn restore(
     revision: &str,
     skill_names: Vec<String>,
 ) -> Result<Vec<ProjectSkillRestoreResult>, String> {
-    restore_with(root, revision, skill_names, |repository| {
-        installer::checkout_skill_lock_ref(&repository.url, &repository.reference)
-    })
+    restore_with(
+        root,
+        revision,
+        skill_names,
+        |repository| installer::checkout_skill_lock_ref(&repository.url, &repository.reference),
+        download::fetch,
+    )
 }
 
 pub(super) fn verify_installed(
@@ -520,10 +565,12 @@ fn restore_with(
     revision: &str,
     skill_names: Vec<String>,
     mut fetch: impl FnMut(&RepositoryRevision) -> Result<(PathBuf, TempInstallDir), String>,
+    mut download: impl FnMut(&reqwest::Url) -> Result<(PathBuf, TempInstallDir), String>,
 ) -> Result<Vec<ProjectSkillRestoreResult>, String> {
     let lock = lock_at_revision(root, revision)?;
     let duplicates = duplicate_names(lock.skills.keys());
     let mut checkouts = HashMap::new();
+    let mut downloads = HashMap::new();
     let mut results = Vec::new();
     for name in skill_names.into_iter().collect::<BTreeSet<_>>() {
         let result = (|| -> Result<(), String> {
@@ -566,6 +613,16 @@ fn restore_with(
                     select_git_skill(checkout, git)?
                 }
                 RestoreLocation::NodeModules(package) => select_node_module_skill(root, package)?,
+                RestoreLocation::Download(source) => {
+                    let downloaded = downloads
+                        .entry(source.url.clone())
+                        .or_insert_with(|| download(&source.url));
+                    let (directory, _temporary) = downloaded.as_ref().map_err(Clone::clone)?;
+                    let directory = directory
+                        .canonicalize()
+                        .map_err(|error| error.to_string())?;
+                    checked_source_skill(&directory, &directory.join(&source.skill_path))?
+                }
             };
             install_verified_skill(root, revision, &name, &skill, &source)
         })();
@@ -707,10 +764,11 @@ fn install_verified_skill(
     let staged = temporary.path().join("skill");
     if !stage_skill_copy(skill, &staged, true)?.eq_ignore_ascii_case(&source.hash) {
         // Older entries can match the source bytes even with a different destination name.
-        let renamed = matches!(
-            &source.location,
-            RestoreLocation::Git(git) if git.skill_name != name
-        );
+        let renamed = match &source.location {
+            RestoreLocation::Git(git) => git.skill_name != name,
+            RestoreLocation::Download(download) => download.skill_name != name,
+            RestoreLocation::NodeModules(_) => false,
+        };
         if !renamed || !verify_staged_alias(&staged, name, &source.hash)? {
             return Err("Skill content does not match the lock file".to_string());
         }
@@ -956,6 +1014,7 @@ mod tests {
     use super::*;
     use crate::skills::v2::models::ProjectLockedSkillStatus::*;
     use serde_json::json;
+    use std::io::{Cursor, Write};
 
     const PORTABLE_HASH: &str = "fd3e459f44c5edbece0fd70f8abd169df0a4d64fa9c28dd89eed88a6ca0a14a7";
     const ROOT_PACKAGE_HASH: &str =
@@ -965,6 +1024,10 @@ mod tests {
 
     fn write_lock(root: &Path, content: serde_json::Value) {
         fs::write(root.join(LOCK_FILE), serde_json::to_vec(&content).unwrap()).unwrap();
+    }
+
+    fn no_download(_: &reqwest::Url) -> Result<(PathBuf, TempInstallDir), String> {
+        panic!("Restoring this lock entry must not download an archive")
     }
 
     fn run_git(root: &Path, args: &[&str]) -> String {
@@ -1020,7 +1083,7 @@ mod tests {
             json!({
                 "version": 2,
                 "skills": {
-                    "missing": { "source": "https://example.test/skills.zip", "sourceType": "download" },
+                    "missing": { "source": "https://example.test/skills.zip", "sourceType": "unknown" },
                     "bad": { "source": "example/skills", "sourceType": "github", "computedHash": PORTABLE_HASH, "skillPath": "../SKILL.md" },
                 }
             }),
@@ -1028,10 +1091,186 @@ mod tests {
         let current = preview(&root).unwrap();
         assert_eq!(current.skills[0].status, Invalid);
         assert_eq!(current.skills[1].status, Unsupported);
-        let result = restore_with(&root, &lock.revision, vec!["missing".into()], |_| {
-            panic!("A changed preview must not fetch anything")
-        });
+        let result = restore_with(
+            &root,
+            &lock.revision,
+            vec!["missing".into()],
+            |_| panic!("A changed preview must not fetch anything"),
+            no_download,
+        );
         assert!(result.unwrap_err().contains("lock file changed"));
+    }
+
+    #[test]
+    fn previews_public_download_entries_using_the_recorded_url() {
+        let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = temporary.path();
+        let url = "https://example.invalid/download";
+        let entry = json!({
+            "source": "download fixture",
+            "sourceType": "download",
+            "sourceUrl": url,
+            "skillPath": "nested/SKILL.md",
+            "computedHash": PORTABLE_HASH,
+        });
+        write_lock(
+            root,
+            json!({ "version": 2, "skills": { "missing": entry } }),
+        );
+        let lock = preview(root).unwrap();
+        assert_eq!(lock.skills[0].source, url);
+        assert_eq!(lock.skills[0].reference.as_deref(), Some("nested/SKILL.md"));
+        assert_eq!(lock.skills[0].status, Ready);
+        assert!(!root.join(".agents").exists());
+    }
+
+    #[test]
+    fn restores_selected_downloaded_skills_by_path_and_keeps_the_lock_unchanged() {
+        let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (path, bytes) in [
+            ("pack/skills/first/SKILL.md", MANIFEST.as_bytes()),
+            ("pack/skills/first/scripts/data.bin", b"\0\r\n"),
+            ("pack/skills/second/SKILL.md", MANIFEST.as_bytes()),
+            ("pack/skills/second/scripts/data.bin", b"\0\r\n"),
+            ("__MACOSX/._pack", b"ignored archive metadata"),
+        ] {
+            zip.start_file(path, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        let payload = zip.finish().unwrap().into_inner();
+        let renamed_skill = root.join("renamed");
+        fs::create_dir_all(renamed_skill.join("scripts")).unwrap();
+        fs::write(
+            renamed_skill.join("SKILL.md"),
+            MANIFEST.replace("name: original", "name: second"),
+        )
+        .unwrap();
+        fs::write(renamed_skill.join("scripts/data.bin"), b"\0\r\n").unwrap();
+        let renamed_hash = fingerprint_canonical_skill_directory(&renamed_skill, true).unwrap();
+        let url = "https://example.invalid/download";
+        let download_entry = |path: &str, hash: &str| {
+            json!({
+                "source": url,
+                "sourceType": "download",
+                "sourceUrl": url,
+                "skillName": "original",
+                "skillPath": format!("skills/{path}/SKILL.md"),
+                "computedHash": hash,
+            })
+        };
+        write_lock(
+            &root,
+            json!({
+                "version": 2,
+                "skills": {
+                    "existing": download_entry("first", PORTABLE_HASH),
+                    "first": download_entry("first", PORTABLE_HASH),
+                    "mismatch": download_entry("first", &"0".repeat(64)),
+                    "second": download_entry("second", &renamed_hash),
+                    "unselected": download_entry("first", PORTABLE_HASH),
+                }
+            }),
+        );
+        let existing = root.join(".agents/skills/existing");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("SKILL.md"), "local edit").unwrap();
+        let lock = preview(&root).unwrap();
+        let original_lock = fs::read(root.join(LOCK_FILE)).unwrap();
+        let mut fetches = 0;
+        let results = restore_with(
+            &root,
+            &lock.revision,
+            ["existing", "first", "mismatch", "second"]
+                .map(str::to_string)
+                .to_vec(),
+            |_| panic!("A direct download must not use Git"),
+            |reviewed_url| {
+                fetches += 1;
+                assert_eq!(reviewed_url.as_str(), url);
+                download::stage(&payload)
+            },
+        )
+        .unwrap();
+        assert_eq!(fetches, 1);
+        assert_eq!(
+            results[0].error.as_deref(),
+            Some("The destination already exists")
+        );
+        assert!(results[1].error.is_none(), "{:?}", results[1].error);
+        assert!(results[2]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("content does not match"));
+        assert!(results[3].error.is_none(), "{:?}", results[3].error);
+        assert_eq!(
+            fs::read_to_string(existing.join("SKILL.md")).unwrap(),
+            "local edit"
+        );
+        assert!(!root.join(".agents/skills/mismatch").exists());
+        assert!(!root.join(".agents/skills/unselected").exists());
+        assert_eq!(fs::read(root.join(LOCK_FILE)).unwrap(), original_lock);
+        let verified = verify_installed(&root, &lock.revision).unwrap();
+        assert_eq!(verified.get("first"), Some(&Verified));
+        assert_eq!(verified.get("second"), Some(&Verified));
+    }
+
+    #[test]
+    fn rejects_unreviewable_download_entries_before_fetching() {
+        let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let urls = [
+            ("insecure", "http://example.invalid/download", Unsupported),
+            ("provider", "notion://packs/example", Unsupported),
+            (
+                "query",
+                "https://example.invalid/download?token=fixture",
+                Invalid,
+            ),
+            ("user", "https://fixture@example.invalid/download", Invalid),
+        ];
+        let mut entries = serde_json::Map::new();
+        for (name, url, _) in urls {
+            entries.insert(
+                name.into(),
+                json!({
+                    "source": "fixture",
+                    "sourceType": "download",
+                    "sourceUrl": url,
+                    "skillPath": "SKILL.md",
+                    "computedHash": PORTABLE_HASH,
+                }),
+            );
+        }
+        write_lock(&root, json!({ "version": 2, "skills": entries }));
+        let lock = preview(&root).unwrap();
+        for (name, _, expected) in urls {
+            assert_eq!(
+                lock.skills.iter().find(|s| s.name == name).unwrap().status,
+                expected
+            );
+        }
+        assert_eq!(
+            lock.skills
+                .iter()
+                .find(|s| s.name == "query")
+                .unwrap()
+                .source,
+            "example.invalid"
+        );
+        let results = restore_with(
+            &root,
+            &lock.revision,
+            lock.skills.into_iter().map(|s| s.name).collect(),
+            |_| panic!("A direct download must not use Git"),
+            no_download,
+        )
+        .unwrap();
+        assert!(results.iter().all(|result| result.error.is_some()));
+        assert!(!root.join(".agents").exists());
     }
 
     #[test]
@@ -1136,9 +1375,13 @@ mod tests {
         assert_eq!(lock.skills[3].status, Invalid);
 
         let names = lock.skills.iter().map(|skill| skill.name.clone()).collect();
-        let results = restore_with(&root, &lock.revision, names, |_| {
-            panic!("An installed package does not require a Git checkout")
-        })
+        let results = restore_with(
+            &root,
+            &lock.revision,
+            names,
+            |_| panic!("An installed package does not require a Git checkout"),
+            no_download,
+        )
         .unwrap();
         assert!(results[0].error.is_none(), "{:?}", results[0].error);
         for (result, message) in results[1..].iter().zip([
@@ -1418,9 +1661,13 @@ mod tests {
             assert_eq!(skill.status, status);
         }
         let names = lock.skills.iter().map(|skill| skill.name.clone()).collect();
-        let results = restore_with(&root, &lock.revision, names, |_| {
-            panic!("a rejected HTTPS Git source must not fetch")
-        })
+        let results = restore_with(
+            &root,
+            &lock.revision,
+            names,
+            |_| panic!("a rejected HTTPS Git source must not fetch"),
+            no_download,
+        )
         .unwrap();
         assert!(results.iter().all(|result| result.error.is_some()));
         assert!(!root.join(".agents").exists());
@@ -1495,12 +1742,18 @@ mod tests {
         #[cfg(windows)]
         let fetch_path = fetch_path.strip_prefix(r"\\?\").unwrap_or(fetch_path);
         let mut fetches = 0;
-        let results = restore_with(&project, &lock.revision, names, |remote| {
-            assert_eq!(remote.url, checkout_url);
-            assert_eq!(remote.reference, commit);
-            fetches += 1;
-            installer::checkout_skill_lock_ref(fetch_path, &remote.reference)
-        })
+        let results = restore_with(
+            &project,
+            &lock.revision,
+            names,
+            |remote| {
+                assert_eq!(remote.url, checkout_url);
+                assert_eq!(remote.reference, commit);
+                fetches += 1;
+                installer::checkout_skill_lock_ref(fetch_path, &remote.reference)
+            },
+            no_download,
+        )
         .unwrap();
         assert_eq!(fetches, 1);
         assert!(results[0].error.is_none(), "{:?}", results[0].error);

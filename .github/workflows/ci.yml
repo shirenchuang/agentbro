@@ -130,7 +130,7 @@ jobs:
       - name: Test Agent and Skill metadata writes
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::registry::tests'
       - name: Test verification and restore of locked project Skills
-        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::project_lock::tests'
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::project_lock::'
       - name: Test offline Skill Pack ZIP migration
         run: |
           & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::pack_archive::tests
