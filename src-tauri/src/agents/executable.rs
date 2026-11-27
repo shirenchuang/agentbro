@@ -78,8 +78,7 @@ pub fn find_codex_cli_binary() -> Option<PathBuf> {
 
     #[cfg(target_os = "macos")]
     {
-        find_binary_generic("codex")
-            .or_else(|| find_chatgpt_bundled_codex(macos_application_dirs()).map(|(_, cli)| cli))
+        find_binary_generic("codex").or_else(|| macos_bundled_codex().next().map(|(_, cli)| cli))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -91,9 +90,7 @@ pub fn find_codex_cli_binary() -> Option<PathBuf> {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn is_desktop_bundled_codex_cli(binary: &Path) -> bool {
     #[cfg(target_os = "macos")]
-    let candidates = macos_application_dirs()
-        .filter_map(chatgpt_bundled_codex)
-        .map(|(_, cli)| cli);
+    let candidates = macos_bundled_codex().map(|(_, cli)| cli);
     #[cfg(target_os = "windows")]
     let candidates = windows_codex_bundled_cli_candidates();
 
@@ -120,11 +117,17 @@ fn matches_bundled_codex_cli(binary: &Path, candidates: impl IntoIterator<Item =
 
 #[cfg(target_os = "macos")]
 pub fn codex_desktop_app_candidates() -> Vec<PathBuf> {
-    find_chatgpt_bundled_codex(macos_application_dirs())
+    let mut candidates: Vec<_> = standard_chatgpt_bundled_codex()
+        .take(1)
         .map(|(app, _)| app)
-        .into_iter()
         .chain(macos_application_dirs().map(|dir| dir.join("Codex.app")))
-        .collect()
+        .collect();
+    for app in registered_codex_apps() {
+        if !candidates.contains(&app) {
+            candidates.push(app);
+        }
+    }
+    candidates
 }
 
 #[cfg(target_os = "macos")]
@@ -137,17 +140,46 @@ fn macos_application_dirs() -> impl Iterator<Item = PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn find_chatgpt_bundled_codex(
-    application_dirs: impl IntoIterator<Item = PathBuf>,
-) -> Option<(PathBuf, PathBuf)> {
-    application_dirs.into_iter().find_map(chatgpt_bundled_codex)
+fn standard_chatgpt_bundled_codex() -> impl Iterator<Item = (PathBuf, PathBuf)> {
+    macos_application_dirs()
+        .map(|dir| dir.join("ChatGPT.app"))
+        .filter_map(chatgpt_bundled_codex)
 }
 
 #[cfg(target_os = "macos")]
-fn chatgpt_bundled_codex(dir: PathBuf) -> Option<(PathBuf, PathBuf)> {
+fn registered_codex_apps() -> Vec<PathBuf> {
+    crate::platform::macos_applications::registered_app_paths("com.openai.codex")
+}
+
+#[cfg(target_os = "macos")]
+fn macos_bundled_codex() -> impl Iterator<Item = (PathBuf, PathBuf)> {
+    standard_chatgpt_bundled_codex().chain(
+        std::iter::once_with(registered_codex_apps)
+            .flatten()
+            .filter_map(chatgpt_bundled_codex)
+            .filter(|(_, cli)| is_openai_signed_codex(cli)),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn is_openai_signed_codex(cli: &Path) -> bool {
+    // Launch Services can register an app from an untrusted location before it is opened.
+    std::process::Command::new("/usr/bin/codesign")
+        .args([
+            "--verify",
+            "--strict",
+            "-R",
+            r#"=anchor apple generic and identifier "codex" and certificate leaf[subject.OU] = "2DC432GLL2""#,
+        ])
+        .arg(cli)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+#[cfg(target_os = "macos")]
+fn chatgpt_bundled_codex(app: PathBuf) -> Option<(PathBuf, PathBuf)> {
     use std::os::unix::fs::PermissionsExt;
 
-    let app = dir.join("ChatGPT.app");
     let cli = app.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
     let metadata = cli.metadata().ok()?;
     (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some((app, cli))
@@ -983,30 +1015,34 @@ exit 0
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn finds_executable_codex_inside_chatgpt_app() {
+    fn finds_executable_codex_inside_relocated_chatgpt_app() {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
         let temp = std::env::temp_dir().join(format!("agentbro-chatgpt-{}", uuid::Uuid::new_v4()));
-        let system_apps = temp.join("Applications");
-        let user_apps = temp.join("home/Applications");
-        let app = user_apps.join("ChatGPT.app");
+        let empty = temp.join("Applications/ChatGPT.app");
+        let app = temp.join("Custom Apps/ChatGPT Renamed.app");
         let cli = app.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
-        fs::create_dir_all(system_apps.join("ChatGPT.app")).unwrap();
+        fs::create_dir_all(&empty).unwrap();
         fs::create_dir_all(cli.parent().unwrap()).unwrap();
         fs::write(&cli, "").unwrap();
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o644)).unwrap();
-        let app_dirs = [system_apps, user_apps];
-        let non_executable = super::find_chatgpt_bundled_codex(app_dirs.clone());
+        let apps = [empty, app.clone()];
+        let non_executable = apps
+            .clone()
+            .into_iter()
+            .find_map(super::chatgpt_bundled_codex);
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
-        let executable = super::find_chatgpt_bundled_codex(app_dirs.clone());
+        let executable = apps
+            .clone()
+            .into_iter()
+            .find_map(super::chatgpt_bundled_codex);
         let standalone = temp.join("codex");
         fs::write(&standalone, "").unwrap();
         let alias = temp.join("desktop alias");
         std::os::unix::fs::symlink(&cli, &alias).unwrap();
         let candidates = || {
-            app_dirs
-                .clone()
+            apps.clone()
                 .into_iter()
                 .filter_map(super::chatgpt_bundled_codex)
                 .map(|(_, cli)| cli)
@@ -1018,6 +1054,14 @@ exit 0
 
         assert_eq!(non_executable, None);
         assert_eq!(executable, Some((app, cli)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rejects_an_executable_without_the_openai_signature() {
+        assert!(!super::is_openai_signed_codex(std::path::Path::new(
+            "/usr/bin/true"
+        )));
     }
 
     #[cfg(target_os = "windows")]

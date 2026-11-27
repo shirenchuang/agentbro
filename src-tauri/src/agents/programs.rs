@@ -550,6 +550,13 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         AgentProgramKind::Cli => None,
         AgentProgramKind::App => installed_app_path(&id, &meta),
     };
+    if meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND)
+        && app_path
+            .as_deref()
+            .is_some_and(|path| !is_trashable_app_path(Path::new(path)))
+    {
+        meta.uninstall_command = None;
+    }
     let display_app_path = if id == "antigravity" {
         app_path.clone()
     } else {
@@ -1235,13 +1242,7 @@ async fn trash_agent_app(
 ) -> Result<&'static str, String> {
     let app_path = installed_app_path(agent_id, meta)
         .ok_or_else(|| format!("Application is not installed for {agent_id}"))?;
-    let path = Path::new(&app_path);
-    let system_apps = Path::new("/Applications");
-    let user_apps = dirs::home_dir().map(|home| home.join("Applications"));
-    let safe_parent = path.parent().is_some_and(|parent| {
-        parent == system_apps || user_apps.as_deref().is_some_and(|apps| parent == apps)
-    });
-    if path.extension().and_then(|value| value.to_str()) != Some("app") || !safe_parent {
+    if !is_trashable_app_path(Path::new(&app_path)) {
         return Err(format!(
             "Refusing to trash unexpected application path: {app_path}"
         ));
@@ -1278,6 +1279,14 @@ async fn trash_agent_app(
             error
         })
     }
+}
+
+fn is_trashable_app_path(path: &Path) -> bool {
+    let user_apps = dirs::home_dir().map(|home| home.join("Applications"));
+    path.extension() == Some(OsStr::new("app"))
+        && path.parent().is_some_and(|parent| {
+            parent == Path::new("/Applications") || user_apps.as_deref() == Some(parent)
+        })
 }
 
 fn emit_output(
@@ -1617,6 +1626,13 @@ fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> 
                 candidate.exists() && app_path_matches_agent(agent_id, candidate)
             }
         });
+    #[cfg(target_os = "macos")]
+    let existing = existing.or_else(|| {
+        macos_agent_bundle_ids(agent_id)
+            .iter()
+            .flat_map(|id| crate::platform::macos_applications::registered_app_paths(id))
+            .find_map(|path| path.into_os_string().into_string().ok())
+    });
     #[cfg(target_os = "windows")]
     let existing = existing.or_else(|| {
         windows_app_paths::find_registered(&windows_registration_names(agent_id, meta), |path| {
@@ -1624,6 +1640,26 @@ fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> 
         })
     });
     existing
+}
+
+#[cfg(target_os = "macos")]
+fn macos_agent_bundle_ids(agent_id: &str) -> &[&str] {
+    match agent_id {
+        super::gemini_desktop::ID => &[super::gemini_desktop::BUNDLE_ID],
+        "cursor" => &["com.todesktop.230313mzl4w4u92"],
+        "qoder" => &["com.qoder.ide"],
+        "qoder-desktop" => &["com.qoder.app"],
+        "codebuddy" => &["com.tencent.codebuddy"],
+        "codebuddycn" | "codybuddycn" => &["com.tencent.codebuddy.cn"],
+        "qwenwork-cn" => &["cn.qwenwork.desktop.mac"],
+        "deepseek-harness" => &["com.deepseek.dsh"],
+        "stepfun" => &["com.stepfun.app"],
+        "droid" | "factory-droid" => &["com.factory.app"],
+        "workbuddy" => &["com.tencent.workbuddy.mac", "com.workbuddy.workbuddy"],
+        "workbuddy-ai" => &["com.workbuddy.workbuddy-ai"],
+        "zcode" => &["dev.zcode.app"],
+        _ => &[],
+    }
 }
 
 fn app_path_matches_agent(agent_id: &str, path: &Path) -> bool {
