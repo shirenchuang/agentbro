@@ -1270,7 +1270,7 @@
       "programOperationInProgress": "Another Agent package operation is running. Wait for it to finish, then try again.",
       "programResultUnverified": "The command completed. AgentBro could not verify the installation or version of {{agent}}.",
       "programStillUndetected": "The command completed. AgentBro still cannot detect {{agent}}.",
-      "geminiSharedHook": "Gemini coding mode shares this Hook with Antigravity.",
+      "geminiSharedHook": "Gemini coding mode and Antigravity share this Hook. Removing it stops monitoring both.",
       "programVersionUnchanged": "The update command completed. {{agent}} is still at {{version}}.",
       "nativeCheckAndUpdate": "Check and update",
       "nativeUpdateChecked": "Update check complete. {{agent}} is at {{version}}.",

@@ -6274,7 +6274,7 @@ pub fn run() {
                         continue;
                     }
                     let is_claude = name == "claude-code";
-                    if !is_claude && !enabled_intent.iter().any(|a| a == name) {
+                    if !is_claude && !config::hook_intent_enabled(&enabled_intent, name) {
                         continue;
                     }
                     if let Err(skip_reason) = ensure_installable(adapter.as_ref()) {
@@ -6283,6 +6283,14 @@ pub fn run() {
                             adapter.display_name(),
                             skip_reason
                         );
+                        continue;
+                    }
+                    if !is_claude
+                        && !config::hook_intent_enabled(
+                            &startup_config_store.get().enabled_agents,
+                            name,
+                        )
+                    {
                         continue;
                     }
                     if let Err(e) = adapter.install_hooks() {

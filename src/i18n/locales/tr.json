@@ -1119,7 +1119,7 @@
       "programOperationInProgress": "Başka bir Agent paket işlemi devam ediyor. Tamamlandıktan sonra yeniden deneyin.",
       "programResultUnverified": "Komut tamamlandı. AgentBro, {{agent}} kurulumunu veya sürümünü doğrulayamadı.",
       "programStillUndetected": "Komut tamamlandı. AgentBro hâlâ {{agent}} aracını algılayamıyor.",
-      "geminiSharedHook": "Gemini kodlama modu bu Hook'u Antigravity ile paylaşır.",
+      "geminiSharedHook": "Gemini kodlama modu ve Antigravity bu Hook'u paylaşır. Kaldırıldığında her ikisinin oturumları izlenmez.",
       "programVersionUnchanged": "Güncelleme komutu tamamlandı. {{agent}} hâlâ {{version}} sürümünde.",
       "nativeCheckAndUpdate": "Denetle ve güncelle",
       "nativeUpdateChecked": "Güncelleme denetimi tamamlandı. {{agent}} şu anda {{version}} sürümünde.",

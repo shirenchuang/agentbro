@@ -3932,6 +3932,13 @@
   margin-top: 5px;
 }
 
+.hook-tool-row__description {
+  margin-top: 5px;
+  color: var(--settings-text-tertiary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .usage-provider-row {
   display: flex;
   align-items: center;

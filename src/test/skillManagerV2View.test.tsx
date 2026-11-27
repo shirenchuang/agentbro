@@ -7535,6 +7535,40 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('button', { name: '清理残留' })).not.toBeInTheDocument()
   })
 
+  it.each([
+    ['gemini-desktop', 'Gemini Desktop'],
+    ['antigravity', 'Antigravity'],
+  ])('shows the shared Hook removal scope for %s', async (id, name) => {
+    const program = makeProgram({
+      id, displayName: name, kind: 'app', status: 'installed', hooksInstalled: true,
+      binaryPath: null, uninstallCommand: null,
+    })
+    useSkillStoreV2.setState({
+      selectedAgentId: id,
+      selectedAgentDetail: { ...agentDetail, id, displayName: name, skills: [] },
+      agents: [makeSidebarAgent(id, name)],
+      unmanaged: [],
+    })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([program])
+    vi.spyOn(agentApi, 'list').mockResolvedValue([program])
+    vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([{
+      toolId: id, name: id, displayName: name, installed: true, status: 'Available',
+    }])
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const uninstall = vi.spyOn(tauriApi, 'uninstallAgentHook')
+    const description = 'Gemini 编码模式与 Antigravity 共用这组 Hook。卸载后会停止监测两边的会话。'
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    expect(await screen.findByText(description)).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Hook' }))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining(description))
+    expect(uninstall).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: '清理残留' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(description)
+  })
+
   it('does not read the local Hook settings from Agent Management on an SSH host', async () => {
     const localStatus = vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([{
       toolId: 'claude-code',
