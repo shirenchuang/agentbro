@@ -129,6 +129,8 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE --exact hooks::session_store::tests::pushed_and_polled_session_snapshots_share_revisions_across_store_clones'
       - name: Test Agent and Skill metadata writes
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::registry::tests'
+      - name: Test Skill Manager recovery snapshots
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::tests::snapshot_'
       - name: Test verification and restore of locked project Skills
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::project_lock::'
       - name: Test offline Skill Pack ZIP migration

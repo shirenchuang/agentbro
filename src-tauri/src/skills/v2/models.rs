@@ -837,6 +837,12 @@ pub struct Snapshot {
     pub targets: Vec<serde_json::Value>,
     pub claims: Vec<serde_json::Value>,
     pub packs: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub pack_members: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub pack_agent_syncs: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub settings: Option<SkillManagerSettings>,
     pub projects: Vec<serde_json::Value>,
     pub diagnosis_summary: serde_json::Value,
 }

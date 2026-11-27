@@ -7179,6 +7179,117 @@ fn snapshot_written_and_read() {
     assert_eq!(snap.schema_version, SCHEMA_VERSION);
     assert_eq!(snap.skills.len(), 1);
     assert_eq!(snap.projects.len(), 1);
+
+    let mut previous = serde_json::to_value(snap).unwrap();
+    for key in ["packMembers", "packAgentSyncs", "settings"] {
+        previous.as_object_mut().unwrap().remove(key);
+    }
+    let previous: Snapshot = serde_json::from_value(previous).unwrap();
+    assert_eq!(previous.skills.len(), 1);
+    assert!(previous.pack_members.is_empty());
+    assert!(previous.pack_agent_syncs.is_empty());
+    assert!(previous.settings.is_none());
+}
+
+#[test]
+fn snapshot_records_ordered_pack_members_and_committed_agent_syncs() {
+    use crate::skills::v2::snapshot;
+    use serde_json::{json, Value};
+
+    let (_home, svc, _lock) = fresh_service("snapshot-pack-state");
+    add_center_test_skill(&svc, "one", "first");
+    add_center_test_skill(&svc, "two", "second");
+    svc.update_settings(
+        serde_json::from_value(json!({ "autoSyncSkillPacks": false, "startupScan": false }))
+            .unwrap(),
+    )
+    .unwrap();
+    let mut pack = UpsertPackInput {
+        id: "review-pack".into(),
+        name: "Review Pack".into(),
+        description: String::new(),
+        tags: vec!["review".into()],
+        skill_ids: vec!["second".into(), "first".into()],
+    };
+    svc.upsert_skill_pack(pack.clone()).unwrap();
+    let path = snapshot::snapshot_path(&svc).unwrap();
+    let read_file = || -> Value { serde_json::from_slice(&fs::read(&path).unwrap()).unwrap() };
+    let before_apply = read_file();
+    assert_eq!(
+        before_apply["packMembers"],
+        json!([
+            { "pack_id": "review-pack", "skill_id": "second", "sort_order": 0, "required": 1 },
+            { "pack_id": "review-pack", "skill_id": "first", "sort_order": 1, "required": 1 }
+        ])
+    );
+    assert_eq!(before_apply["settings"]["autoSyncSkillPacks"], false);
+    assert_eq!(before_apply["settings"]["startupScan"], false);
+
+    let application = svc
+        .apply_skill_pack("review-pack", vec!["claude-code".into()], "copy".into())
+        .unwrap();
+    assert!(application.blockers.is_empty());
+    let after_apply = read_file();
+    let applied = &after_apply["packAgentSyncs"][0];
+    assert_eq!(applied["agent_id"], "claude-code");
+    assert_eq!(applied["pack_id"], "review-pack");
+    assert_eq!(applied["synced_revision"], 1);
+    assert_eq!(applied["status"], "synced");
+    let claims = after_apply["claims"].as_array().unwrap();
+    assert_eq!(claims.len(), 2);
+    assert!(claims.iter().all(|claim| claim["pack_id"] == "review-pack"));
+
+    pack.skill_ids.reverse();
+    svc.upsert_skill_pack(pack).unwrap();
+    let after_edit = read_file();
+    assert_eq!(after_edit["packMembers"][0]["skill_id"], "first");
+    assert_eq!(after_edit["packs"][0]["revision"], 2);
+    assert_eq!(after_edit["packAgentSyncs"][0]["status"], "pending");
+    assert_eq!(after_edit["packAgentSyncs"][0]["synced_revision"], 1);
+
+    let live = serde_json::to_value(snapshot::export(&svc).unwrap()).unwrap();
+    for key in ["packMembers", "packAgentSyncs", "settings", "claims"] {
+        assert_eq!(live[key], after_edit[key]);
+    }
+}
+
+#[test]
+fn snapshot_serializes_publication_while_database_updates_can_continue() {
+    use crate::skills::v2::snapshot;
+    use std::sync::{mpsc, TryLockError};
+
+    let (_home, svc, _lock) = fresh_service("snapshot-publication-order");
+    let project = svc.home.join("workspace/after-older-capture");
+    fs::create_dir_all(&project).unwrap();
+    let svc = &svc;
+    std::thread::scope(|scope| {
+        let (captured, on_capture) = mpsc::channel();
+        let (publish, on_publish) = mpsc::channel();
+        let older = scope.spawn(move || {
+            snapshot::export_to_file_with(svc, |path, bytes| {
+                let captured_snapshot: Snapshot = serde_json::from_slice(bytes).unwrap();
+                assert!(captured_snapshot.projects.is_empty());
+                captured.send(()).unwrap();
+                on_publish.recv_timeout(Duration::from_secs(5)).unwrap();
+                fs::write(path, bytes)
+            })
+            .unwrap()
+        });
+        on_capture.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(
+            svc.snapshot_write_lock.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+        svc.add_project(project.display().to_string()).unwrap();
+        let newer = scope.spawn(|| snapshot::export_to_file(svc).unwrap());
+        publish.send(()).unwrap();
+        assert_eq!(older.join().unwrap(), newer.join().unwrap());
+    });
+
+    let file = snapshot::snapshot_path(svc).unwrap();
+    let saved: Snapshot = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+    assert_eq!(saved.projects.len(), 1);
+    assert_eq!(saved.projects[0]["name"], "after-older-capture");
 }
 
 #[test]

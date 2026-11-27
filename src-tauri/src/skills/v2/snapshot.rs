@@ -8,14 +8,25 @@ use std::path::{Path, PathBuf};
 
 pub fn export(svc: &Service) -> Result<crate::skills::v2::models::Snapshot, String> {
     let center = svc.center_path()?.display().to_string();
-    svc.db().with_conn(|c| db::export_snapshot(c, &center))
+    svc.db().transaction(|tx| db::export_snapshot(tx, &center))
 }
 
 pub fn export_to_file(svc: &Service) -> Result<String, String> {
+    export_to_file_with(svc, write_snapshot)
+}
+
+pub(super) fn export_to_file_with(
+    svc: &Service,
+    write: impl FnOnce(&Path, &[u8]) -> io::Result<()>,
+) -> Result<String, String> {
+    let _publication = svc
+        .snapshot_write_lock
+        .lock()
+        .map_err(|error| format!("snapshot lock: {error}"))?;
     let snap = export(svc)?;
     let path = snapshot_path(svc)?;
     let json = serde_json::to_vec_pretty(&snap).map_err(|e| e.to_string())?;
-    write_snapshot(&path, &json).map_err(|e| format!("write snapshot: {e}"))?;
+    write(&path, &json).map_err(|e| format!("write snapshot: {e}"))?;
     Ok(path.display().to_string())
 }
 
