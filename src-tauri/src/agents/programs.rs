@@ -281,6 +281,16 @@ pub async fn agent_open_app(state: State<'_, AppState>, agent_id: String) -> Res
 pub(crate) fn open_agent_app(agent_id: &str) -> Result<(), String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     if let Some(path) = installed_app_path(agent_id, &meta) {
+        #[cfg(target_os = "windows")]
+        return windows_app_paths::launch_command(
+            Path::new(&path),
+            &windows_registration_names(agent_id, &meta),
+        )
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Open {path}: {error}"));
+
+        #[cfg(not(target_os = "windows"))]
         return open_target(&path);
     }
     if let Some(binary) = find_agent_binary(agent_id, &meta) {
