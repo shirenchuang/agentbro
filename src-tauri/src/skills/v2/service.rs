@@ -29,6 +29,7 @@ pub struct Service {
     pub db: Arc<Db>,
     pub home: PathBuf,
     center_import_lock: Mutex<()>,
+    pub(super) snapshot_write_lock: Mutex<()>,
 }
 
 struct PreparedCenterSkillImport {
@@ -96,6 +97,7 @@ impl Service {
             db,
             home,
             center_import_lock: Mutex::new(()),
+            snapshot_write_lock: Mutex::new(()),
         };
         service.recover_interrupted_pack_syncs()?;
         Ok(service)
@@ -5911,12 +5913,23 @@ impl Service {
         if !preview.blockers.is_empty() && preview.blocker_decisions.is_empty() {
             return Ok(preview);
         }
-        let result =
-            self.execute_distribute_skill(preview, ClaimOrigin::Pack(pack_id.to_string()))?;
-        if pack_id != DEFAULT_SKILL_PACK_ID && result.blockers.is_empty() {
-            self.mark_pack_agents_synced(pack_id, &result.target_agents, revision)?;
-            self.update_pack_rollup_status(pack_id, self.pack_revision(pack_id)?)?;
-        }
+        let result = self.execute_distribute_skill_internal(
+            preview,
+            ClaimOrigin::Pack(pack_id.to_string()),
+            false,
+        )?;
+        self.scan_all_agents_into_db()?;
+        let sync = if pack_id != DEFAULT_SKILL_PACK_ID && result.blockers.is_empty() {
+            self.mark_pack_agents_synced(pack_id, &result.target_agents, revision)
+                .and_then(|()| {
+                    self.update_pack_rollup_status(pack_id, self.pack_revision(pack_id)?)
+                        .map(|_| ())
+                })
+        } else {
+            Ok(())
+        };
+        self.refresh_snapshot_best_effort();
+        sync?;
         Ok(result)
     }
 
