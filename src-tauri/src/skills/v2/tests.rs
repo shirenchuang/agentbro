@@ -5571,6 +5571,23 @@ fn diagnosis_recommends_cleaning_managed_shared_agents_skill() {
     assert_eq!(issue.fix_kind, "auto");
     assert_eq!(issue.entity_id.as_deref(), Some("tgt-shared-dup"));
 
+    let edited = shared.join("local-notes.tmp");
+    fs::write(&edited, "local notes").unwrap();
+    assert!(
+        !crate::skills::v2::diagnosis::execute_fix(&svc, &issue.issue_type, "tgt-shared-dup")
+            .unwrap()
+    );
+    assert!(!crate::skills::v2::diagnosis::run(&svc)
+        .unwrap()
+        .iter()
+        .any(|issue| issue.issue_type == "agents_managed_duplicate"));
+    assert_eq!(fs::read_to_string(&edited).unwrap(), "local notes");
+    assert_eq!(
+        svc.get_skill_detail("shared-skill").unwrap().targets.len(),
+        1
+    );
+    fs::remove_file(edited).unwrap();
+
     let fixed = crate::skills::v2::diagnosis::execute_safe_fixes(&svc).unwrap();
     assert!(fixed >= 1);
     assert!(
@@ -5902,6 +5919,54 @@ fn migrates_legacy_packs_and_sources() {
 // ── Diagnosis ────────────────────────────────────────────────────
 
 #[test]
+fn diagnosis_keeps_a_target_reinstalled_after_the_missing_target_report() {
+    use crate::skills::v2::diagnosis;
+
+    let (_home, svc, _lock) = fresh_service("diag-reinstalled-copy");
+    let skill_id = "repair-skill";
+    add_center_test_skill(&svc, skill_id, skill_id);
+    let preview = svc
+        .preview_distribute_skill(
+            vec![skill_id.to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let detail = svc.get_skill_detail(skill_id).unwrap();
+    let target = &detail.targets[0];
+    assert_eq!(target.claims.len(), 1);
+    let path = Path::new(&target.target_path);
+    let file = path.join("SKILL.md");
+    fs::remove_dir_all(path).unwrap();
+    assert!(diagnosis::run(&svc)
+        .unwrap()
+        .iter()
+        .any(|issue| issue.issue_type == "target_missing"
+            && issue.entity_id.as_deref() == Some(&target.id)));
+
+    fs::create_dir(path).unwrap();
+    fs::write(&file, "---\nname: repair-skill\n---\nRestored locally").unwrap();
+    assert!(!diagnosis::execute_fix(&svc, "target_missing", &target.id).unwrap());
+    assert!(fs::read_to_string(&file)
+        .unwrap()
+        .contains("Restored locally"));
+    let retained = svc.get_skill_detail(skill_id).unwrap();
+    assert_eq!(retained.targets[0].claims[0].id, target.claims[0].id);
+
+    fs::remove_dir_all(path).unwrap();
+    assert!(diagnosis::execute_fix(&svc, "target_missing", &target.id).unwrap());
+    assert!(svc.get_skill_detail(skill_id).unwrap().targets.is_empty());
+    let snapshot_path = crate::skills::v2::snapshot::snapshot_path(&svc).unwrap();
+    let snapshot: Snapshot = serde_json::from_slice(&fs::read(snapshot_path).unwrap()).unwrap();
+    assert!(snapshot.targets.is_empty());
+    assert!(snapshot.claims.is_empty());
+    assert!(!diagnosis::execute_fix(&svc, "target_missing", &target.id).unwrap());
+}
+
+#[test]
+#[cfg(unix)]
 fn diagnosis_flags_broken_link_and_unmanaged() {
     let (_home, svc, _lock) = fresh_service("diag");
     let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("v1"));
@@ -5957,6 +6022,16 @@ fn diagnosis_flags_broken_link_and_unmanaged() {
         "found: {:?}",
         types
     );
+
+    let target = &svc.get_skill_detail("release-checklist").unwrap().targets[0];
+    fsutil::copy_dir_recursive(&src, &center).unwrap();
+    assert!(!crate::skills::v2::diagnosis::execute_fix(&svc, "broken_link", &target.id).unwrap());
+    let restored_link = Path::new(&target_path);
+    assert!(restored_link.is_symlink());
+    assert!(restored_link.join("SKILL.md").is_file());
+    let retained = svc.get_skill_detail("release-checklist").unwrap();
+    assert_eq!(retained.targets[0].claims[0].id, target.claims[0].id);
+    fs::remove_dir_all(&center).unwrap();
 
     // safe fixes clear broken link / orphan records
     let _fixed = crate::skills::v2::diagnosis::execute_safe_fixes(&svc).unwrap();

@@ -1644,7 +1644,7 @@ export const skillApiV2 = {
   previewFixIssue: (issueType: string, entityId: string) =>
     isTauriRuntime() ? invoke<{ issue: DiagnosisIssue | null; destructive: boolean }>('preview_fix_diagnosis_issue', { issueType, entityId }) : Promise.resolve({ issue: null, destructive: false }),
   executeFixIssue: (issueType: string, entityId: string) =>
-    isTauriRuntime() ? invoke<void>('execute_fix_diagnosis_issue', { issueType, entityId }) : Promise.resolve(),
+    isTauriRuntime() ? invoke<boolean>('execute_fix_diagnosis_issue', { issueType, entityId }) : Promise.resolve(false),
   executeSafeFixes: () => (isTauriRuntime() ? invoke<number>('execute_safe_fixes') : Promise.resolve(0)),
 
   exportSnapshot: () => (isTauriRuntime() ? invoke<string>('skill_manager_export_snapshot') : Promise.resolve('')),

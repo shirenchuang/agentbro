@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { DiagnosisIssue } from '../../services/skillApiV2'
@@ -37,6 +38,7 @@ type DiagnosisFilter = 'all' | 'auto' | 'confirm' | 'info'
 type IssueGroupId = 'unmanaged' | 'sync' | 'confirm' | 'library'
 
 export function DiagnosisPage() {
+  const { t } = useTranslation()
   const state = useSkillStoreV2()
   const [busy, setBusy] = useState(false)
   const [filter, setFilter] = useState<DiagnosisFilter>('all')
@@ -72,9 +74,9 @@ export function DiagnosisPage() {
     setBusy(true)
     setNotice(null)
     try {
-      await skillApiV2.executeFixIssue(issue.issueType, issue.entityId || '')
+      const fixed = await skillApiV2.executeFixIssue(issue.issueType, issue.entityId || '')
       await state.runDiagnosis()
-      setNotice('已处理 1 项问题。')
+      setNotice(fixed ? '已处理 1 项问题。' : t('skills.diagnosisRepairSkipped'))
     } catch (e) {
       state.setError(String(e))
     } finally {

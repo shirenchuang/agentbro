@@ -6,12 +6,14 @@
 use crate::agents::workbuddy::WorkBuddyEdition;
 use crate::skills::v2::agent_meta;
 use crate::skills::v2::db::now_iso;
-use crate::skills::v2::fsutil::{self, inspect_path, PathKind};
+use crate::skills::v2::fsutil;
 use crate::skills::v2::models::*;
 use crate::skills::v2::service::Service;
 use rusqlite::{params, types::ValueRef, OptionalExtension};
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 
 pub fn run(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
     let mut issues = Vec::new();
@@ -169,10 +171,10 @@ fn unmanaged_agent_skills(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> 
 }
 
 fn managed_shared_agent_skills(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
-    let rows: Vec<(String, String, String, String, String, String)> = svc.db().with_conn(|c| {
+    let rows: Vec<(String, String, String, String, String)> = svc.db().with_conn(|c| {
         let mut stmt = c
             .prepare(
-                "SELECT t.id, t.skill_id, t.target_path, t.actual_mode, t.source_hash, s.center_path
+                "SELECT t.id, t.skill_id, t.target_path, t.actual_mode, s.center_path
                  FROM skill_targets t
                  JOIN skills s ON s.id = t.skill_id
                  WHERE t.agent_id = 'agents'
@@ -187,7 +189,6 @@ fn managed_shared_agent_skills(svc: &Service) -> Result<Vec<DiagnosisIssue>, Str
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
-                    r.get::<_, String>(5)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -198,25 +199,14 @@ fn managed_shared_agent_skills(svc: &Service) -> Result<Vec<DiagnosisIssue>, Str
         Ok(v)
     })?;
 
-    let shared_dir = svc.home.join(".agents").join("skills");
     let mut out = Vec::new();
-    for (id, skill_id, target_path, mode, source_hash, center_path) in rows {
-        let target = Path::new(&target_path);
-        if target
-            .parent()
-            .map(|parent| fsutil::normalized_path(parent) != fsutil::normalized_path(&shared_dir))
-            .unwrap_or(true)
-        {
-            continue;
-        }
-        if fsutil::normalized_path(target) == fsutil::normalized_path(Path::new(&center_path)) {
-            continue;
-        }
-        match inspect_path(target) {
-            PathKind::Missing | PathKind::BrokenSymlink => continue,
-            _ => {}
-        }
-        if mode == "copy" && target.is_dir() && fsutil::hash_dir(target) != source_hash {
+    for (id, skill_id, target_path, mode, center_path) in rows {
+        if !is_shared_duplicate(
+            &svc.home,
+            Path::new(&target_path),
+            &mode,
+            Path::new(&center_path),
+        ) {
             continue;
         }
         out.push(auto(
@@ -235,10 +225,79 @@ fn managed_shared_agent_skills(svc: &Service) -> Result<Vec<DiagnosisIssue>, Str
     Ok(out)
 }
 
+fn is_shared_duplicate(home: &Path, target: &Path, mode: &str, center: &Path) -> bool {
+    let shared = home.join(".agents");
+    let skills = shared.join("skills");
+    mode == "copy"
+        && !shared.is_symlink()
+        && !skills.is_symlink()
+        && target
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .is_some_and(|parent| skills.canonicalize().ok().as_ref() == Some(&parent))
+        && fsutil::normalized_path(target) != fsutil::normalized_path(center)
+        && fsutil::is_skill_dir(center)
+        && identical_skill_entries(target, center).unwrap_or(false)
+}
+
+fn identical_skill_entries(left: &Path, right: &Path) -> io::Result<bool> {
+    let left_info = left.symlink_metadata()?;
+    let right_info = right.symlink_metadata()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if (left_info.file_attributes() | right_info.file_attributes())
+            & FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return Ok(false);
+        }
+    }
+    if left_info.permissions() != right_info.permissions() {
+        return Ok(false);
+    }
+    if left_info.is_dir() && right_info.is_dir() {
+        let mut names = fs::read_dir(right)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<io::Result<BTreeSet<_>>>()?;
+        for entry in fs::read_dir(left)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if !names.remove(&name) || !identical_skill_entries(&entry.path(), &right.join(name))? {
+                return Ok(false);
+            }
+        }
+        return Ok(names.is_empty());
+    }
+    if !left_info.is_file() || !right_info.is_file() || left_info.len() != right_info.len() {
+        return Ok(false);
+    }
+    let checksum = |path: &Path| -> io::Result<_> {
+        let mut hash = Sha256::new();
+        io::copy(&mut fs::File::open(path)?, &mut hash)?;
+        Ok(hash.finalize())
+    };
+    Ok(checksum(left)? == checksum(right)?)
+}
+
+fn missing_or_broken(path: &Path) -> io::Result<Option<&'static str>> {
+    match path.symlink_metadata() {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Some("target_missing")),
+        Err(error) => Err(error),
+        Ok(metadata) if metadata.is_symlink() => match path.metadata() {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Some("broken_link")),
+            Err(error) => Err(error),
+            Ok(_) => Ok(None),
+        },
+        Ok(_) => Ok(None),
+    }
+}
+
 fn broken_or_missing_targets(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
-    let rows: Vec<(String, String, String, String)> = svc.db().with_conn(|c| {
+    let rows: Vec<(String, String, String)> = svc.db().with_conn(|c| {
         let mut stmt = c
-            .prepare("SELECT id, agent_id, target_path, actual_mode FROM skill_targets")
+            .prepare("SELECT id, agent_id, target_path FROM skill_targets")
             .map_err(|e| e.to_string())?;
         let rs = stmt
             .query_map([], |r| {
@@ -246,7 +305,6 @@ fn broken_or_missing_targets(svc: &Service) -> Result<Vec<DiagnosisIssue>, Strin
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -257,9 +315,9 @@ fn broken_or_missing_targets(svc: &Service) -> Result<Vec<DiagnosisIssue>, Strin
         Ok(v)
     })?;
     let mut out = Vec::new();
-    for (id, agent_id, target_path, mode) in rows {
-        match inspect_path(Path::new(&target_path)) {
-            PathKind::Missing => out.push(auto(
+    for (id, agent_id, target_path) in rows {
+        match missing_or_broken(Path::new(&target_path)) {
+            Ok(Some("target_missing")) => out.push(auto(
                 &format!("target-missing-{id}"),
                 "target_missing",
                 "Stale target record",
@@ -272,7 +330,7 @@ fn broken_or_missing_targets(svc: &Service) -> Result<Vec<DiagnosisIssue>, Strin
                 Some(id.clone()),
                 "Remove record",
             )),
-            PathKind::BrokenSymlink => out.push(auto(
+            Ok(Some("broken_link")) => out.push(auto(
                 &format!("target-broken-{id}"),
                 "broken_link",
                 "Broken symlink",
@@ -285,9 +343,7 @@ fn broken_or_missing_targets(svc: &Service) -> Result<Vec<DiagnosisIssue>, Strin
                 Some(id.clone()),
                 "Clean broken link",
             )),
-            _ => {
-                let _ = mode;
-            }
+            _ => {}
         }
     }
     Ok(out)
@@ -546,66 +602,204 @@ fn skill_hash(c: &rusqlite::Connection, skill_id: &str) -> Result<String, String
 
 // ── Fix execution ─────────────────────────────────────────────────
 
-pub fn execute_fix(svc: &Service, issue_type: &str, entity_id: &str) -> Result<(), String> {
+pub fn execute_fix(svc: &Service, issue_type: &str, entity_id: &str) -> Result<bool, String> {
+    let fixed = apply_fix(svc, issue_type, entity_id)?;
+    if fixed && issue_type != "snapshot_stale" {
+        svc.refresh_snapshot_best_effort();
+    }
+    Ok(fixed)
+}
+
+fn apply_fix(svc: &Service, issue_type: &str, entity_id: &str) -> Result<bool, String> {
     match issue_type {
-        "broken_link" | "target_missing" => {
-            let target_path: Option<String> = svc.db().with_conn(|c| {
-                c.query_row(
-                    "SELECT target_path FROM skill_targets WHERE id = ?1",
-                    params![entity_id],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())
-            })?;
-            if let Some(path) = target_path {
-                fsutil::remove_path(Path::new(&path))?;
-            }
-            svc.db().with_conn(|c| {
-                c.execute(
-                    "DELETE FROM skill_targets WHERE id = ?1",
-                    params![entity_id],
-                )
-                .map_err(|e| e.to_string())
-            })?;
-            Ok(())
+        "broken_link" | "target_missing" | "agents_managed_duplicate" => {
+            repair_target(svc, issue_type, entity_id)
         }
-        "orphan_claim" => {
-            svc.db().with_conn(|c| {
-                c.execute(
-                    "DELETE FROM skill_target_claims WHERE id = ?1",
-                    params![entity_id],
-                )
-                .map_err(|e| e.to_string())
-            })?;
-            Ok(())
-        }
-        "agents_managed_duplicate" => {
-            svc.delete_skill_target_distribution(entity_id)?;
-            Ok(())
-        }
+        "orphan_claim" => svc.db().with_conn(|c| {
+            c.execute(
+                "DELETE FROM skill_target_claims WHERE id = ?1 AND pack_id IS NOT NULL
+                 AND NOT EXISTS (
+                     SELECT 1 FROM skill_targets WHERE id = skill_target_claims.target_id
+                 )",
+                params![entity_id],
+            )
+            .map(|rows| rows != 0)
+            .map_err(|error| error.to_string())
+        }),
         "snapshot_stale" => {
             crate::skills::v2::snapshot::export_to_file(svc)?;
-            Ok(())
+            Ok(true)
         }
         _ => Err(format!("Issue type '{}' cannot be auto-fixed.", issue_type)),
     }
 }
 
-pub fn execute_safe_fixes(svc: &Service) -> Result<usize, String> {
-    let issues = run(svc)?;
-    let mut count = 0;
-    for iss in issues {
-        if iss.fix_kind == "auto" {
-            if let Some(eid) = iss.entity_id {
-                execute_fix(svc, &iss.issue_type, &eid)?;
-                count += 1;
-            } else if iss.issue_type == "snapshot_stale" {
-                execute_fix(svc, "snapshot_stale", "")?;
-                count += 1;
+fn repair_target(svc: &Service, issue_type: &str, id: &str) -> Result<bool, String> {
+    let mut staged = None;
+    let result = svc.db().transaction(|tx| {
+        let target = tx
+            .query_row(
+                "SELECT t.target_path, t.agent_id, t.actual_mode, s.center_path
+                 FROM skill_targets t JOIN skills s ON s.id = t.skill_id WHERE t.id = ?1",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let Some((path, agent, mode, center)) = target else {
+            return Ok(false);
+        };
+        let still_matches = |path: &Path| {
+            if issue_type == "agents_managed_duplicate" {
+                return Ok(agent == "agents"
+                    && is_shared_duplicate(&svc.home, path, &mode, Path::new(&center)));
+            }
+            missing_or_broken(path)
+                .map(|defect| defect == Some(issue_type))
+                .map_err(|error| format!("Inspect Skill target '{}': {error}", path.display()))
+        };
+        if !still_matches(Path::new(&path))? {
+            return Ok(false);
+        }
+        if issue_type != "target_missing" {
+            staged = stage_checked_target(Path::new(&path), still_matches)?;
+            if staged.is_none() {
+                return Ok(false);
+            }
+        }
+        tx.execute(
+            "DELETE FROM unmanaged_items WHERE agent_id = ?1 AND path = ?2",
+            params![agent, path],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.execute("DELETE FROM skill_targets WHERE id = ?1", params![id])
+            .map_err(|error| error.to_string())?;
+        Ok(true)
+    });
+    if let Some((path, staging_path)) = staged {
+        if result.is_err() {
+            restore_staged_target(&path, &staging_path)?;
+        } else {
+            let removed = if issue_type == "broken_link" {
+                remove_symlink(&staging_path)
+            } else {
+                fs::remove_dir_all(&staging_path)
+            };
+            if let Err(error) = removed {
+                log::warn!(
+                    "Skill diagnosis cleaned the target record but could not remove '{}': {error}",
+                    staging_path.display()
+                );
             }
         }
     }
+    result
+}
+
+fn stage_checked_target(
+    path: &Path,
+    still_matches: impl Fn(&Path) -> Result<bool, String>,
+) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    use crate::data_dir::rename_path_if_absent;
+
+    // Keep relative links in the same parent and validate the object that was moved.
+    let staged = path.with_file_name(format!(".agentbro-diagnosis-{}", uuid::Uuid::new_v4()));
+    match rename_path_if_absent(path, &staged) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Stage Skill target '{}': {error}", path.display())),
+    }
+    let matched = still_matches(&staged).map(|valid| {
+        valid
+            && path
+                .symlink_metadata()
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+    });
+    if matches!(matched, Ok(true)) {
+        return Ok(Some((path.to_path_buf(), staged)));
+    }
+    restore_staged_target(path, &staged)?;
+    matched.map(|_| None)
+}
+
+fn restore_staged_target(path: &Path, staged: &Path) -> Result<(), String> {
+    crate::data_dir::rename_path_if_absent(staged, path).map_err(|error| {
+        format!(
+            "Could not restore Skill target '{}' from '{}': {error}",
+            path.display(),
+            staged.display()
+        )
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn diagnosis_restores_a_target_that_changed_before_it_was_staged() {
+    let dir = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+    let target = dir.path().join("recently-restored");
+    fs::create_dir(&target).unwrap();
+    fs::write(target.join("SKILL.md"), "Preserve this Skill").unwrap();
+
+    let result = stage_checked_target(&target, |staged| {
+        assert!(!target.exists());
+        Ok(!staged.join("SKILL.md").is_file())
+    })
+    .unwrap();
+
+    assert!(result.is_none());
+    assert_eq!(
+        fs::read_to_string(target.join("SKILL.md")).unwrap(),
+        "Preserve this Skill"
+    );
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+fn remove_symlink(path: &Path) -> io::Result<()> {
+    let metadata = path.symlink_metadata()?;
+    if !metadata.is_symlink() {
+        return Err(io::Error::other(
+            "The staged target is no longer a symbolic link",
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if metadata.file_type().is_symlink_dir() {
+            return fs::remove_dir(path);
+        }
+    }
+    fs::remove_file(path)
+}
+
+pub fn execute_safe_fixes(svc: &Service) -> Result<usize, String> {
+    let issues = run(svc)?;
+    let mut count = 0;
+    let mut snapshot_needed = false;
+    let result = issues
+        .into_iter()
+        .filter(|issue| issue.fix_kind == "auto")
+        .try_for_each(|issue| {
+            if apply_fix(
+                svc,
+                &issue.issue_type,
+                issue.entity_id.as_deref().unwrap_or_default(),
+            )? {
+                count += 1;
+                snapshot_needed = issue.issue_type != "snapshot_stale";
+            }
+            Ok::<(), String>(())
+        });
+    if snapshot_needed {
+        svc.refresh_snapshot_best_effort();
+    }
+    result?;
     Ok(count)
 }
 

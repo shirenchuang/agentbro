@@ -10594,6 +10594,34 @@ describe('Diagnosis workbench', () => {
     })
   })
 
+  it('refreshes a stale target issue and reports that the repair was skipped', async () => {
+    const issue = {
+      id: 'target-missing-review',
+      issueType: 'target_missing',
+      severity: 'warning' as const,
+      fixKind: 'auto' as const,
+      title: 'Stale target record',
+      detail: "Codex target '/home/test/.codex/skills/review' no longer exists on disk.",
+      entityType: 'target' as const,
+      entityId: 'review',
+      actions: [{ id: 'fix:target_missing', label: 'Remove record', destructive: false }],
+    }
+    vi.spyOn(skillApiV2, 'listDiagnosisIssues').mockResolvedValue([issue])
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const executeFix = vi.spyOn(skillApiV2, 'executeFixIssue').mockResolvedValue(false)
+    const runDiagnosis = vi.spyOn(skillApiV2, 'runDiagnosis').mockResolvedValue([])
+
+    const { DiagnosisPage } = await import('../components/skills-v2/DiagnosisPage')
+    render(<DiagnosisPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '移除失效记录' }))
+
+    expect(await screen.findByText(i18n.t('skills.diagnosisRepairSkipped'))).toBeInTheDocument()
+    expect(executeFix).toHaveBeenCalledWith('target_missing', 'review')
+    expect(runDiagnosis).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: '移除失效记录' })).not.toBeInTheDocument()
+    expect(screen.queryByText('已处理 1 项问题。')).not.toBeInTheDocument()
+  })
+
   it('summarizes diagnosis status with plain-language issue groups and safe-fix feedback', async () => {
     const initialIssues = [
       {
