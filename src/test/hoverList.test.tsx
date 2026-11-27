@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { AnimatePresence, motion } from 'framer-motion'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HoverList } from '../components/notch/HoverList'
 import { useConfigStore } from '../stores/configStore'
@@ -710,6 +711,73 @@ describe('HoverList interactions', () => {
     fireEvent.keyDown(window, { key: 'Enter' })
 
     expect(onJumpToTerminal).toHaveBeenCalledWith('s2')
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('keeps the keyboard selection when a live update reorders the rows', () => {
+    const onSessionClick = vi.fn()
+    const onJumpToTerminal = vi.fn()
+    const working = session({ id: 'working', sessionTitle: 'Working session' })
+    const idle = session({ id: 'idle', phase: 'idle', sessionTitle: 'Other session' })
+    const list = (sessions: SessionState[]) => (
+      <HoverList sessions={sessions} onSessionClick={onSessionClick} onJumpToTerminal={onJumpToTerminal} />
+    )
+    const { rerender } = render(list([working, idle]))
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    rerender(list([working, { ...idle, phase: 'waiting_approval' }]))
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    expect(onJumpToTerminal).toHaveBeenCalledExactlyOnceWith('working')
+    expect(screen.getByRole('group', { name: /Working session/ })).toHaveClass('hover-list__card--selected')
+    expect(screen.getByRole('group', { name: /Other session/ })).not.toHaveClass('hover-list__card--selected')
+
+    fireEvent.keyDown(window, { key: 'ArrowUp' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(onJumpToTerminal).toHaveBeenNthCalledWith(2, 'idle')
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('leaves Enter unhandled when the selected session moves outside the visible limit', () => {
+    useConfigStore.setState({ maxVisibleSessions: 1 })
+    const onJumpToTerminal = vi.fn()
+    const onSessionClick = vi.fn()
+    const working = session({ id: 'working', sessionTitle: 'Working session' })
+    const idle = session({ id: 'idle', phase: 'idle', sessionTitle: 'Other session' })
+    const list = (sessions: SessionState[]) => (
+      <HoverList sessions={sessions} onSessionClick={onSessionClick} onJumpToTerminal={onJumpToTerminal} />
+    )
+    const { rerender } = render(list([working, idle]))
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    rerender(list([working, { ...idle, phase: 'waiting_approval' }]))
+    expect(fireEvent.keyDown(window, { key: 'Enter' })).toBe(true)
+    expect(onJumpToTerminal).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(onJumpToTerminal).toHaveBeenCalledExactlyOnceWith('idle')
+  })
+
+  it('does not route the Enter key through the exiting session list', () => {
+    const onSessionClick = vi.fn()
+    const onJumpToTerminal = vi.fn()
+    const list = (visible: boolean) => (
+      <AnimatePresence>
+        {visible && (
+          <motion.div key="hover" exit={{ opacity: 0 }} transition={{ duration: 1 }}>
+            <HoverList sessions={[session()]} onSessionClick={onSessionClick} onJumpToTerminal={onJumpToTerminal} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    )
+    const { rerender } = render(list(true))
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    rerender(list(false))
+    expect(screen.getByText('agentbro · Fix island interactions')).toBeInTheDocument()
+    expect(fireEvent.keyDown(window, { key: 'Enter' })).toBe(true)
+    expect(onJumpToTerminal).not.toHaveBeenCalled()
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
