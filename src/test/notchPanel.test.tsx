@@ -1974,37 +1974,49 @@ describe('NotchPanel island shell', () => {
   })
 
   it('keeps the next question visible when the previous collapse timer expires during its render', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const first = session({
         phase: 'waiting_input',
-        pendingQuestion: { toolUseId: 'first-question', question: 'Continue?', options: ['Yes'] },
+        pendingQuestion: { toolUseId: 'first-question', question: 'Use the current workspace?', options: ['Yes'] },
       })
       const second = {
         ...first,
-        pendingQuestion: { ...first.pendingQuestion!, toolUseId: 'second-question' },
+        pendingQuestion: { toolUseId: 'second-question', question: 'Continue with the review?', options: ['Continue'] },
       }
       const store = useSessionStore.getState()
       useSessionStore.setState({ panelState: 'hover', sessions: {}, sessionList: [], activeOverlay: null, overlayQueue: [] })
       store.replaceAllSessions([first])
 
       let expireOnCommit = false
+      let panelAfterExpiry: typeof store.panelState | undefined
       render(
         <Profiler id="question" onRender={() => {
           if (!expireOnCommit) return
           expireOnCommit = false
           vi.advanceTimersByTime(800)
+          panelAfterExpiry = useSessionStore.getState().panelState
         }}>
           <NotchPanel />
         </Profiler>,
       )
+      await waitFor(() => expect(screen.getByText('Use the current workspace?')).toBeVisible())
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       await act(async () => { store.replaceAllSessions([session()]) })
-      expect(useSessionStore.getState().panelState).toBe('hover')
+      // Poll the real animation frames without advancing the pending collapse.
+      await vi.waitFor(async () => {
+        await act(() => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())))
+        expect(screen.getByTestId('notch-hover-content')).toBeVisible()
+      }, { interval: 0 })
+      expect(vi.getTimerCount()).toBeGreaterThan(0)
 
       expireOnCommit = true
       await act(async () => { store.replaceAllSessions([second]) })
+      expect(panelAfterExpiry).toBe('hover')
       expect(useSessionStore.getState().panelState).toBe('hover')
-      expect(screen.getByText('Continue?')).toBeInTheDocument()
+
+      vi.useRealTimers()
+      await waitFor(() => expect(screen.getByText('Continue with the review?')).toBeVisible())
     } finally {
       cleanup()
       vi.useRealTimers()
