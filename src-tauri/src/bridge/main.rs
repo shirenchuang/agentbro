@@ -211,29 +211,11 @@ fn permission_hook_output_gemini(decision: &str, reason: &str) -> serde_json::Va
     }
 }
 
-fn permission_hook_output_antigravity(decision: &str, reason: &str) -> serde_json::Value {
-    match decision {
-        "allow" | "auto" => serde_json::json!({ "decision": "allow" }),
-        "deny" => serde_json::json!({
-            "decision": "deny",
-            "reason": if reason.is_empty() {
-                "Denied by user via AgentBro"
-            } else {
-                reason
-            }
-        }),
-        _ => serde_json::json!({
-            "decision": "ask",
-            "reason": "AgentBro could not resolve this permission request"
-        }),
-    }
-}
-
 fn antigravity_hook_output(event: &str) -> serde_json::Value {
-    if event == "Stop" {
-        serde_json::json!({ "decision": "stop" })
-    } else {
-        serde_json::json!({})
+    match event {
+        "PreToolUse" => serde_json::json!({ "decision": "allow" }),
+        "Stop" => serde_json::json!({ "decision": "stop" }),
+        _ => serde_json::json!({}),
     }
 }
 
@@ -868,6 +850,11 @@ fn main() {
         .or_else(|| string_field(&data, &["hook_event_name", "event", "hookType"]))
         .map(normalize_hook_event)
         .unwrap_or("");
+    if is_antigravity_source(&source) && hook_event == "PreToolUse" {
+        // Cached hooks may survive an upgrade. Allow delegates to Antigravity's policy.
+        println!("{}", antigravity_hook_output(hook_event));
+        return;
+    }
     let event_payload = cline_event_payload(&source, hook_event, &data);
     let cwd = string_field(&data, &["cwd"])
         .or_else(|| first_string_array_field(&data, "workspaceRoots"))
@@ -1106,10 +1093,7 @@ fn main() {
         "PreToolUse" => {
             // AskUserQuestion: intercept at PreToolUse to provide updatedInput with answers.
             // updatedInput is only supported in PreToolUse hooks (not PermissionRequest).
-            if tool_name == "AskUserQuestion"
-                && !is_codex_source(&source)
-                && !is_antigravity_source(&source)
-                && source != "qoder-cli"
+            if tool_name == "AskUserQuestion" && !is_codex_source(&source) && source != "qoder-cli"
             {
                 populate_ask_user_question_state(obj, &tool_input);
 
@@ -1146,24 +1130,6 @@ fn main() {
                     let output = permission_hook_output_gemini(decision, reason);
                     println!("{}", output);
                 }
-                return;
-            }
-
-            if is_antigravity_source(&source) {
-                obj.insert("status".into(), "waiting_for_approval".into());
-                if !tool_name.is_empty() {
-                    obj.insert("tool".into(), tool_name.into());
-                }
-                obj.insert("tool_input".into(), tool_input);
-                let output = if let Some(resp) = send_and_maybe_receive(&state, true) {
-                    permission_hook_output_antigravity(
-                        resp["decision"].as_str().unwrap_or("ask"),
-                        resp["reason"].as_str().unwrap_or(""),
-                    )
-                } else {
-                    permission_hook_output_antigravity("ask", "")
-                };
-                println!("{}", output);
                 return;
             }
 
@@ -1967,21 +1933,10 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_permission_output_uses_official_decisions() {
+    fn antigravity_legacy_pre_tool_hook_defers_to_client_policy() {
         assert_eq!(
-            permission_hook_output_antigravity("allow", ""),
+            antigravity_hook_output("PreToolUse"),
             serde_json::json!({ "decision": "allow" })
-        );
-        assert_eq!(
-            permission_hook_output_antigravity("deny", "Not approved"),
-            serde_json::json!({
-                "decision": "deny",
-                "reason": "Not approved"
-            })
-        );
-        assert_eq!(
-            permission_hook_output_antigravity("ask", "")["decision"],
-            "ask"
         );
     }
 

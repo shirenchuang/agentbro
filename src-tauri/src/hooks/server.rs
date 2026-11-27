@@ -1039,6 +1039,16 @@ impl HookServer {
         // Parse the raw JSON
         let mut raw: serde_json::Value = serde_json::from_str(line)?;
         namespace_wsl_event(&mut raw);
+        if Self::raw_event_name(&raw) == "PreToolUse"
+            && matches!(
+                raw.get("agent").and_then(|value| value.as_str()),
+                Some("antigravity" | crate::agents::gemini_desktop::ID)
+            )
+        {
+            // Older bridges still wait for a reply. Delegate approval back to the client.
+            writer.write_all(b"{\"decision\":\"allow\"}\n").await?;
+            return Ok(());
+        }
         let keep_write_open = raw
             .get(hook_endpoint::KEEP_WRITE_OPEN_FIELD)
             .and_then(serde_json::Value::as_bool)
@@ -4137,28 +4147,40 @@ mod tests {
             "PreToolUse",
             serde_json::json!({
                 "tool": "run_command", "tool_use_id": "call-1",
+                "tool_input": {"command": "printf test"},
+                "status": "waiting_for_approval"
+            }),
+        )
+        .await;
+        let mut reply = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            BufReader::new(client).read_line(&mut reply),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&reply).unwrap()["decision"],
+            "allow"
+        );
+        task.await.unwrap().unwrap();
+        let session = store.get_session(id).unwrap();
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert!(session.pending_permission.is_none());
+
+        let (_client, task) = send(
+            "PostToolUse",
+            serde_json::json!({
+                "tool": "run_command", "tool_use_id": "call-1",
                 "tool_input": {"command": "printf test"}
             }),
         )
         .await;
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while store.get_session(id).unwrap().pending_permission.is_none() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        server
-            .respond_permission(id, false, false, Some("call-1"))
-            .await
-            .unwrap();
-        let mut reply = String::new();
-        BufReader::new(client).read_line(&mut reply).await.unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&reply).unwrap()["decision"],
-            "deny"
-        );
         task.await.unwrap().unwrap();
+        let session = store.get_session(id).unwrap();
+        assert_eq!(session.last_tool_name.as_deref(), Some("run_command"));
+        assert_eq!(session.last_tool_status.as_deref(), Some("success"));
 
         let (_client, task) = send(
             "Stop",

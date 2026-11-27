@@ -117,12 +117,6 @@ impl AgentAdapter for AntiGravityAdapter {
             .unwrap_or_else(|| serde_json::json!({}));
 
         match event {
-            "PreToolUse" => Ok(AgentEvent::PermissionRequest {
-                session_id,
-                tool_name,
-                diff: None,
-                options: None,
-            }),
             "PostToolUse" => {
                 let error = string_field(raw, &["tool_error", "error"])
                     .filter(|value| !value.trim().is_empty());
@@ -231,34 +225,6 @@ fn tool_target(input: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_documented_pre_tool_payload() {
-        let adapter = AntiGravityAdapter::new();
-        let event = adapter
-            .parse_event(&serde_json::json!({
-                "event": "PreToolUse",
-                "conversationId": "conversation-1",
-                "workspacePaths": ["/workspace/project"],
-                "toolCall": {
-                    "name": "run_command",
-                    "args": {
-                        "CommandLine": "pnpm test",
-                        "Cwd": "/workspace/project"
-                    }
-                }
-            }))
-            .expect("parse PreToolUse");
-
-        assert!(matches!(
-            event,
-            AgentEvent::PermissionRequest {
-                session_id,
-                tool_name,
-                ..
-            } if session_id == "conversation-1" && tool_name == "run_command"
-        ));
-    }
 
     #[test]
     fn parses_documented_stop_payload() {

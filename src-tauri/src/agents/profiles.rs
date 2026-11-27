@@ -148,7 +148,6 @@ pub const BASIC_AGENT_EVENTS: &[HookEventDescriptor] = &[
 ];
 
 pub const ANTIGRAVITY_EVENTS: &[HookEventDescriptor] = &[
-    matcher_event("PreToolUse", "*", Some(21_600)),
     matcher_event("PostToolUse", "*", None),
     plain_event("PreInvocation"),
     plain_event("PostInvocation"),
@@ -4056,7 +4055,7 @@ name = "also keep"
     }
 
     #[test]
-    fn antigravity_profile_writes_named_official_hooks() {
+    fn antigravity_profile_replaces_legacy_approval_hook_with_lifecycle_hooks() {
         let path = std::env::temp_dir().join(format!(
             "agentbro-antigravity-hooks-{}-{}.json",
             std::process::id(),
@@ -4066,11 +4065,21 @@ name = "also keep"
             &path,
             serde_json::to_vec(&serde_json::json!({
                 "personal-linter": {
-                    "PostToolUse": [{
+                    "PreToolUse": [{
                         "matcher": "run_command",
                         "hooks": [{
                             "type": "command",
                             "command": "/usr/local/bin/personal-linter"
+                        }]
+                    }]
+                },
+                "agentbro": {
+                    "PreToolUse": [{
+                        "matcher": "*",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/Users/me/.agentbro/bin/agentbro-bridge --source antigravity --event PreToolUse",
+                            "timeout": 21_600
                         }]
                     }]
                 }
@@ -4088,15 +4097,11 @@ name = "also keep"
         let settings: Value = serde_json::from_str(&second).unwrap();
 
         assert_eq!(first, second);
-        assert!(settings.get("personal-linter").is_some());
         assert_eq!(
-            settings["agentbro"]["PreToolUse"][0]["matcher"],
-            serde_json::json!("*")
+            settings["personal-linter"]["PreToolUse"][0]["hooks"][0]["command"],
+            "/usr/local/bin/personal-linter"
         );
-        assert!(settings["agentbro"]["PreToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap()
-            .contains("--event PreToolUse"));
+        assert!(settings["agentbro"].get("PreToolUse").is_none());
         assert!(
             settings["agentbro"]["PostToolUse"][0]["hooks"][0]["command"]
                 .as_str()
