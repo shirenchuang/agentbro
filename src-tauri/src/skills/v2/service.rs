@@ -599,7 +599,7 @@ impl Service {
         self.db.with_conn(|c| {
             c.query_row(
                 "SELECT id, skill_id, target_path FROM skill_targets WHERE agent_id = ?1 AND target_path = ?2",
-                params![agent_id, path.display().to_string()],
+                params![agent_meta::skill_target_owner(agent_id), path.display().to_string()],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
@@ -768,10 +768,6 @@ impl Service {
             .into_iter()
             .filter(|agent| agent.installed && agent.enabled && agent.skills_dir.is_some())
             .collect::<Vec<_>>();
-        let mut applied_by_agent = agents
-            .iter()
-            .map(|agent| (agent.id.clone(), Vec::new()))
-            .collect::<HashMap<_, _>>();
         let applied = self.db.with_conn(|connection| {
             let mut statement = connection
                 .prepare(
@@ -793,11 +789,20 @@ impl Service {
             }
             Ok(values)
         })?;
+        let mut packs_by_owner = HashMap::<_, Vec<_>>::new();
         for (agent_id, pack_id) in applied {
-            if let Some(pack_ids) = applied_by_agent.get_mut(&agent_id) {
-                pack_ids.push(pack_id);
-            }
+            packs_by_owner.entry(agent_id).or_default().push(pack_id);
         }
+        let applied_by_agent = agents
+            .iter()
+            .map(|agent| {
+                let pack_ids = packs_by_owner
+                    .get(agent_meta::skill_target_owner(&agent.id))
+                    .cloned()
+                    .unwrap_or_default();
+                (agent.id.clone(), pack_ids)
+            })
+            .collect();
         Ok(SkillPackPickerData {
             agents,
             packs: self.list_skill_packs()?,
@@ -1294,7 +1299,7 @@ impl Service {
         self.db.with_conn(|c| {
             c.query_row(
                 "SELECT COUNT(*) FROM skill_targets WHERE agent_id = ?1",
-                params![agent_id],
+                params![agent_meta::skill_target_owner(agent_id)],
                 |r| r.get::<_, i64>(0),
             )
             .map(|n| n as usize)
@@ -2785,7 +2790,7 @@ impl Service {
     pub fn preview_distribute_skill(
         &self,
         skill_ids: Vec<String>,
-        target_agents: Vec<String>,
+        mut target_agents: Vec<String>,
         requested_mode: String,
     ) -> Result<DistributionPreview, String> {
         if target_agents
@@ -2797,6 +2802,7 @@ impl Service {
                     .to_string(),
             );
         }
+        deduplicate_skill_target_agents(&mut target_agents);
         let mut changes = Vec::new();
         let mut blockers = Vec::new();
         for skill_id in &skill_ids {
@@ -3182,6 +3188,7 @@ impl Service {
         actual_mode: &str,
         origin: ClaimOrigin,
     ) -> Result<(), String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let row = self
             .skill_row(skill_id)?
             .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
@@ -3381,6 +3388,7 @@ impl Service {
         agent_id: &str,
         origin: ClaimOrigin,
     ) -> Result<(), String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let (target_id, skill_id) = self
             .db
             .with_conn(|c| {
@@ -4058,6 +4066,7 @@ impl Service {
         install_mode: &str,
         actual_mode: &str,
     ) -> Result<(), String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let center_hash = self
             .skill_row(skill_id)?
             .map(|r| r.current_hash)
@@ -4725,6 +4734,7 @@ impl Service {
         agent_id: &str,
         revision: i64,
     ) -> Result<PackAgentSyncState, String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let row = self.db.with_conn(|c| {
             c.query_row(
                 "SELECT synced_revision, status, error FROM skill_pack_agent_syncs
@@ -4799,6 +4809,7 @@ impl Service {
         agent_id: Option<&str>,
         skill_id: Option<&str>,
     ) -> Result<Vec<AffectedTarget>, String> {
+        let agent_id = agent_id.map(agent_meta::skill_target_owner);
         let mut sql = String::from(
             "SELECT DISTINCT t.id, t.agent_id, t.target_path, t.actual_mode
              FROM skill_target_claims c
@@ -5625,11 +5636,12 @@ impl Service {
     ) -> Result<SkillPackSyncResult, String> {
         let pack_name = self.pack_name(pack_id)?;
         let revision = self.pack_revision(pack_id)?;
-        let agents = if target_agents.is_empty() {
+        let mut agents = if target_agents.is_empty() {
             self.pack_applied_agent_ids(pack_id)?
         } else {
             target_agents
         };
+        deduplicate_skill_target_agents(&mut agents);
         let mut results = Vec::new();
         for agent_id in agents {
             self.mark_pack_agent_status(pack_id, &agent_id, revision, "syncing", None)?;
@@ -5672,6 +5684,7 @@ impl Service {
     }
 
     fn sync_skill_pack_to_agent(&self, pack_id: &str, agent_id: &str) -> Result<(), String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let member_ids = self.pack_member_skill_ids(pack_id)?;
         let member_set: BTreeSet<String> = member_ids.iter().cloned().collect();
         let claimed_targets: Vec<(String, String, String, String)> = self.db.with_conn(|c| {
@@ -5785,6 +5798,7 @@ impl Service {
         status: &str,
         error: Option<&str>,
     ) -> Result<(), String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let now = db::now_iso();
         self.db.with_conn(|c| {
             c.execute(
@@ -5910,9 +5924,10 @@ impl Service {
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![pack_id, agent_id], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })
+                .query_map(
+                    params![pack_id, agent_meta::skill_target_owner(agent_id)],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
                 .map_err(|e| e.to_string())?;
             let mut v = Vec::new();
             for r in rows {
@@ -6153,7 +6168,7 @@ impl Service {
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([agent_id], |r| {
+                .query_map([agent_meta::skill_target_owner(agent_id)], |r| {
                     Ok(TargetRow {
                         id: r.get(0)?,
                         skill_id: r.get(1)?,
@@ -6267,7 +6282,9 @@ impl Service {
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([agent_id], |r| r.get::<_, String>(0))
+                .query_map([agent_meta::skill_target_owner(agent_id)], |r| {
+                    r.get::<_, String>(0)
+                })
                 .map_err(|e| e.to_string())?;
             let mut v = Vec::new();
             for r in rows {
@@ -6313,6 +6330,11 @@ impl Service {
 }
 
 // ── helper structs & free functions ──────────────────────────────
+
+fn deduplicate_skill_target_agents(agents: &mut Vec<String>) {
+    let mut owners = BTreeSet::new();
+    agents.retain(|agent| owners.insert(agent_meta::skill_target_owner(agent).to_owned()));
+}
 
 #[derive(Debug, Clone)]
 pub enum ClaimOrigin {
