@@ -16,16 +16,23 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MessageBoxW, PostMessageW, IDCANCEL, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
 };
 
-pub(crate) const WINDOW_TIMEOUT: Duration = Duration::from_secs(45);
+pub(crate) const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 const CLOSE_BUTTON: i32 = 100;
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 enum Phase {
     #[default]
-    Starting,
+    StartingHookService,
+    OpeningDesktop,
     Ready,
     Closing,
     Failed,
+}
+
+impl Phase {
+    fn is_pending(self) -> bool {
+        matches!(self, Self::StartingHookService | Self::OpeningDesktop)
+    }
 }
 
 #[derive(Default)]
@@ -35,16 +42,32 @@ pub(crate) struct StartupRecovery {
 }
 
 impl StartupRecovery {
-    pub(crate) fn windows_created(&self) -> bool {
-        self.finish(Phase::Ready)
+    pub(crate) fn hook_listening(&self) -> bool {
+        self.transition(Phase::OpeningDesktop)
     }
 
-    fn finish(&self, state: Phase) -> bool {
+    pub(crate) fn setup_finished(&self) -> bool {
+        self.transition(Phase::Ready)
+    }
+
+    pub(crate) fn is_starting(&self) -> bool {
+        self.phase().is_pending()
+    }
+
+    fn transition(&self, next: Phase) -> bool {
         let mut phase = self.phase();
-        if *phase != Phase::Starting && !(*phase == Phase::Ready && state == Phase::Failed) {
+        if !matches!(
+            (*phase, next),
+            (Phase::StartingHookService, Phase::OpeningDesktop)
+                | (Phase::OpeningDesktop, Phase::Ready)
+                | (
+                    Phase::StartingHookService | Phase::OpeningDesktop,
+                    Phase::Closing | Phase::Failed
+                )
+        ) {
             return false;
         }
-        *phase = state;
+        *phase = next;
         self.changed.notify_one();
         true
     }
@@ -67,7 +90,7 @@ impl StartupRecovery {
     }
 
     fn show_failure(&self, stage: &str, error: impl Display, heading: &str, guidance: &str) {
-        if !self.finish(Phase::Failed) {
+        if !self.transition(Phase::Failed) {
             return;
         }
         log::error!("Startup: {stage}: {error}");
@@ -96,23 +119,28 @@ impl StartupRecovery {
         self.phase.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn waiting_past_timeout(&self, timeout: Duration) -> bool {
+    fn phase_after_wait(&self, timeout: Duration) -> Phase {
         let (phase, _) = self
             .changed
-            .wait_timeout_while(self.phase(), timeout, |phase| *phase == Phase::Starting)
+            .wait_timeout_while(self.phase(), timeout, |phase| phase.is_pending())
             .unwrap_or_else(PoisonError::into_inner);
-        *phase == Phase::Starting
+        *phase
     }
 
     fn run(&self, timeout: Duration) {
-        while self.waiting_past_timeout(timeout) {
+        loop {
+            let pending = match self.phase_after_wait(timeout) {
+                Phase::StartingHookService => "the Hook service to start",
+                Phase::OpeningDesktop => "desktop setup to finish",
+                _ => return,
+            };
             log::warn!(
-                "Startup: Windows desktop windows are still being created after {} seconds",
-                timeout.as_secs()
+                "Startup: Windows is still waiting for {pending} after {} seconds",
+                timeout.as_secs(),
             );
             match self.show_dialog() {
                 Ok(true) => {
-                    if !self.finish(Phase::Closing) {
+                    if !self.transition(Phase::Closing) {
                         return;
                     }
                     log::warn!("Startup: closing AgentBro at the user's request");
@@ -175,7 +203,7 @@ unsafe extern "system" fn dismiss_when_startup_finishes(
 ) -> i32 {
     if matches!(message as i32, TDN_CREATED | TDN_TIMER) {
         let startup = unsafe { &*(state as *const StartupRecovery) };
-        if *startup.phase() != Phase::Starting {
+        if !startup.is_starting() {
             unsafe { PostMessageW(window, TDM_CLICK_BUTTON as u32, IDCANCEL as usize, 0) };
         }
     }
@@ -310,6 +338,20 @@ mod tests {
     }
 
     #[test]
+    fn startup_requires_the_hook_listener_and_finished_desktop_setup() {
+        let recovery = StartupRecovery::default();
+        assert!(!recovery.setup_finished());
+        assert!(recovery.is_starting());
+        assert!(recovery.hook_listening());
+        assert!(matches!(
+            recovery.phase_after_wait(Duration::ZERO),
+            Phase::OpeningDesktop
+        ));
+        assert!(recovery.setup_finished());
+        assert!(!recovery.is_starting());
+    }
+
+    #[test]
     fn native_dialog_handles_wait_ready_and_close() {
         if let Some(directory) = std::env::var_os(FIXTURE) {
             let directory = Path::new(&directory);
@@ -318,19 +360,33 @@ mod tests {
             let worker = Arc::clone(&recovery)
                 .watch(Duration::from_millis(400))
                 .unwrap();
+            wait_for("the fixture Hook listener", || {
+                directory.join("hook-ready").is_file().then_some(())
+            });
+            assert!(recovery.hook_listening());
+            std::fs::write(directory.join("waiting-desktop"), []).unwrap();
             wait_for("the fixture startup to finish", || {
                 directory.join("ready").is_file().then_some(())
             });
-            assert!(recovery.windows_created());
+            assert!(recovery.setup_finished());
             worker.join().unwrap();
             return;
         }
 
         let temp = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
         let mut late = start_fixture(temp.path());
-        wait_for("the slow startup dialog", || visible_dialog(late.0.id()));
+        let dialog = wait_for("the slow startup dialog", || visible_dialog(late.0.id()));
+        std::fs::write(temp.path().join("hook-ready"), []).unwrap();
+        wait_for("the fixture to wait for desktop setup", || {
+            temp.path().join("waiting-desktop").is_file().then_some(())
+        });
+        assert_ne!(
+            unsafe { IsWindow(dialog) },
+            0,
+            "the Hook listener alone must keep the dialog open"
+        );
         std::fs::write(temp.path().join("ready"), []).unwrap();
-        let status = wait_for("automatic dismissal after window creation", || {
+        let status = wait_for("automatic dismissal after desktop setup", || {
             late.0.try_wait().unwrap()
         });
         assert!(status.success(), "{status}");
@@ -364,31 +420,31 @@ fn messages(language: u16) -> [&'static str; 4] {
     match language {
         0x04 => [
             "AgentBro 启动时间较长",
-            "Windows 仍在初始化 WebView2。你可以继续等待，也可以关闭 AgentBro，然后从「开始」菜单重新打开。",
+            "AgentBro 仍在初始化桌面界面和 Hook 服务。你可以继续等待，也可以关闭 AgentBro，然后从「开始」菜单重新打开。",
             "继续等待",
             "关闭 AgentBro",
         ],
         0x11 => [
             "AgentBro の起動に時間がかかっています",
-            "Windows は WebView2 を初期化しています。このまま待つか、AgentBro を閉じてスタートメニューから開き直してください。",
+            "AgentBro はデスクトップ画面と Hook サービスを初期化しています。このまま待つか、AgentBro を閉じてスタートメニューから開き直してください。",
             "このまま待つ",
             "AgentBro を閉じる",
         ],
         0x12 => [
             "AgentBro를 시작하는 데 시간이 걸리고 있습니다",
-            "Windows에서 WebView2를 초기화하고 있습니다. 계속 기다리거나 AgentBro를 닫고 시작 메뉴에서 다시 열 수 있습니다.",
+            "AgentBro가 데스크톱 화면과 Hook 서비스를 초기화하고 있습니다. 계속 기다리거나 AgentBro를 닫고 시작 메뉴에서 다시 열 수 있습니다.",
             "계속 기다리기",
             "AgentBro 닫기",
         ],
         0x1f => [
             "AgentBro’nun başlatılması uzun sürüyor",
-            "Windows, WebView2’yi başlatıyor. Bekleyebilir veya AgentBro’yu kapatıp Başlat menüsünden yeniden açabilirsiniz.",
+            "AgentBro, masaüstü arayüzünü ve Hook hizmetini başlatıyor. Bekleyebilir veya AgentBro’yu kapatıp Başlat menüsünden yeniden açabilirsiniz.",
             "Beklemeye devam et",
             "AgentBro’yu kapat",
         ],
         _ => [
             "AgentBro is taking longer to start",
-            "Windows is still initializing WebView2. You can keep waiting or close AgentBro and open it again from the Start menu.",
+            "AgentBro is still initializing its desktop and Hook service. You can keep waiting or close AgentBro and open it again from the Start menu.",
             "Keep waiting",
             "Close AgentBro",
         ],

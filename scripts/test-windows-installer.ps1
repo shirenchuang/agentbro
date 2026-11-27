@@ -18,6 +18,7 @@ param(
     [switch]$VerifyStartupStackSampler,
     [switch]$VerifyStartupLock,
     [switch]$VerifyStartupFailure,
+    [switch]$VerifyStartupOrder,
     [switch]$VerifyDiagnosticsExport,
     [switch]$VerifyAgentPackageConsole,
     [switch]$VerifyRegisteredAgentApp
@@ -715,6 +716,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
 }
 
 $hookReady = $false
+$desktopReady = $false
 try {
     Wait-AppCondition 'the installed app to listen on its Hook port' {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
@@ -722,6 +724,20 @@ try {
     $hookReady = $true
     if ($VerifyStartupLock) {
         Test-DuplicateStartup 'active-primary'
+    }
+    if ($VerifyStartupOrder) {
+        Wait-AppCondition 'the installed Windows desktop setup to finish' {
+            Select-String -LiteralPath $stdoutPath -SimpleMatch 'Startup: Windows desktop setup complete' -Quiet
+        }
+        $desktopReady = $true
+        $listener = Select-String -LiteralPath $stdoutPath -SimpleMatch "Listening on TCP: 127.0.0.1:$port" |
+            Select-Object -First 1
+        $notch = Select-String -LiteralPath $stdoutPath -SimpleMatch "Startup: creating Windows window 'notch'" |
+            Select-Object -First 1
+        if (-not $listener -or -not $notch -or $listener.LineNumber -ge $notch.LineNumber) {
+            throw 'The Hook listener did not start before Windows created the Island WebView.'
+        }
+        Write-Output 'The Hook listener opened before the Island WebView, and desktop setup completed.'
     }
     if ($VerifyStartupStackSampler) {
         Write-StartupStacks
@@ -803,7 +819,7 @@ try {
             Get-Content -LiteralPath $diagnosticLog -Tail 30
         }
     }
-    if ($SymbolsDirectory -and -not $hookReady -and -not $app.HasExited) {
+    if ($SymbolsDirectory -and (-not $hookReady -or ($VerifyStartupOrder -and -not $desktopReady)) -and -not $app.HasExited) {
         try {
             Write-StartupStacks
         } catch {
