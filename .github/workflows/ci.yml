@@ -144,3 +144,5 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE config::tests::first_run_setup_'
       - name: Test OpenCode MCP configuration discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::mcp_management::opencode::tests'
+      - name: Test Codex MCP environment authentication
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::mcp_management::tests::codex_http_environment_'
