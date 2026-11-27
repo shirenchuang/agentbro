@@ -37,6 +37,11 @@ function primaryModifierKeyEvent() {
   return isApplePlatform() ? { metaKey: true } : { ctrlKey: true }
 }
 
+function mockIslandTimeouts() {
+  // Restoring faked intervals can strand jsdom's pending animation frames.
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+}
+
 vi.mock('@tauri-apps/api/event', () => ({
   listen: tauriMocks.listen,
 }))
@@ -283,7 +288,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('opens the collapsed island immediately on pointer down even when hover is delayed', async () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       useConfigStore.setState({ hoverExpandDelay: 1000 })
       const currentSession = session({ phase: 'idle' })
@@ -375,7 +380,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('keeps a stable native host canvas while collapsed, then sizes to hitbox on hover', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
       const currentSession = session({ phase: 'idle' })
@@ -416,7 +421,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('keeps a stable native host canvas while returning to micro', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
       useConfigStore.setState({ autoCollapse: true, collapseDelay: 1 })
@@ -1248,7 +1253,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('keeps the feedback countdown running while hovered and collapses as soon as hover leaves after expiry', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       useConfigStore.setState({ autoCollapse: true, taskCompleteDwellSeconds: 3 })
       const activeOverlay: OverlayItem = {
@@ -2007,7 +2012,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('cancels pointer-leave collapse when a new question arrives after duplicate leave events', async () => {
-    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    mockIslandTimeouts()
     try {
       useConfigStore.setState({ autoCollapse: true, collapseDelay: 600 })
       const firstQuestion = { toolUseId: 'first', question: 'First question?', options: ['Yes'] }
@@ -2676,7 +2681,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('keeps response feedback open after sending a reply until hover leaves', async () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       mountIsland({
         id: 'response-s1-reply-stays-open',
@@ -2727,7 +2732,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('does not dismiss feedback overlays on mouse leave while the reply input has draft text', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       mountIsland({
         id: 'response-s1-draft',
@@ -2857,7 +2862,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('keeps the feedback countdown running while hovered', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       mountIsland({
         id: 'completion-s1',
@@ -2894,7 +2899,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('defers collapsed feedback presentation dismissal until the cursor leaves', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       const activeOverlay: OverlayItem = {
         id: 'completion-s1-collapsed',
