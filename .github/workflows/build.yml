@@ -61,6 +61,10 @@ on:
         description: Repeat approval and record Hook timing, screenshots and accessibility state
         type: boolean
         default: false
+      windows_trace_question_ui:
+        description: Repeat question reconnects and capture renderer state on a timeout
+        type: boolean
+        default: false
       windows_verify_drag:
         description: Move the installed Island with native pointer input and verify that it stops on release
         type: boolean
@@ -470,6 +474,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Set up Node.js for the question trace
+        if: inputs.windows_trace_question_ui
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Install and exercise the Windows app
         shell: pwsh
         timeout-minutes: 5
@@ -483,6 +493,7 @@ jobs:
           VERIFY_DIAGNOSTICS_EXPORT: ${{ inputs.windows_verify_diagnostics_export }}
           VERIFY_REGISTERED_AGENT_APP: ${{ inputs.windows_verify_registered_agent_app }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
+          TRACE_QUESTION_UI: ${{ inputs.windows_trace_question_ui }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
           VERIFY_DISPLAY_CHANGE: ${{ inputs.windows_verify_display_change }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
@@ -510,6 +521,7 @@ jobs:
                   -VerifyDiagnosticsExport:($env:VERIFY_DIAGNOSTICS_EXPORT -eq 'true') `
                   -VerifyRegisteredAgentApp:($env:VERIFY_REGISTERED_AGENT_APP -eq 'true') `
                   -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
+                  -TraceQuestionUi:($env:TRACE_QUESTION_UI -eq 'true') `
                   -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
                   -VerifyDisplayChange:($env:VERIFY_DISPLAY_CHANGE -eq 'true') `
                   -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
