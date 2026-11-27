@@ -8,6 +8,11 @@ export interface ShortcutKeyEvent {
   shiftKey: boolean
 }
 
+export function isComposingKey(event: Pick<KeyboardEvent, 'isComposing' | 'keyCode'>): boolean {
+  // WebKit can dispatch the confirming keydown after compositionend, with keyCode 229.
+  return event.isComposing || event.keyCode === 229
+}
+
 const MAC_COMMAND = '⌘'
 const MAC_CONTROL = '⌃'
 const MAC_OPTION = '⌥'

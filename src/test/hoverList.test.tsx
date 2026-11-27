@@ -714,6 +714,20 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
+  it('leaves candidate navigation keys with the input method', () => {
+    const onJumpToTerminal = vi.fn()
+    render(<HoverList sessions={[session()]} onSessionClick={vi.fn()} onJumpToTerminal={onJumpToTerminal} />)
+
+    expect(fireEvent.keyDown(window, { key: 'ArrowDown', isComposing: true })).toBe(true)
+    expect(fireEvent.keyDown(window, { key: 'ArrowUp', keyCode: 229 })).toBe(true)
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(onJumpToTerminal).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(onJumpToTerminal).toHaveBeenCalledExactlyOnceWith('s1')
+  })
+
   it('keeps the keyboard selection when a live update reorders the rows', () => {
     const onSessionClick = vi.fn()
     const onJumpToTerminal = vi.fn()
@@ -1170,6 +1184,24 @@ describe('HoverList interactions', () => {
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
+  it('waits for an ordinary Enter before sending an inline custom answer', async () => {
+    renderInlineQuestion({ toolUseId: 'inline-question-ime', question: 'Which target?', options: ['Preview'] })
+    fireEvent.click(screen.getByRole('button', { name: /Other/ }))
+    const field = screen.getByPlaceholderText('Type your response...')
+    fireEvent.change(field, { target: { value: '使用测试环境' } })
+
+    fireEvent.keyDown(field, { key: 'Escape', keyCode: 229 })
+    fireEvent.keyDown(field, { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(field, { key: 'Enter', keyCode: 229 })
+    expect(field).toBeInTheDocument()
+    expect(field).toHaveValue('使用测试环境')
+    expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(field, { key: 'Enter' })
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', '使用测试环境', 'inline-question-ime')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+  })
+
   it('renders inline question options as compact question cards with descriptions', () => {
     render(
       <HoverList
@@ -1285,6 +1317,22 @@ describe('HoverList interactions', () => {
     expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Preview')
     expect(onSessionClick).not.toHaveBeenCalled()
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+  })
+
+  it('waits for an ordinary Enter before sending inline plan feedback', async () => {
+    const pending = session({ phase: 'waiting_approval', planRequestId: 'inline-plan-ime', planTitle: 'Implementation plan' })
+    useSessionStore.setState({ sessions: { s1: pending }, sessionList: [pending], planReplies: new Map() })
+    render(<HoverList sessions={[pending]} onSessionClick={vi.fn()} />)
+
+    const input = screen.getByPlaceholderText('Tell Claude what to change...')
+    fireEvent.change(input, { target: { value: '请再检查一次' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
+    expect(tauriMocks.respondPlan).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'feedback', '请再检查一次', 'inline-plan-ime')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planRequestId).toBeUndefined())
   })
 
   it('sends inline plan feedback from the input row without opening the row', async () => {

@@ -8,6 +8,7 @@ import { sendMessage, setNotchFocusable } from '../../services/tauriApi'
 import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle } from '../../utils/sessionDisplay'
 import { composerHints, getComposerCapability, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import { formatDurationShort } from '../../utils/time'
+import { isComposingKey } from '../../utils/keyboardShortcuts'
 import { MascotRouter } from '../notch/mascots/MascotRouter'
 import './OverlayFeedbackPanel.css'
 
@@ -233,7 +234,7 @@ export function OverlayFeedbackPanel({
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
     event.stopPropagation()
-    if (event.nativeEvent.isComposing || inputComposingRef.current) return
+    if (isComposingKey(event.nativeEvent) || inputComposingRef.current) return
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       void handleSend()
