@@ -42,12 +42,21 @@ func islandBounds(processID: Int32) -> CGRect? {
 @discardableResult
 func waitForIsland(_ display: CGDirectDisplayID, width: Int, processID: Int32, offset: CGFloat) throws -> CGRect {
     let deadline = ProcessInfo.processInfo.systemUptime + 20
+    var stableSince: TimeInterval?
     repeat {
         let screen = CGDisplayBounds(display)
         if Int(screen.width) == width, let bounds = islandBounds(processID: processID),
            abs(bounds.midX - screen.midX - offset) <= 2, abs(bounds.minY - screen.minY) <= 2 {
-            print("Native Island center x=\(bounds.midX), screen center x=\(screen.midX), width=\(width).")
-            return bounds
+            let now = ProcessInfo.processInfo.systemUptime
+            let start = stableSince ?? now
+            stableSince = start
+            // A matching frame can appear before AgentBro's delayed reconfiguration callback runs.
+            if now - start >= 1 {
+                print("Native Island center stayed at x=\(bounds.midX) for one second, screen center x=\(screen.midX), width=\(width).")
+                return bounds
+            }
+        } else {
+            stableSince = nil
         }
         Thread.sleep(forTimeInterval: 0.1)
     } while ProcessInfo.processInfo.systemUptime < deadline
