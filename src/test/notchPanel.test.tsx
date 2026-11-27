@@ -1941,7 +1941,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('keeps the next question visible when the previous collapse timer expires during its render', async () => {
-    vi.useFakeTimers()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const first = session({
         phase: 'waiting_input',
@@ -1973,6 +1973,7 @@ describe('NotchPanel island shell', () => {
       expect(useSessionStore.getState().panelState).toBe('hover')
       expect(screen.getByText('Continue?')).toBeInTheDocument()
     } finally {
+      cleanup()
       vi.useRealTimers()
     }
   })
