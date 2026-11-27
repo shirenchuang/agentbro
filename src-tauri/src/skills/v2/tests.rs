@@ -2329,6 +2329,78 @@ fn apply_pack_is_idempotent() {
     assert_eq!(detail.targets[0].claims.len(), 1, "no duplicate pack claim");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn gemini_desktop_applies_a_pack_to_the_shared_antigravity_skills_directory() {
+    let (_home, svc, _lock) = fresh_service("gemini-desktop-skill-pack");
+    let skill_id = "skill-authoring";
+    let source = write_skill(&svc.home.join("sources"), "auth", skill_id, Some("v1"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let pack_id = "writing";
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: pack_id.to_string(),
+        name: "Writing".to_string(),
+        description: String::new(),
+        tags: vec![],
+        skill_ids: vec![skill_id.to_string()],
+    })
+    .unwrap();
+
+    let skills_dir = svc.home.join(".gemini/config/skills");
+    let target = skills_dir.join(skill_id);
+    assert!(!skills_dir.exists());
+    let preview = svc
+        .preview_distribute_skill(
+            vec![skill_id.to_string()],
+            vec!["gemini-desktop".to_string(), "antigravity".to_string()],
+            "link".to_string(),
+        )
+        .unwrap();
+    assert!(preview.blockers.is_empty());
+    assert_eq!(preview.target_agents, ["gemini-desktop"]);
+    assert_eq!(preview.changes.len(), 1);
+    assert_eq!(preview.changes[0].target_path, target.display().to_string());
+    svc.apply_reviewed_skill_pack(pack_id, preview, vec![])
+        .unwrap();
+    assert!(target.is_symlink());
+    assert!(target.join("SKILL.md").is_file());
+    assert!(!svc.home.join(".gemini/skills").exists());
+
+    let antigravity = svc.get_agent_detail("antigravity").unwrap();
+    let gemini_desktop = svc.get_agent_detail("gemini-desktop").unwrap();
+    assert_eq!(gemini_desktop.skills_dir, antigravity.skills_dir);
+    assert_eq!(gemini_desktop.skills[0].id, antigravity.skills[0].id);
+    assert_eq!(gemini_desktop.applied_packs[0].pack_id, pack_id);
+    assert_eq!(gemini_desktop.applied_packs[0].sync_status, "synced");
+
+    let reapplied = svc
+        .apply_skill_pack(pack_id, vec!["antigravity".to_string()], "link".to_string())
+        .unwrap();
+    assert!(reapplied.blockers.is_empty());
+    let detail = svc.get_skill_detail(skill_id).unwrap();
+    assert_eq!(detail.targets.len(), 1);
+    assert_eq!(detail.targets[0].claims.len(), 1);
+    let removal = svc
+        .preview_remove_pack_from_agent(pack_id, "gemini-desktop")
+        .unwrap();
+    assert_eq!(removal.will_remove_targets, 1);
+    svc.remove_skill_pack_from_agent(pack_id, "gemini-desktop")
+        .unwrap();
+    assert!(!target.exists());
+}
+
 #[test]
 fn moving_direct_skill_to_pack_only_replaces_the_current_skill_claim() {
     let (_home, svc, _lock) = fresh_service("move-direct-to-pack");
