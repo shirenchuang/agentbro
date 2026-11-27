@@ -7,6 +7,13 @@ on:
     branches: [main, master]
   workflow_dispatch:
     inputs:
+      macos_verify_display_change:
+        description: Change and restore the native display mode while the macOS Island is running
+        type: boolean
+        default: false
+      macos_display_artifact_run:
+        description: Reuse an Apple Silicon executable from an earlier Build run for the display smoke test
+        type: string
       windows_artifact_run:
         description: Existing Build run ID for an installer-only smoke test
         type: string
@@ -95,6 +102,9 @@ jobs:
     if: ${{ !inputs.windows_artifact_run }}
     name: Build macOS (${{ matrix.arch }})
     runs-on: macos-15
+    permissions:
+      actions: read
+      contents: read
     strategy:
       matrix:
         include:
@@ -123,11 +133,13 @@ jobs:
         run: pnpm release:check
 
       - name: Install Rust toolchain
+        if: ${{ !inputs.macos_display_artifact_run }}
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-target }}
 
       - name: Rust cache
+        if: ${{ !inputs.macos_display_artifact_run }}
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -139,6 +151,7 @@ jobs:
         run: pnpm build
 
       - name: Build Tauri app
+        if: ${{ !inputs.macos_display_artifact_run }}
         run: |
           mkdir -p target/agentbro-bridge-resource
           touch target/agentbro-bridge-resource/agentbro-bridge
@@ -146,14 +159,58 @@ jobs:
         working-directory: src-tauri
 
       - name: Upload artifact
+        if: ${{ !inputs.macos_display_artifact_run }}
         uses: actions/upload-artifact@v4
         with:
           name: agentbro-${{ matrix.arch }}
           path: src-tauri/target/${{ matrix.rust-target }}/release/agentbro
           if-no-files-found: error
 
+      - name: Download previous macOS executable
+        if: inputs.macos_display_artifact_run && matrix.arch == 'arm64'
+        uses: actions/download-artifact@v4
+        with:
+          name: agentbro-arm64
+          path: src-tauri/target/${{ matrix.rust-target }}/release
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.macos_display_artifact_run }}
+
+      - name: Verify macOS Island position after a display change
+        if: (inputs.macos_verify_display_change || inputs.macos_display_artifact_run) && matrix.arch == 'arm64'
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          fixture=$(mktemp -d "$RUNNER_TEMP/ab-display.XXXXXX")
+          cp -R dist "$fixture/web"
+          cat > "$fixture/web/display-fixture.js" <<'EOF'
+          localStorage.setItem('agentbro-config', JSON.stringify({
+            state: { displayMonitor: 'primary', allowHorizontalDrag: true, panelHorizontalOffset: 36 },
+            version: 0,
+          }))
+          EOF
+          sed -i '' 's|<head>|<head><script src="/display-fixture.js"></script>|' "$fixture/web/index.html"
+          config_dir="$HOME/Library/Application Support/agentbro"
+          [[ ! -e "$config_dir/config.json" ]]
+          mkdir -p "$config_dir"
+          echo '{"analyticsConsentPromptCompleted":true,"analyticsEnabled":false,"displayId":"primary"}' > "$config_dir/config.json"
+          python3 -m http.server 1423 --bind 127.0.0.1 --directory "$fixture/web" > "$fixture/server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" ${app_pid:-} 2>/dev/null || true' EXIT
+          curl --fail --retry 12 --retry-connrefused --retry-delay 1 --silent --show-error -o /dev/null http://localhost:1423/display-fixture.js
+          kill -0 "$server_pid"
+
+          chmod +x "src-tauri/target/${{ matrix.rust-target }}/release/agentbro"
+          AGENTBRO_HOOK_SOCKET="$fixture/hook.sock" AGENTBRO_HOOK_PORT=53194 \
+            "src-tauri/target/${{ matrix.rust-target }}/release/agentbro" > "$fixture/agentbro.log" 2>&1 &
+          app_pid=$!
+          if ! swift scripts/test-macos-display-change.swift "$app_pid" 36; then
+            tail -60 "$fixture/agentbro.log"
+            exit 1
+          fi
+
   build-windows:
-    if: ${{ !inputs.windows_artifact_run }}
+    if: ${{ !inputs.windows_artifact_run && !inputs.macos_display_artifact_run }}
     name: Build Windows installers
     runs-on: windows-latest
     env:

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { open as openDialog, ask as askDialog } from '@tauri-apps/plugin-dialog'
 import { useConfigStore } from '../../../stores/configStore'
 import type { SoundChoice, SoundRule } from '../../../stores/configStore'
@@ -810,20 +811,23 @@ function DisplayTab() {
 
   useEffect(() => {
     let cancelled = false
-    let receivedUpdate = false
+    let requestId = 0
     let unlisten: (() => void) | undefined
-    void listDisplays().then((initial) => {
-      if (!cancelled && !receivedUpdate) setDisplays(initial)
-    }).catch(() => {})
+    const refreshDisplays = () => {
+      if (cancelled) return
+      const id = ++requestId
+      void listDisplays().then((current) => {
+        if (!cancelled && id === requestId) setDisplays(current)
+      }).catch(() => {})
+    }
+
     if (isTauri()) {
-      void import('@tauri-apps/api/event').then(({ listen }) => listen<BackendDisplayInfo[]>('display-changed', ({ payload }) => {
-        if (cancelled) return
-        receivedUpdate = true
-        setDisplays(payload)
-      })).then((dispose) => {
+      void listen('display-changed', refreshDisplays).then((dispose) => {
         if (cancelled) dispose()
         else unlisten = dispose
-      }).catch(() => {})
+      }).catch(() => {}).then(refreshDisplays)
+    } else {
+      refreshDisplays()
     }
     return () => {
       cancelled = true

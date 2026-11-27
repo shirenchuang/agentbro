@@ -1,11 +1,14 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsApp } from '../components/settings'
+import { IslandSection } from '../components/settings/sections/IslandSection'
 import type { BackendDisplayInfo } from '../services/tauriApi'
 import { useConfigStore } from '../stores/configStore'
 import { isApplePlatform } from '../utils/platform'
 
 const tauriMocks = vi.hoisted(() => ({
+  isTauri: vi.fn(() => false),
+  listen: vi.fn<(name: string, callback: (event: { payload: null }) => void) => Promise<() => void>>(),
   listDisplays: vi.fn(() => Promise.resolve([] as BackendDisplayInfo[])),
   repositionNotch: vi.fn(() => Promise.resolve()),
   setDisplayId: vi.fn(() => Promise.resolve()),
@@ -32,6 +35,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/tauriApi')>()
   return {
     ...actual,
+    isTauri: tauriMocks.isTauri,
     listDisplays: tauriMocks.listDisplays,
     repositionNotch: tauriMocks.repositionNotch,
     setDisplayId: tauriMocks.setDisplayId,
@@ -47,6 +51,11 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
     completeFirstRunSetup: tauriMocks.completeFirstRunSetup,
   }
 })
+
+vi.mock('@tauri-apps/api/event', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@tauri-apps/api/event')>(),
+  listen: tauriMocks.listen,
+}))
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -70,6 +79,7 @@ vi.mock('react-i18next', () => ({
 describe('settings island menu', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    tauriMocks.isTauri.mockReturnValue(false)
     tauriMocks.listDisplays.mockResolvedValue([])
     tauriMocks.registerGlobalShortcut.mockResolvedValue(undefined)
     tauriMocks.setGlobalActionShortcuts.mockResolvedValue(undefined)
@@ -376,6 +386,34 @@ describe('settings island menu', () => {
       expect(screen.getByText('settings.mainDisplay · Color LCD (1728x1117)')).toBeInTheDocument()
     })
     expect(screen.queryByText('14035')).not.toBeInTheDocument()
+  })
+
+  it('refreshes the open display settings without restoring a stale query after a display change', async () => {
+    const original: BackendDisplayInfo = {
+      id: 'Color LCD', name: 'Color LCD', label: 'Color LCD (1728x1117)',
+      width: 3456, height: 2234, scaleFactor: 2, isPrimary: true,
+    }
+    let finishOriginal!: (displays: BackendDisplayInfo[]) => void
+    const initial = new Promise<BackendDisplayInfo[]>((resolve) => { finishOriginal = resolve })
+    const unlisten = vi.fn()
+    tauriMocks.isTauri.mockReturnValue(true)
+    tauriMocks.listen.mockResolvedValue(unlisten)
+    tauriMocks.listDisplays.mockReturnValueOnce(initial).mockResolvedValueOnce([
+      { ...original, label: 'Color LCD (1440x900)', width: 2880, height: 1800 },
+    ])
+    useConfigStore.setState({ displayMonitor: 'primary' })
+
+    const { unmount } = render(<IslandSection activeView="display" />)
+    await waitFor(() => expect(tauriMocks.listDisplays).toHaveBeenCalledOnce())
+    const onDisplayChange = tauriMocks.listen.mock.calls.find(([name]) => name === 'display-changed')?.[1]
+    expect(onDisplayChange).toBeDefined()
+    await act(async () => { onDisplayChange!({ payload: null }) })
+    expect(await screen.findByText('settings.mainDisplay · Color LCD (1440x900)')).toBeInTheDocument()
+
+    await act(async () => { finishOriginal([original]) })
+    expect(screen.queryByText('settings.mainDisplay · Color LCD (1728x1117)')).not.toBeInTheDocument()
+    unmount()
+    expect(unlisten).toHaveBeenCalledOnce()
   })
 
   it('passes custom notch height through the layout preview event', async () => {

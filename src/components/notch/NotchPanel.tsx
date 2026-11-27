@@ -321,7 +321,6 @@ export function NotchPanel() {
   const hitboxRef = useRef<HTMLDivElement>(null)
   const hoverContentRef = useRef<HTMLDivElement | null>(null)
   const [persistentIdleHidden, setPersistentIdleHidden] = useState(false)
-  const [displayChanging, setDisplayChanging] = useState(false)
   const displayRevisionRef = useRef(0)
   const [displayRevision, setDisplayRevision] = useState(0)
   const [isDragging, setIsDragging] = useState(false)
@@ -476,18 +475,11 @@ export function NotchPanel() {
     if (!isTauri()) return
     let cancelled = false
     let unlisten: (() => void) | undefined
-    let fadeInTimer: ReturnType<typeof setTimeout> | undefined
 
     listenTauriEvent('display-changed', () => {
       if (cancelled) return
-      if (isWindowsPlatform()) {
-        displayRevisionRef.current += 1
-        setDisplayRevision(displayRevisionRef.current)
-        return
-      }
-      setDisplayChanging(true)
-      if (fadeInTimer) clearTimeout(fadeInTimer)
-      fadeInTimer = setTimeout(() => setDisplayChanging(false), 600)
+      displayRevisionRef.current += 1
+      setDisplayRevision(displayRevisionRef.current)
     }).then((fn) => {
       if (cancelled) fn()
       else unlisten = fn
@@ -496,7 +488,6 @@ export function NotchPanel() {
     return () => {
       cancelled = true
       unlisten?.()
-      if (fadeInTimer) clearTimeout(fadeInTimer)
     }
   }, [])
 
@@ -1104,7 +1095,7 @@ export function NotchPanel() {
     function replyTarget(e: KeyboardEvent) {
       const store = useSessionStore.getState()
       const hitbox = hitboxRef.current
-      if (!hitbox || hitbox.dataset.islandHidden === 'true' || displayChanging || store.panelState === 'collapsed'
+      if (!hitbox || hitbox.dataset.islandHidden === 'true' || store.panelState === 'collapsed'
         || e.defaultPrevented || e.repeat || e.isComposing || getInputFocusTarget(e.target)) return
 
       // The queue advances before AnimatePresence mounts the next interactive layer.
@@ -1262,7 +1253,7 @@ export function NotchPanel() {
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [activeOverlay, activeSession, displayChanging, escSilenceDuration, markActiveBlockingOverlayInline, setPanelState, setWakeSilencedUntil, shortcuts])
+  }, [activeOverlay, activeSession, escSilenceDuration, markActiveBlockingOverlayInline, setPanelState, setWakeSilencedUntil, shortcuts])
 
   const handleSessionClick = (sessionId: string, options?: { forceDetail?: boolean }) => {
     if (!clickToDetail && !options?.forceDetail) {
@@ -2050,7 +2041,7 @@ export function NotchPanel() {
           animate={{
             ...(!windowsIsland && renderedGeometry),
             x: shellX,
-            opacity: layoutPreview ? 1 : displayChanging || islandHidden ? 0 : 1,
+            opacity: layoutPreview || !islandHidden ? 1 : 0,
           }}
           transition={panelTransition}
           onPointerDown={handlePointerDown}

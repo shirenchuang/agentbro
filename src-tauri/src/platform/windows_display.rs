@@ -18,14 +18,10 @@ pub(crate) fn watch(window: &WebviewWindow) -> Result<(), String> {
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn(async move {
         while changes.recv().await.is_some() {
-            // Read monitor geometry after Windows has processed the display messages.
+            // Wait for Windows to apply the change before the webviews query the new geometry.
             tokio::time::sleep(Duration::from_millis(150)).await;
             let _ = changes.try_recv();
-            let handle = app.clone();
-            let _ = app.run_on_main_thread(move || {
-                let displays = super::display::list_displays_inner(&handle);
-                let _ = handle.emit("display-changed", displays);
-            });
+            let _ = app.emit("display-changed", ());
         }
     });
     Ok(())
