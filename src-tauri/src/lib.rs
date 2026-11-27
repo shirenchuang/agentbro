@@ -6577,7 +6577,7 @@ pub fn run() {
             platform::wsl::get_wsl_hook_status,
             platform::wsl::set_wsl_hook,
             commands::get_config,
-            commands::update_config,
+            commands::update_island_preferences,
             commands::set_language,
             commands::set_analytics_enabled,
             commands::complete_first_run_setup,

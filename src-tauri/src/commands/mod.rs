@@ -5242,13 +5242,11 @@ pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String>
 }
 
 #[tauri::command]
-pub async fn update_config(state: State<'_, AppState>, config: AppConfig) -> Result<(), String> {
-    let previous = state.config_store.get();
-    state.config_store.update(config.clone())?;
-    if previous.analytics_enabled != config.analytics_enabled {
-        state.telemetry.handle_consent_changed(&config).await;
-    }
-    Ok(())
+pub(crate) async fn update_island_preferences(
+    state: State<'_, AppState>,
+    patch: crate::config::IslandPreferencesPatch,
+) -> Result<(), String> {
+    state.config_store.update_island_preferences(patch)
 }
 
 #[tauri::command]
