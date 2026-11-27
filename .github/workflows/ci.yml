@@ -131,6 +131,8 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::registry::tests'
       - name: Test Skill Manager recovery snapshots
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::tests::snapshot_'
+      - name: Test Skill Manager diagnosis repairs
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE diagnosis_'
       - name: Test verification and restore of locked project Skills
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::project_lock::'
       - name: Test offline Skill Pack ZIP migration

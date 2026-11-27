@@ -1590,6 +1590,7 @@
     "packAutoSyncTitle": "スキルパック同期",
     "revealSqlite": "SQLite をファイルマネージャーで表示",
     "sqliteRevealed": "SQLite ファイルをファイルマネージャーで表示しました",
+    "diagnosisRepairSkipped": "修復前に対象の状態が変わったため、AgentBro はこの操作をスキップしました。",
     "packAutoSyncLabel": "スキルパック更新後、適用済み Agent に自動同期する",
     "packAutoSyncHelp": "無効にすると、パックページに未同期の変更が表示され、手動同期ボタンが使えます。",
     "packSyncFailedNotice": "{{count}} 件の Agent の同期に失敗しました。状態を確認して再試行できます。",

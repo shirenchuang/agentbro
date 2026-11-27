@@ -781,7 +781,7 @@ pub fn preview_fix_diagnosis_issue(
 }
 
 #[tauri::command(async)]
-pub fn execute_fix_diagnosis_issue(issue_type: String, entity_id: String) -> Result<(), String> {
+pub fn execute_fix_diagnosis_issue(issue_type: String, entity_id: String) -> Result<bool, String> {
     let svc = svc()?;
     diagnosis::execute_fix(&svc, &issue_type, &entity_id)
 }

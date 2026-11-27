@@ -231,7 +231,7 @@ impl Service {
         Ok(())
     }
 
-    fn refresh_snapshot_best_effort(&self) {
+    pub(super) fn refresh_snapshot_best_effort(&self) {
         if let Err(e) = crate::skills::v2::snapshot::export_to_file(self) {
             log::warn!("Skill Manager v2 snapshot refresh failed: {}", e);
         }

@@ -1590,6 +1590,7 @@
     "packAutoSyncTitle": "스킬 팩 동기화",
     "revealSqlite": "파일 관리자에서 SQLite 표시",
     "sqliteRevealed": "파일 관리자에 SQLite 파일을 표시했습니다",
+    "diagnosisRepairSkipped": "복구 전에 대상 상태가 바뀌어 AgentBro가 이 작업을 건너뛰었습니다.",
     "packAutoSyncLabel": "스킬 팩 업데이트 후 적용된 Agent에 자동 동기화",
     "packAutoSyncHelp": "끄면 팩 페이지에 동기화되지 않은 변경 사항이 표시되고 수동 동기화 버튼이 제공됩니다.",
     "packSyncFailedNotice": "{{count}}개 Agent 동기화에 실패했습니다. 상태를 확인한 뒤 다시 시도할 수 있습니다.",
