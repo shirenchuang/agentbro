@@ -922,9 +922,6 @@ function Test-InstalledQuestionReply(
         } catch {
             Write-Host "Could not capture the pending question desktop: $_"
         }
-        if ($env:AGENTBRO_QUESTION_TRACE_PORT) {
-            & node (Join-Path $PSScriptRoot 'probe-windows-question-ui.mjs') $env:AGENTBRO_QUESTION_TRACE_PORT $SessionId $answer
-        }
         throw
     } finally {
         $connection.Dispose()
@@ -1238,10 +1235,6 @@ try {
     foreach ($attempt in 1..$attemptCount) {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
-    }
-    if ($env:AGENTBRO_QUESTION_TRACE_PORT) {
-        & node (Join-Path $PSScriptRoot 'probe-windows-question-ui.mjs') $env:AGENTBRO_QUESTION_TRACE_PORT $SessionId 'Reply to Windows test' start
-        if ($LASTEXITCODE -ne 0) { throw 'Could not attach the question renderer trace' }
     }
     $questionAttempts = if ($VerifyQuestionReconnect) { 8 } else { 1 }
     for ($attempt = 1; $attempt -le $questionAttempts; $attempt++) {

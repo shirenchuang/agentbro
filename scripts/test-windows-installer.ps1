@@ -501,20 +501,6 @@ if ($VerifyStartupFailure) {
 }
 
 if ($VerifyDrag) { $env:AGENTBRO_TRACE_ISLAND_DRAG = '1' }
-if ($env:TRACE_QUESTION_UI -eq 'true') {
-    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $VerifyQuestionReconnect) {
-        throw 'Question tracing requires a reconnect test on an isolated GitHub-hosted runner'
-    }
-    $debugListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-    $debugListener.Start()
-    $debugPort = $debugListener.LocalEndpoint.Port
-    $debugListener.Stop()
-    $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
-    New-Item -Path $key -Force | Out-Null
-    New-ItemProperty -Path $key -Name 'agentbro.exe' -PropertyType String `
-        -Value "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$debugPort" | Out-Null
-    $env:AGENTBRO_QUESTION_TRACE_PORT = "$debugPort"
-}
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
