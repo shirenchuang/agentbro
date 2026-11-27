@@ -33,7 +33,7 @@ const expression = `(${async (id, expectedAnswer, action) => {
     const nativeSetTimeout = window.setTimeout.bind(window)
     const nativeClearTimeout = window.clearTimeout.bind(window)
     window.setTimeout = (callback, delay, ...args) => {
-      if (typeof callback !== 'function' || !callback.toString().includes('collapsed')) {
+      if (typeof callback !== 'function' || delay < 200 || !callback.toString().includes('collapsed')) {
         return nativeSetTimeout(callback, delay, ...args)
       }
       const id = nativeSetTimeout((...values) => {
