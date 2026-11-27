@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsApp } from '../components/settings'
+import { PetVitalsLab } from '../components/dev/PetVitalsLab'
 import { IslandSection } from '../components/settings/sections/IslandSection'
-import type { BackendDisplayInfo } from '../services/tauriApi'
+import type { BackendDisplayInfo, IslandPreferencesPatch } from '../services/tauriApi'
 import { useConfigStore } from '../stores/configStore'
 import { isApplePlatform } from '../utils/platform'
 
@@ -13,6 +14,7 @@ const tauriMocks = vi.hoisted(() => ({
   repositionNotch: vi.fn(() => Promise.resolve()),
   setDisplayId: vi.fn(() => Promise.resolve()),
   setIslandFeatureFlags: vi.fn(() => Promise.resolve()),
+  updateIslandPreferences: vi.fn<(patch: IslandPreferencesPatch) => Promise<void>>(),
   previewIslandLayout: vi.fn(() => Promise.resolve()),
   clearIslandLayoutPreview: vi.fn(() => Promise.resolve()),
   previewSound: vi.fn(() => Promise.resolve()),
@@ -40,6 +42,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
     repositionNotch: tauriMocks.repositionNotch,
     setDisplayId: tauriMocks.setDisplayId,
     setIslandFeatureFlags: tauriMocks.setIslandFeatureFlags,
+    updateIslandPreferences: tauriMocks.updateIslandPreferences,
     previewIslandLayout: tauriMocks.previewIslandLayout,
     clearIslandLayoutPreview: tauriMocks.clearIslandLayoutPreview,
     previewSound: tauriMocks.previewSound,
@@ -59,18 +62,20 @@ vi.mock('@tauri-apps/api/event', async (importOriginal) => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, options?: { defaultValue?: string; message?: string; count?: number }) => {
+    t: (key: string, options?: { defaultValue?: string; message?: string; count?: number; minutes?: number }) => {
       const translations: Record<string, string> = {
         'settings.soundEvents.session-start': '会话开始',
         'settings.soundEvents.permission-request': '权限请求',
         'settings.soundEvents.context-compact': '上下文压缩',
         'settings.probeFilterDesc': '静音很快结束的后台探测会话，避免连接检查、模型探测等短任务播放提示音。',
         'settings.welcomeError': 'Could not save settings: {{message}}',
+        'settings.idleTimeoutMinutes': '{{minutes}} min',
       }
       const value = translations[key] ?? options?.defaultValue ?? key
       return value
         .replace('{{message}}', options?.message ?? '')
         .replace('{{count}}', String(options?.count ?? ''))
+        .replace('{{minutes}}', String(options?.minutes ?? ''))
     },
     i18n: { language: 'en' },
   }),
@@ -84,6 +89,7 @@ describe('settings island menu', () => {
     tauriMocks.registerGlobalShortcut.mockResolvedValue(undefined)
     tauriMocks.setGlobalActionShortcuts.mockResolvedValue(undefined)
     tauriMocks.setIslandSurfaceOptions.mockResolvedValue(undefined)
+    tauriMocks.updateIslandPreferences.mockResolvedValue(undefined)
     tauriMocks.setAnalyticsEnabled.mockResolvedValue(undefined)
     useConfigStore.setState({
       displayMonitor: 'auto',
@@ -309,6 +315,40 @@ describe('settings island menu', () => {
       tipsEnabled: false,
       followFocus: true,
     }))
+  })
+
+  it('saves only the Island preference fields changed by each control', () => {
+    useConfigStore.setState({
+      idleInteractionRoutingEnabled: false,
+      idleInteractionRoutingMinutes: 5,
+      usageQueryEnabled: true,
+      showUsageQuota: true,
+      islandSurfaceMode: 'pet',
+      petVitalsDebugOpen: false,
+    })
+    const { rerender } = render(<IslandSection activeView="behavior" />)
+    fireEvent.click(screen.getByRole('switch', { name: 'settings.idleInteractionRouting' }))
+    const minutesRow = screen.getByText('settings.idleInteractionRoutingMinutes').closest<HTMLElement>('.setting-row')!
+    fireEvent.click(within(minutesRow).getByRole('button', { name: /^5 min/ }))
+    fireEvent.click(within(minutesRow).getByRole('option', { name: '15 min' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'settings.idleInteractionRouting' }))
+
+    rerender(<IslandSection activeView="integration" />)
+    fireEvent.click(screen.getByRole('switch', { name: '启用用量查询' }))
+
+    rerender(<IslandSection activeView="display" />)
+    fireEvent.click(screen.getByRole('switch', { name: '宠物活力调试' }))
+    rerender(<PetVitalsLab />)
+    fireEvent.click(screen.getByRole('button', { name: 'x' }))
+
+    expect(tauriMocks.updateIslandPreferences.mock.calls).toEqual([
+      [{ idleInteractionRoutingEnabled: true }],
+      [{ idleInteractionRoutingMinutes: 15 }],
+      [{ idleInteractionRoutingEnabled: false }],
+      [{ usageQueryEnabled: false, showTokenUsage: false }],
+      [{ petVitalsDebugOpen: true }],
+      [{ petVitalsDebugOpen: false }],
+    ])
   })
 
   it('uses interaction mode cards as presets and marks manual changes as custom', async () => {

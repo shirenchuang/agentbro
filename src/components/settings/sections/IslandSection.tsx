@@ -25,12 +25,13 @@ import {
   registerGlobalShortcut, setGlobalActionShortcuts, setIslandFeatureFlags, setIslandSurfaceOptions,
   setActiveBackendTheme,
   runHookDoctor, uninstallAllHooks,
-  getConfig, updateConfig as updateBackendConfig, listUsageProviders, authorizeUsageProvider,
+  updateIslandPreferences, listUsageProviders, authorizeUsageProvider,
   setAgentDefaultPet,
   resetPetPosition,
 } from '../../../services/tauriApi'
 import type { BackendDisplayInfo, HookDoctorCheck, HookDoctorReport, HookEventStatus, UsageProviderStatus } from '../../../services/tauriApi'
 import type { IslandLayoutPreviewMode, IslandLayoutPreviewOptions } from '../../../services/tauriApi'
+import type { IslandPreferencesPatch } from '../../../services/tauriApi'
 import { usesSharedAntigravityHook } from '../../../services/agentApi'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -137,30 +138,17 @@ function persistIslandSurfaceOptions(next: Partial<{ islandSurfaceMode: 'island'
 }
 
 function persistPetVitalsDebugOpen(open: boolean) {
-  getConfig()
-    .then((backendConfig) => updateBackendConfig({ ...backendConfig, petVitalsDebugOpen: open }))
+  updateIslandPreferences({ petVitalsDebugOpen: open })
     .catch((err) => console.error('Failed to persist pet vitals debug panel setting:', err))
 }
 
-function persistUsageQuerySettings(next: Partial<{ usageQueryEnabled: boolean; showUsageQuota: boolean }>) {
-  const state = useConfigStore.getState()
-  getConfig()
-    .then((backendConfig) => updateBackendConfig({
-      ...backendConfig,
-      usageQueryEnabled: next.usageQueryEnabled ?? state.usageQueryEnabled,
-      showTokenUsage: next.showUsageQuota ?? state.showUsageQuota,
-    }))
+function persistUsageQuerySettings(enabled: boolean) {
+  updateIslandPreferences({ usageQueryEnabled: enabled, showTokenUsage: enabled })
     .catch((err) => console.error('Failed to persist usage query settings:', err))
 }
 
-function persistIdleInteractionRouting(next: Partial<{ enabled: boolean; minutes: number }>) {
-  const state = useConfigStore.getState()
-  getConfig()
-    .then((backendConfig) => updateBackendConfig({
-      ...backendConfig,
-      idleInteractionRoutingEnabled: next.enabled ?? state.idleInteractionRoutingEnabled,
-      idleInteractionRoutingMinutes: next.minutes ?? state.idleInteractionRoutingMinutes,
-    }))
+function persistIdleInteractionRouting(patch: Pick<IslandPreferencesPatch, 'idleInteractionRoutingEnabled' | 'idleInteractionRoutingMinutes'>) {
+  updateIslandPreferences(patch)
     .catch((err) => console.error('Failed to persist idle interaction routing:', err))
 }
 
@@ -764,7 +752,7 @@ function BehaviorTab() {
         <SettingRow label={t('settings.idleInteractionRouting')} description={t('settings.idleInteractionRoutingDesc')}>
           <Toggle checked={config.idleInteractionRoutingEnabled} onChange={(v) => {
             config.updateConfig('idleInteractionRoutingEnabled', v)
-            persistIdleInteractionRouting({ enabled: v })
+            persistIdleInteractionRouting({ idleInteractionRoutingEnabled: v })
           }} />
         </SettingRow>
         {config.idleInteractionRoutingEnabled && (
@@ -775,7 +763,7 @@ function BehaviorTab() {
               onChange={(v) => {
                 const minutes = Number(v)
                 config.updateConfig('idleInteractionRoutingMinutes', minutes)
-                persistIdleInteractionRouting({ minutes })
+                persistIdleInteractionRouting({ idleInteractionRoutingMinutes: minutes })
               }}
               minWidth={130}
             />
@@ -2007,7 +1995,7 @@ function IntegrationTab() {
   const setUsageQueryEnabled = (enabled: boolean) => {
     config.updateConfig('usageQueryEnabled', enabled)
     config.updateConfig('showUsageQuota', enabled)
-    persistUsageQuerySettings({ usageQueryEnabled: enabled, showUsageQuota: enabled })
+    persistUsageQuerySettings(enabled)
     window.setTimeout(() => { fetchUsageProviders({ live: false, showLoading: false }) }, 150)
   }
 

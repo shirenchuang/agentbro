@@ -22,6 +22,16 @@ pub(crate) fn hook_intent_enabled(enabled_agents: &[String], agent: &str) -> boo
         .any(|saved| hook_intent_id(saved) == id)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct IslandPreferencesPatch {
+    pet_vitals_debug_open: Option<bool>,
+    usage_query_enabled: Option<bool>,
+    show_token_usage: Option<bool>,
+    idle_interaction_routing_enabled: Option<bool>,
+    idle_interaction_routing_minutes: Option<u32>,
+}
+
 /// A custom Claude Code engine instance at a non-default path
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -558,9 +568,44 @@ impl ConfigStore {
         self.config.read().map(|c| c.clone()).unwrap_or_default()
     }
 
-    /// Update the config, save to disk, and emit event
-    pub fn update(&self, new_config: AppConfig) -> Result<(), String> {
-        self.commit(|_| Some(new_config)).map(|_| ())
+    /// Save a snapshot without replacing Hook intent or patched Island preferences.
+    pub fn update(&self, mut new_config: AppConfig) -> Result<(), String> {
+        self.commit(|current| {
+            new_config
+                .enabled_agents
+                .clone_from(&current.enabled_agents);
+            new_config.pet_vitals_debug_open = current.pet_vitals_debug_open;
+            new_config.usage_query_enabled = current.usage_query_enabled;
+            new_config.show_token_usage = current.show_token_usage;
+            new_config.idle_interaction_routing_enabled = current.idle_interaction_routing_enabled;
+            new_config.idle_interaction_routing_minutes = current.idle_interaction_routing_minutes;
+            Some(new_config)
+        })
+        .map(|_| ())
+    }
+
+    pub(crate) fn update_island_preferences(
+        &self,
+        patch: IslandPreferencesPatch,
+    ) -> Result<(), String> {
+        self.commit(|current| {
+            let mut next = current.clone();
+            next.pet_vitals_debug_open = patch
+                .pet_vitals_debug_open
+                .unwrap_or(current.pet_vitals_debug_open);
+            next.usage_query_enabled = patch
+                .usage_query_enabled
+                .unwrap_or(current.usage_query_enabled);
+            next.show_token_usage = patch.show_token_usage.unwrap_or(current.show_token_usage);
+            next.idle_interaction_routing_enabled = patch
+                .idle_interaction_routing_enabled
+                .unwrap_or(current.idle_interaction_routing_enabled);
+            next.idle_interaction_routing_minutes = patch
+                .idle_interaction_routing_minutes
+                .unwrap_or(current.idle_interaction_routing_minutes);
+            Some(next)
+        })
+        .map(|_| ())
     }
 
     pub(crate) fn complete_first_run(
@@ -787,19 +832,114 @@ mod tests {
                 .is_empty());
         }
 
-        store
-            .update(AppConfig {
-                enabled_agents: ["gemini-desktop", "gemini", "antigravity", "codex"]
-                    .map(str::to_string)
-                    .to_vec(),
-                ..AppConfig::default()
-            })
-            .unwrap();
+        let legacy = AppConfig {
+            enabled_agents: ["gemini-desktop", "gemini", "antigravity", "codex"]
+                .map(str::to_string)
+                .to_vec(),
+            ..AppConfig::default()
+        };
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let store = ConfigStore {
+            config: Arc::new(RwLock::new(ConfigStore::load_from_disk(&path).unwrap())),
+            config_path: path.clone(),
+            app_handle: None,
+        };
         assert!(!store.mark_agent_enabled("gemini-desktop").unwrap());
         assert!(store.mark_agent_disabled("antigravity").unwrap());
         assert_eq!(
             ConfigStore::load_from_disk(&path).unwrap().enabled_agents,
             ["gemini", "codex"]
+        );
+    }
+
+    #[test]
+    fn island_preferences_stale_snapshot_cannot_restore_removed_hook() {
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("config.json");
+        let store = ConfigStore {
+            config: Arc::new(RwLock::new(AppConfig::default())),
+            config_path: path.clone(),
+            app_handle: None,
+        };
+        assert!(store.mark_agent_enabled("gemini-desktop").unwrap());
+        let mut snapshot = store.get();
+        assert!(store.mark_agent_disabled("antigravity").unwrap());
+        assert!(store.mark_agent_enabled("gemini").unwrap());
+        let patch =
+            serde_json::from_value(serde_json::json!({"petVitalsDebugOpen": true})).unwrap();
+        store.update_island_preferences(patch).unwrap();
+        snapshot.sound_enabled = false;
+        store.update(snapshot).unwrap();
+
+        let saved = ConfigStore::load_from_disk(&path).unwrap();
+        assert_eq!(saved.enabled_agents, ["gemini"]);
+        assert!(saved.pet_vitals_debug_open);
+        assert!(!saved.sound_enabled);
+        assert!(!hook_intent_enabled(&saved.enabled_agents, "antigravity"));
+    }
+
+    #[test]
+    fn island_preferences_merge_independent_edits_and_hook_updates() {
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("config.json");
+        let store = ConfigStore {
+            config: Arc::new(RwLock::new(AppConfig {
+                language: "zh".into(),
+                launch_at_login: true,
+                pet_vitals_debug_open: true,
+                engine_instances: vec![EngineInstance {
+                    id: "work".into(),
+                    label: "Work".into(),
+                    config_root: "work-profile".into(),
+                    enabled: true,
+                }],
+                custom_hook_installs: vec![CustomHookInstall {
+                    id: "custom".into(),
+                    profile_id: "codex".into(),
+                    display_name: "Custom Codex".into(),
+                    install_directory: "codex-profile".into(),
+                }],
+                ..AppConfig::default()
+            })),
+            config_path: path.clone(),
+            app_handle: None,
+        };
+        store.mark_agent_enabled("gemini-desktop").unwrap();
+        let edits = [
+            serde_json::json!({"usageQueryEnabled": false, "showTokenUsage": false}),
+            serde_json::json!({"idleInteractionRoutingEnabled": true}),
+            serde_json::json!({"idleInteractionRoutingMinutes": 15}),
+            serde_json::json!({"petVitalsDebugOpen": false}),
+        ];
+        std::thread::scope(|scope| {
+            for edit in edits {
+                let patch = serde_json::from_value(edit).unwrap();
+                let store = &store;
+                scope.spawn(move || store.update_island_preferences(patch).unwrap());
+            }
+            scope.spawn(|| store.mark_agent_disabled("antigravity").unwrap());
+            scope.spawn(|| store.mark_agent_enabled("gemini").unwrap());
+        });
+
+        let saved = ConfigStore::load_from_disk(&path).unwrap();
+        assert_eq!(saved.language, "zh");
+        assert!(saved.launch_at_login);
+        assert!(!saved.usage_query_enabled);
+        assert!(!saved.show_token_usage);
+        assert!(saved.idle_interaction_routing_enabled);
+        assert_eq!(saved.idle_interaction_routing_minutes, 15);
+        assert!(!saved.pet_vitals_debug_open);
+        assert_eq!(saved.enabled_agents, ["gemini"]);
+        assert_eq!(saved.engine_instances[0].config_root, "work-profile");
+        assert_eq!(
+            saved.custom_hook_installs[0].install_directory,
+            "codex-profile"
+        );
+        assert!(
+            serde_json::from_value::<IslandPreferencesPatch>(serde_json::json!({
+                "usageQueryEnabled": true, "enabledAgents": ["antigravity"]
+            }))
+            .is_err()
         );
     }
 

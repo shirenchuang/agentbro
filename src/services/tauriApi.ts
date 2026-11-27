@@ -645,12 +645,17 @@ export async function getConfig(): Promise<BackendConfig> {
   return invoke<BackendConfig>('get_config')
 }
 
-export async function updateConfig(config: BackendConfig): Promise<void> {
+export type IslandPreferencesPatch = Partial<Pick<BackendConfig,
+  'petVitalsDebugOpen' | 'usageQueryEnabled' | 'showTokenUsage'
+  | 'idleInteractionRoutingEnabled' | 'idleInteractionRoutingMinutes'
+>>
+
+export async function updateIslandPreferences(patch: IslandPreferencesPatch): Promise<void> {
   if (!isTauri()) {
-    console.log('[mock] updateConfig:', config)
+    console.log('[mock] updateIslandPreferences:', patch)
     return
   }
-  return invoke('update_config', { config })
+  return invoke('update_island_preferences', { patch })
 }
 
 export async function setLanguage(language: 'en' | 'zh' | 'ja' | 'ko' | 'tr'): Promise<void> {
