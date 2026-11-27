@@ -20,6 +20,7 @@ param(
     [switch]$VerifyDrag,
     [switch]$VerifyDisplayChange,
     [switch]$CloseStartupSettings,
+    [switch]$VerifyStartupReopen,
     [switch]$AutomationFocusPermission,
     [switch]$VerifyGlobalShortcuts,
     [switch]$VerifyAgentPackageConsole,
@@ -114,6 +115,9 @@ public static class AgentBroSmokeInput {
 
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr window);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
@@ -363,6 +367,63 @@ function Close-StartupSettings {
         -not (Get-IslandWindows | Where-Object { $_.Current.NativeWindowHandle -eq $handle })
     }
     Write-Output 'Closed the first-run Settings window before exercising the Island.'
+}
+
+function Find-ReopenedSettings {
+    foreach ($window in Get-IslandWindows) {
+        $handle = [IntPtr]$window.Current.NativeWindowHandle
+        if ($window.Current.Name -ne 'AgentBro' -or -not [AgentBroSmokeInput]::IsWindowVisible($handle) -or
+            [AgentBroSmokeInput]::IsIconic($handle)) { continue }
+        $scale = [AgentBroSmokeInput]::GetDpiForWindow($handle) / 96.0
+        if ($scale -gt 0 -and $window.Current.BoundingRectangle.Width -ge 900 * $scale) {
+            return $window
+        }
+    }
+}
+
+function Invoke-SettingsRelaunch([string]$Executable) {
+    $duplicate = Start-Process -FilePath $Executable -WorkingDirectory (Split-Path $Executable) -PassThru
+    try {
+        if (-not $duplicate.WaitForExit(10000) -or $duplicate.ExitCode -ne 0) {
+            throw 'The repeated launch did not exit successfully after sending the reopen request.'
+        }
+    } finally {
+        if (-not $duplicate.HasExited) {
+            Stop-Process -Id $duplicate.Id -ErrorAction SilentlyContinue
+            $null = $duplicate.WaitForExit(3000)
+        }
+        $duplicate.Dispose()
+    }
+}
+
+function Test-InstalledSettingsRelaunch {
+    $process = Get-Process -Id $AppProcessId
+    try { $executable = $process.Path } finally { $process.Dispose() }
+    if (-not $executable) { throw 'Could not locate the running AgentBro executable.' }
+    $previous = Find-ReopenedSettings
+    if ($previous) {
+        $previous.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
+        $null = Wait-IslandValue 'the existing Settings window to close' { -not (Find-ReopenedSettings) }
+    }
+
+    Invoke-SettingsRelaunch $executable
+    $settings = Wait-IslandValue 'the repeated launch to open Settings in the primary process' { Find-ReopenedSettings }
+    Write-Output 'The repeated launch opened Settings in the primary AgentBro process.'
+    $handle = [IntPtr]$settings.Current.NativeWindowHandle
+    $pattern = $settings.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern)
+    $pattern.SetWindowVisualState([Windows.Automation.WindowVisualState]::Minimized)
+    $null = Wait-IslandValue 'the Settings window to minimize' { [AgentBroSmokeInput]::IsIconic($handle) }
+
+    Invoke-SettingsRelaunch $executable
+    $restored = Wait-IslandValue 'the repeated launch to restore the same Settings window' {
+        $window = Find-ReopenedSettings
+        if ($window -and [IntPtr]$window.Current.NativeWindowHandle -eq $handle) { return $window }
+    }
+    Write-Output 'The repeated launch restored the same minimized Settings window.'
+    $restored.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
+    $null = Wait-IslandValue 'the reopened Settings window to close before testing the Island' {
+        -not (Find-ReopenedSettings)
+    }
 }
 
 function Write-IslandAccessibilityBounds {
@@ -1175,7 +1236,11 @@ $cursorSaved = [AgentBroSmokeInput]::GetCursorPos([ref]$originalCursor)
 $island = $null
 $islandWindow = $null
 try {
-    if ($CloseStartupSettings) { Close-StartupSettings }
+    if ($VerifyStartupReopen) {
+        Test-InstalledSettingsRelaunch
+    } elseif ($CloseStartupSettings) {
+        Close-StartupSettings
+    }
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     if ($VerifyDisplayChange) {
         . "$PSScriptRoot/test-windows-display-change.ps1"

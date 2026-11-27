@@ -2638,43 +2638,54 @@ fn find_cursor_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> 
 fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     let handle = app.clone();
     app.run_on_main_thread(move || {
-        if let Some(notch) = handle.get_webview_window("notch") {
-            let _ = notch.set_ignore_cursor_events(true);
+        if let Err(error) = show_settings_window_on_main_thread(&handle) {
+            log::warn!("Failed to show settings window: {error}");
         }
-        let _ = handle.emit("settings-window-opened", ());
-
-        #[cfg(target_os = "macos")]
-        {
-            let _ = handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-        }
-
-        // Create the settings webview on demand. The window was previously
-        // declared in tauri.conf.json with `visible: false`, which spun the
-        // process up at app launch (~170 MB resident, idle forever). Building
-        // it lazily here means we only pay the cost the first time the user
-        // opens settings, and `attach_settings_close_handler` rigs it to
-        // `destroy()` on close so the process exits when they leave.
-        let window = match handle.get_webview_window("settings") {
-            Some(existing) => existing,
-            None => match build_settings_window(&handle) {
-                Ok(w) => w,
-                Err(e) => {
-                    log::warn!("Failed to create settings window: {e}");
-                    return;
-                }
-            },
-        };
-
-        normalize_settings_window_frame(&window);
-        apply_settings_window_for_spaces(&window);
-        let _ = window.show();
-        let _ = window.set_focus();
-
-        #[cfg(target_os = "macos")]
-        activate_agentbro_app();
-        focus_settings_window_native(&window);
     })
     .map_err(|e| e.to_string())
+}
+
+fn show_settings_window_on_main_thread(
+    app: &tauri::AppHandle,
+) -> Result<tauri::WebviewWindow, String> {
+    if let Some(notch) = app.get_webview_window("notch") {
+        let _ = notch.set_ignore_cursor_events(true);
+    }
+    let _ = app.emit("settings-window-opened", ());
+
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+    let window = match app.get_webview_window("settings") {
+        Some(existing) => existing,
+        None => build_settings_window(app)?,
+    };
+    #[cfg(target_os = "windows")]
+    if window.is_minimized().unwrap_or(false) {
+        let _ = window.unminimize();
+    }
+    normalize_settings_window_frame(&window);
+    apply_settings_window_for_spaces(&window);
+    let _ = window.show();
+    let _ = window.set_focus();
+
+    #[cfg(target_os = "macos")]
+    activate_agentbro_app();
+    focus_settings_window_native(&window);
+    Ok(window)
+}
+
+#[cfg(target_os = "windows")]
+fn reopen_windows_settings(app: &tauri::AppHandle) {
+    match show_settings_window_on_main_thread(app) {
+        Ok(window) => {
+            if !window.is_focused().unwrap_or(false) {
+                let _ =
+                    window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+            }
+        }
+        Err(error) => log::warn!("Could not reopen Windows Settings: {error}"),
+    }
 }
 
 /// Build the settings webview from scratch. Mirrors the descriptor that used
@@ -6074,12 +6085,21 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     let endpoint = hook_endpoint::current();
     #[cfg(target_os = "windows")]
-    let (_startup_lock, startup_lock_error) =
-        match data_dir::try_windows_startup_lock(&data_dir::agentbro_home(), endpoint.tcp_port) {
-            Ok(Some(lock)) => (Some(lock), None),
-            Ok(None) => return,
-            Err(error) => (None, Some(error)),
-        };
+    let (_startup_lock, startup_lock_error, reopen_event) = {
+        let directory = data_dir::agentbro_home();
+        // The primary must hold the event before it acquires the lock so an immediate reopen can queue.
+        let event = platform::windows_startup::ReopenEvent::open(&directory, endpoint.tcp_port);
+        match data_dir::try_windows_startup_lock(&directory, endpoint.tcp_port) {
+            Ok(Some(lock)) => (Some(lock), None, Some(event)),
+            Ok(None) => {
+                if std::env::args_os().nth(1).is_none() {
+                    let _ = event.and_then(|event| event.signal());
+                }
+                return;
+            }
+            Err(error) => (None, Some(error), None),
+        }
+    };
 
     #[cfg(target_os = "windows")]
     let startup = Arc::new(platform::windows_startup::StartupRecovery::default());
@@ -6595,6 +6615,13 @@ pub fn run() {
                     return Ok(());
                 }
                 log::info!("Startup: Windows desktop setup complete");
+                if let Some(event) = reopen_event {
+                    if let Err(error) = event.and_then(|event| {
+                        event.watch(app.handle().clone(), reopen_windows_settings)
+                    }) {
+                        log::warn!("Could not monitor Windows reopen requests: {error}");
+                    }
+                }
             }
             log::info!("AgentBro started");
             Ok(())

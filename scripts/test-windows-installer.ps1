@@ -19,6 +19,7 @@ param(
     [switch]$VerifyStartupLock,
     [switch]$VerifyStartupFailure,
     [switch]$VerifyStartupOrder,
+    [switch]$VerifyStartupReopen,
     [switch]$VerifyDiagnosticsExport,
     [switch]$VerifyAgentPackageConsole,
     [switch]$VerifyRegisteredAgentApp
@@ -455,6 +456,7 @@ function Test-DuplicateStartup([string]$State) {
     $launchLog = Join-Path $stage "duplicate-$State.stdout.log"
     $launchError = Join-Path $stage "duplicate-$State.stderr.log"
     $duplicate = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+        -ArgumentList '--startup-lock-probe' `
         -RedirectStandardOutput $launchLog -RedirectStandardError $launchError
     try {
         if (-not $duplicate.WaitForExit(10000)) {
@@ -681,6 +683,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
     if ($VerifyDisplayChange) { $start.ArgumentList.Add('-VerifyDisplayChange') }
     if ($CloseStartupSettings) { $start.ArgumentList.Add('-CloseStartupSettings') }
+    if ($VerifyStartupReopen) { $start.ArgumentList.Add('-VerifyStartupReopen') }
     if ($AutomationFocusPermission) { $start.ArgumentList.Add('-AutomationFocusPermission') }
     if ($VerifyGlobalShortcuts) { $start.ArgumentList.Add('-VerifyGlobalShortcuts') }
     $start.UseShellExecute = $false
