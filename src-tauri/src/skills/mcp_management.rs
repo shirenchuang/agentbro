@@ -4,6 +4,7 @@ use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -61,6 +62,8 @@ pub struct McpServerDraft {
     pub url: Option<String>,
     #[serde(default)]
     pub headers: Vec<McpConfigValue>,
+    #[serde(skip)]
+    resolved_env_headers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +238,80 @@ struct RawServer {
     draft: McpServerDraft,
     enabled: bool,
     raw: Value,
+    codex_http: Option<CodexHttpSettings>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CodexHttpSettings {
+    bearer_token_env: Option<String>,
+    env_headers: Vec<McpConfigValue>,
+    environment_id: Option<String>,
+    uses_headers_helper: bool,
+}
+
+impl RawServer {
+    fn connection_draft(&self) -> Result<Cow<'_, McpServerDraft>, String> {
+        self.connection_draft_with(|name| std::env::var(name).ok())
+    }
+
+    fn connection_draft_with(
+        &self,
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Result<Cow<'_, McpServerDraft>, String> {
+        let Some(settings) = &self.codex_http else {
+            return Ok(Cow::Borrowed(&self.draft));
+        };
+        if settings
+            .environment_id
+            .as_deref()
+            .is_some_and(|id| id != "local")
+        {
+            return Err(
+                "This MCP server connects through a Codex executor. Open it in Codex.".into(),
+            );
+        }
+        if settings.uses_headers_helper {
+            return Err(
+                "This MCP server uses a Codex HTTP headers helper. Open it in Codex.".into(),
+            );
+        }
+        if settings.env_headers.is_empty() && settings.bearer_token_env.is_none() {
+            return Ok(Cow::Borrowed(&self.draft));
+        }
+
+        let mut draft = self.draft.clone();
+        for header in &settings.env_headers {
+            let Some(value) = header.value.as_deref().and_then(&env) else {
+                continue;
+            };
+            if !value.trim().is_empty()
+                && reqwest::header::HeaderName::from_bytes(header.key.as_bytes()).is_ok()
+                && reqwest::header::HeaderValue::from_str(&value).is_ok()
+            {
+                replace_http_header(&mut draft, &header.key, value);
+            }
+        }
+        if let Some(name) = &settings.bearer_token_env {
+            let value = env(name)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| format!("MCP bearer token environment variable {name} is missing or empty in AgentBro"))?;
+            replace_http_header(&mut draft, "Authorization", format!("Bearer {value}"));
+        }
+        Ok(Cow::Owned(draft))
+    }
+}
+
+fn replace_http_header(draft: &mut McpServerDraft, name: &str, value: String) {
+    draft
+        .headers
+        .retain(|header| !header.key.eq_ignore_ascii_case(name));
+    draft.headers.push(McpConfigValue {
+        key: name.to_string(),
+        value: Some(value),
+        secret: true,
+        configured: true,
+    });
+    draft.resolved_env_headers.push(name.to_string());
 }
 
 #[derive(Debug, Clone)]
@@ -363,6 +440,7 @@ pub fn save_mcp_server(
                 draft: resolved.clone(),
                 enabled: false,
                 raw: raw_value_for(&config, &resolved, false, previous.as_ref().map(|p| &p.raw)),
+                codex_http: None,
             },
         );
         write_disabled_servers(agent_id, &next)?;
@@ -601,6 +679,7 @@ fn normalize_json_server(
             .unwrap_or(false),
     };
     let draft = McpServerDraft {
+        resolved_env_headers: Vec::new(),
         name: name.to_string(),
         transport,
         command,
@@ -617,6 +696,7 @@ fn normalize_json_server(
         draft,
         enabled,
         raw: raw.clone(),
+        codex_http: None,
     })
 }
 
@@ -1059,6 +1139,7 @@ fn set_sidecar_enabled(
                 draft: stored.draft,
                 enabled: false,
                 raw: raw.clone(),
+                codex_http: None,
             },
         );
         write_disabled_servers(&config.agent_id, &disabled)?;
@@ -1347,6 +1428,7 @@ fn ensure_revision(
 fn parse_codex_servers(content: &str) -> BTreeMap<String, RawServer> {
     let mut drafts = BTreeMap::<String, McpServerDraft>::new();
     let mut enabled = HashMap::<String, bool>::new();
+    let mut codex_http = HashMap::<String, CodexHttpSettings>::new();
     let mut current_path = Vec::<String>::new();
     for line in logical_toml_lines(content) {
         if let Some(path) = parse_toml_table_path(&line) {
@@ -1358,6 +1440,7 @@ fn parse_codex_servers(content: &str) -> BTreeMap<String, RawServer> {
                 drafts
                     .entry(name.clone())
                     .or_insert_with(|| McpServerDraft {
+                        resolved_env_headers: Vec::new(),
                         name,
                         transport: McpTransport::Stdio,
                         command: None,
@@ -1400,6 +1483,24 @@ fn parse_codex_servers(content: &str) -> BTreeMap<String, RawServer> {
                 "http_headers" => {
                     draft.headers = parse_toml_inline_table(value);
                 }
+                "bearer_token_env_var" => {
+                    codex_http.entry(name.clone()).or_default().bearer_token_env =
+                        parse_toml_string(value);
+                }
+                "env_http_headers" => {
+                    codex_http.entry(name.clone()).or_default().env_headers =
+                        parse_toml_inline_table(value);
+                }
+                "environment_id" => {
+                    codex_http.entry(name.clone()).or_default().environment_id =
+                        parse_toml_string(value);
+                }
+                "http_headers_helper" => {
+                    codex_http
+                        .entry(name.clone())
+                        .or_default()
+                        .uses_headers_helper = true;
+                }
                 _ => {}
             }
         } else if current_path.len() == 3 && current_path[2] == "env" {
@@ -1411,9 +1512,19 @@ fn parse_codex_servers(content: &str) -> BTreeMap<String, RawServer> {
                     configured: true,
                 });
             }
-        } else if current_path.len() == 3 && current_path[2] == "http_headers" {
+        } else if current_path.len() == 3
+            && matches!(
+                current_path[2].as_str(),
+                "http_headers" | "env_http_headers"
+            )
+        {
             if let Some(value) = parse_toml_string(value) {
-                draft.headers.push(McpConfigValue {
+                let headers = if current_path[2] == "http_headers" {
+                    &mut draft.headers
+                } else {
+                    &mut codex_http.entry(name.clone()).or_default().env_headers
+                };
+                headers.push(McpConfigValue {
                     secret: is_sensitive_key(&key),
                     key,
                     value: Some(value),
@@ -1425,12 +1536,18 @@ fn parse_codex_servers(content: &str) -> BTreeMap<String, RawServer> {
     drafts
         .into_iter()
         .map(|(name, draft)| {
+            let codex_http = if draft.transport == McpTransport::Http {
+                codex_http.remove(&name)
+            } else {
+                None
+            };
             (
                 name.clone(),
                 RawServer {
                     draft,
                     enabled: enabled.get(&name).copied().unwrap_or(true),
                     raw: Value::Null,
+                    codex_http,
                 },
             )
         })
@@ -1807,7 +1924,14 @@ fn parse_toml_bool(value: &str) -> Option<bool> {
 }
 
 fn parse_toml_string(value: &str) -> Option<String> {
-    let inner = value.trim().strip_prefix('"')?.strip_suffix('"')?;
+    let value = value.trim();
+    if let Some(literal) = value
+        .strip_prefix('\'')
+        .and_then(|text| text.strip_suffix('\''))
+    {
+        return Some(literal.to_string());
+    }
+    let inner = value.strip_prefix('"')?.strip_suffix('"')?;
     let mut out = String::new();
     let mut escaped = false;
     for ch in inner.chars() {
@@ -2145,6 +2269,7 @@ async fn run_mcp_operation(
         return Err(redact_message(&validation.message, &server.draft));
     }
 
+    let draft = server.connection_draft()?;
     let signal = Arc::new(Notify::new());
     {
         let mut cancellations = inspection_cancellations()
@@ -2166,12 +2291,12 @@ async fn run_mcp_operation(
                 name,
                 method,
                 params,
-                &server.draft,
+                &draft,
                 validation.warnings,
             ),
         ) => match result {
             Ok(Ok(result)) => Ok(result),
-            Ok(Err(error)) => Err(redact_message(&error.message, &server.draft)),
+            Ok(Err(error)) => Err(redact_message(&error.message, &draft)),
             Err(_) => Err(format!(
                 "MCP operation timed out after {} seconds",
                 MCP_OPERATION_TIMEOUT.as_secs()
@@ -2217,10 +2342,11 @@ async fn perform_mcp_operation(
         warnings.push(redact_message(&error.message, draft));
     }
     let response = response?;
-    let result = response.get("result").cloned().ok_or_else(|| TestFailure {
+    let mut result = response.get("result").cloned().ok_or_else(|| TestFailure {
         category: "protocol_error",
         message: format!("{method} response is missing a result"),
     })?;
+    redact_http_response(&mut result, draft);
     let result_size = serde_json::to_vec(&result)
         .map_err(|error| TestFailure {
             category: "protocol_error",
@@ -2284,6 +2410,7 @@ pub async fn inspect_mcp_server(
         ));
     }
 
+    let draft = server.connection_draft()?;
     let signal = Arc::new(Notify::new());
     {
         let mut cancellations = inspection_cancellations()
@@ -2298,21 +2425,21 @@ pub async fn inspect_mcp_server(
     let result = tokio::select! {
         _ = signal.notified() => cancelled_inspection_report(
             inspection_id,
-            &server.draft,
+            &draft,
             elapsed_ms(started),
         ),
         result = tokio::time::timeout(
             MCP_INSPECTION_TIMEOUT,
             perform_mcp_inspection(
                 inspection_id,
-                &server.draft,
+                &draft,
                 validation.warnings,
             ),
         ) => match result {
             Ok(report) => report,
             Err(_) => failed_inspection_report(
                 inspection_id,
-                &server.draft,
+                &draft,
                 "timeout",
                 "MCP inspection timed out after 20 seconds".to_string(),
                 Vec::new(),
@@ -2487,6 +2614,7 @@ async fn perform_mcp_inspection(
         }
     };
     let result = initialize.get("result").unwrap_or(&Value::Null);
+    let info = info.redacted(draft);
     report.protocol_version = info.protocol_version;
     report.server_name = info.server_name;
     report.server_version = info.server_version;
@@ -2542,7 +2670,11 @@ async fn perform_mcp_inspection(
         )
         .await
         {
-            Ok(Ok(discovery)) => {
+            Ok(Ok(mut discovery)) => {
+                discovery
+                    .items
+                    .iter_mut()
+                    .for_each(|item| redact_http_response(item, draft));
                 report.tools = discovery
                     .items
                     .iter()
@@ -2601,7 +2733,11 @@ async fn perform_mcp_inspection(
         )
         .await
         {
-            Ok(Ok(discovery)) => {
+            Ok(Ok(mut discovery)) => {
+                discovery
+                    .items
+                    .iter_mut()
+                    .for_each(|item| redact_http_response(item, draft));
                 report.resources = discovery
                     .items
                     .iter()
@@ -2650,7 +2786,11 @@ async fn perform_mcp_inspection(
         )
         .await
         {
-            Ok(Ok(discovery)) => {
+            Ok(Ok(mut discovery)) => {
+                discovery
+                    .items
+                    .iter_mut()
+                    .for_each(|item| redact_http_response(item, draft));
                 report.prompts = discovery
                     .items
                     .iter()
@@ -3375,34 +3515,38 @@ pub async fn test_mcp_server_connection(
             tool_count: None,
         });
     }
+    let draft = server.connection_draft()?;
     let started = Instant::now();
     let test = async {
-        match server.draft.transport {
-            McpTransport::Stdio => test_stdio_connection(&server.draft).await,
-            McpTransport::Http => test_streamable_http_connection(&server.draft).await,
-            McpTransport::Sse => test_legacy_sse_connection(&server.draft).await,
+        match draft.transport {
+            McpTransport::Stdio => test_stdio_connection(&draft).await,
+            McpTransport::Http => test_streamable_http_connection(&draft).await,
+            McpTransport::Sse => test_legacy_sse_connection(&draft).await,
         }
     };
     let result = tokio::time::timeout(MCP_TEST_TIMEOUT, test).await;
     let latency_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     match result {
-        Ok(Ok(info)) => Ok(McpConnectionTestResult {
-            success: true,
-            category: "connected".to_string(),
-            message: match info.tool_count {
-                Some(count) => format!("Connected · {count} tools discovered"),
-                None => "Connected · server does not declare tools".to_string(),
-            },
-            latency_ms,
-            protocol_version: info.protocol_version,
-            server_name: info.server_name,
-            server_version: info.server_version,
-            tool_count: info.tool_count,
-        }),
+        Ok(Ok(info)) => {
+            let info = info.redacted(&draft);
+            Ok(McpConnectionTestResult {
+                success: true,
+                category: "connected".to_string(),
+                message: match info.tool_count {
+                    Some(count) => format!("Connected · {count} tools discovered"),
+                    None => "Connected · server does not declare tools".to_string(),
+                },
+                latency_ms,
+                protocol_version: info.protocol_version,
+                server_name: info.server_name,
+                server_version: info.server_version,
+                tool_count: info.tool_count,
+            })
+        }
         Ok(Err(error)) => Ok(McpConnectionTestResult {
             success: false,
             category: error.category.to_string(),
-            message: redact_message(&error.message, &server.draft),
+            message: redact_message(&error.message, &draft),
             latency_ms,
             protocol_version: None,
             server_name: None,
@@ -3825,10 +3969,12 @@ fn apply_http_headers(
                     message: format!("Invalid HTTP header {}: {error}", item.key),
                 }
             })?;
-        let value = reqwest::header::HeaderValue::from_str(value).map_err(|error| TestFailure {
-            category: "invalid_config",
-            message: format!("Invalid HTTP header value for {}: {error}", item.key),
-        })?;
+        let mut value =
+            reqwest::header::HeaderValue::from_str(value).map_err(|error| TestFailure {
+                category: "invalid_config",
+                message: format!("Invalid HTTP header value for {}: {error}", item.key),
+            })?;
+        value.set_sensitive(item.secret);
         request = request.header(name, value);
     }
     Ok(request)
@@ -4176,8 +4322,73 @@ fn network_failure(error: reqwest::Error) -> TestFailure {
     }
 }
 
+fn http_secret_values(draft: &McpServerDraft) -> impl Iterator<Item = &str> {
+    draft
+        .headers
+        .iter()
+        .filter(|header| draft.resolved_env_headers.contains(&header.key))
+        .flat_map(|header| {
+            let value = header.value.as_deref().filter(|value| !value.is_empty());
+            let bearer = value
+                .filter(|_| header.key.eq_ignore_ascii_case("Authorization"))
+                .and_then(|value| value.split_once(' '))
+                .filter(|(scheme, value)| {
+                    scheme.eq_ignore_ascii_case("Bearer") && !value.is_empty()
+                })
+                .map(|(_, value)| value);
+            value.into_iter().chain(bearer)
+        })
+}
+
+fn redact_http_text(text: &mut String, draft: &McpServerDraft) {
+    for secret in http_secret_values(draft) {
+        if text.contains(secret) {
+            *text = text.replace(secret, "***");
+        }
+    }
+}
+
+fn redact_http_response(value: &mut Value, draft: &McpServerDraft) {
+    if http_secret_values(draft).next().is_none() {
+        return;
+    }
+    match value {
+        Value::String(text) => redact_http_text(text, draft),
+        Value::Array(items) => {
+            for item in items {
+                redact_http_response(item, draft);
+            }
+        }
+        Value::Object(map) => {
+            for (mut key, mut item) in std::mem::take(map) {
+                redact_http_text(&mut key, draft);
+                redact_http_response(&mut item, draft);
+                map.insert(key, item);
+            }
+        }
+        _ => {}
+    }
+}
+
+impl HandshakeInfo {
+    fn redacted(mut self, draft: &McpServerDraft) -> Self {
+        for text in [
+            &mut self.protocol_version,
+            &mut self.server_name,
+            &mut self.server_version,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            redact_http_text(text, draft);
+        }
+        self
+    }
+}
+
 fn redact_message(message: &str, draft: &McpServerDraft) -> String {
     let mut redacted = message.to_string();
+    redact_http_text(&mut redacted, draft);
     for value in draft.env.iter().chain(draft.headers.iter()) {
         if let Some(secret) = value.value.as_deref().filter(|value| !value.is_empty()) {
             redacted = redacted.replace(secret, "***");
@@ -4201,6 +4412,7 @@ mod tests {
 
     fn stdio_draft(name: &str, command: &str) -> McpServerDraft {
         McpServerDraft {
+            resolved_env_headers: Vec::new(),
             name: name.to_string(),
             transport: McpTransport::Stdio,
             command: Some(command.to_string()),
@@ -4210,6 +4422,208 @@ mod tests {
             url: None,
             headers: Vec::new(),
         }
+    }
+
+    #[test]
+    fn codex_http_environment_headers_use_native_precedence_and_remain_references() {
+        let content = r#"
+[mcp_servers."fixture.inline"]
+url = "https://mcp.example.invalid"
+bearer_token_env_var = "FIXTURE_TOKEN"
+http_headers = { authorization = "Bearer fallback", "x-tenant" = "static", "x-optional" = "keep" }
+env_http_headers = { Authorization = "UNUSED_BEARER", "X-Tenant" = "FIXTURE_TENANT", "X-Optional" = "EMPTY_OPTIONAL" }
+
+[mcp_servers.nested]
+url = "https://mcp.example.invalid"
+[mcp_servers.nested.env_http_headers]
+"X-Group" = 'FIXTURE_TENANT'
+"X-Missing" = "MISSING_OPTIONAL"
+"X-Invalid" = "INVALID_OPTIONAL"
+"#;
+        let servers = parse_codex_servers(content);
+        let resolve = |name: &str| {
+            Some(
+                match name {
+                    "FIXTURE_TOKEN" => "synthetic-bearer",
+                    "FIXTURE_TENANT" => "synthetic-tenant",
+                    "UNUSED_BEARER" => "Bearer unwanted",
+                    "EMPTY_OPTIONAL" => " ",
+                    "INVALID_OPTIONAL" => "invalid\r\nvalue",
+                    _ => return None,
+                }
+                .to_string(),
+            )
+        };
+        let inline = &servers["fixture.inline"];
+        let connected = inline.connection_draft_with(resolve).unwrap();
+        let headers: BTreeMap<_, _> = connected
+            .headers
+            .iter()
+            .map(|header| {
+                (
+                    header.key.to_ascii_lowercase(),
+                    header.value.as_deref().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(connected.headers.len(), 3);
+        assert_eq!(headers["authorization"], "Bearer synthetic-bearer");
+        assert_eq!(headers["x-tenant"], "synthetic-tenant");
+        assert_eq!(headers["x-optional"], "keep");
+
+        let nested = servers["nested"].connection_draft_with(resolve).unwrap();
+        assert_eq!(nested.headers.len(), 1);
+        assert_eq!(nested.headers[0].key, "X-Group");
+        assert!(nested.headers[0].secret);
+
+        let redacted = serde_json::to_string(&redact_draft(inline.draft.clone())).unwrap();
+        assert!(!redacted.contains("synthetic-"));
+        let edited = upsert_codex_server(content, "fixture.inline", &inline.draft, true).unwrap();
+        let edited = set_codex_enabled(&edited, "nested", false).unwrap();
+        assert!(edited.contains("bearer_token_env_var = \"FIXTURE_TOKEN\""));
+        assert!(edited.contains("env_http_headers = { Authorization = \"UNUSED_BEARER\""));
+        assert!(edited.contains("[mcp_servers.nested.env_http_headers]"));
+        assert!(!edited.contains("synthetic-"));
+    }
+
+    #[test]
+    fn codex_http_environment_errors_identify_missing_credentials_and_executor_settings() {
+        let config = parse_codex_servers(
+            r#"
+[mcp_servers.missing]
+url = "https://mcp.example.invalid"
+bearer_token_env_var = "FIXTURE_MISSING"
+
+[mcp_servers.executor]
+url = "https://mcp.example.invalid"
+environment_id = 'remote-executor'
+bearer_token_env_var = "FIXTURE_EXECUTOR"
+
+[mcp_servers.helper]
+url = "https://mcp.example.invalid"
+http_headers_helper = "fixture-command"
+"#,
+        );
+        for value in [None, Some(" ".to_string())] {
+            let error = config["missing"]
+                .connection_draft_with(|_| value.clone())
+                .unwrap_err();
+            assert!(error.contains("FIXTURE_MISSING"));
+        }
+        for (name, text) in [
+            ("executor", "Codex executor"),
+            ("helper", "HTTP headers helper"),
+        ] {
+            let error = config[name]
+                .connection_draft_with(|_| panic!("Should not read local credentials"))
+                .unwrap_err();
+            assert!(error.contains(text));
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_http_environment_authenticates_mcp_requests_and_masks_echoed_values() {
+        use axum::http::HeaderMap;
+
+        const TOKEN: &str = "synthetic-mcp-test-token";
+        const CONTEXT: &str = "synthetic-mcp-test-context";
+        async fn fixture(headers: HeaderMap, Json(body): Json<Value>) -> (StatusCode, Json<Value>) {
+            if headers
+                .get("authorization")
+                .and_then(|item| item.to_str().ok())
+                != Some("Bearer synthetic-mcp-test-token")
+                || headers.get("x-context").and_then(|item| item.to_str().ok()) != Some(CONTEXT)
+            {
+                return (StatusCode::UNAUTHORIZED, Json(Value::Null));
+            }
+            assert_eq!(headers.get_all("authorization").iter().count(), 1);
+            let result = match body["method"].as_str() {
+                Some("initialize") => serde_json::json!({
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": { "tools": {}, "prompts": {} },
+                    "serverInfo": { "name": "Authenticated fixture", "version": TOKEN },
+                }),
+                Some("tools/list") => serde_json::json!({
+                    "tools": [{ "name": "echo", "description": CONTEXT }]
+                }),
+                Some("prompts/list") => serde_json::json!({ "prompts": [] }),
+                Some("tools/call" | "prompts/get") => serde_json::json!({
+                    "echo": [TOKEN, format!("Bearer {TOKEN}"), { (CONTEXT): TOKEN }],
+                }),
+                _ => Value::Null,
+            };
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0", "id": body["id"], "result": result,
+                })),
+            )
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/", post(fixture)))
+                .await
+                .unwrap();
+        });
+        let content = format!(
+            r#"
+[mcp_servers.fixture]
+url = "http://{address}/"
+bearer_token_env_var = "FIXTURE_TOKEN"
+[mcp_servers.fixture.env_http_headers]
+"X-Context" = "FIXTURE_CONTEXT"
+"#
+        );
+        let servers = parse_codex_servers(&content);
+        let server = &servers["fixture"];
+        assert_eq!(
+            test_streamable_http_connection(&server.draft)
+                .await
+                .unwrap_err()
+                .category,
+            "authentication_required",
+        );
+        let draft = server
+            .connection_draft_with(|name| match name {
+                "FIXTURE_TOKEN" => Some(TOKEN.to_string()),
+                "FIXTURE_CONTEXT" => Some(CONTEXT.to_string()),
+                _ => None,
+            })
+            .unwrap();
+        let info = test_streamable_http_connection(&draft)
+            .await
+            .unwrap()
+            .redacted(&draft);
+        assert_eq!(info.server_name.as_deref(), Some("Authenticated fixture"));
+        assert_eq!(info.server_version.as_deref(), Some("***"));
+        assert_eq!(info.tool_count, Some(1));
+        let report = perform_mcp_inspection("fixture-inspect", &draft, Vec::new()).await;
+        assert_eq!(report.status, "connected");
+        assert_eq!(report.tools[0].description.as_deref(), Some("***"));
+        for (kind, method) in [("tool", "tools/call"), ("prompt", "prompts/get")] {
+            let output = perform_mcp_operation(
+                "fixture-operation",
+                kind,
+                "echo",
+                method,
+                serde_json::json!({ "name": "echo" }),
+                &draft,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                output.result,
+                serde_json::json!({ "echo": ["***", "***", { "***": "***" }] })
+            );
+        }
+        assert_eq!(
+            redact_message(&format!("Credentials {TOKEN} and {CONTEXT}"), &draft),
+            "Credentials *** and ***"
+        );
+        task.abort();
     }
 
     #[test]
@@ -4239,6 +4653,7 @@ mod tests {
     #[test]
     fn json_adapter_preserves_unknown_fields() {
         let draft = McpServerDraft {
+            resolved_env_headers: Vec::new(),
             name: "remote".to_string(),
             transport: McpTransport::Http,
             command: None,
@@ -4422,6 +4837,7 @@ command = "two"
         let mut names = HashSet::new();
         names.insert("existing".to_string());
         let draft = McpServerDraft {
+            resolved_env_headers: Vec::new(),
             name: "existing".to_string(),
             transport: McpTransport::Sse,
             command: None,
@@ -4763,6 +5179,7 @@ $response = @{
                 .unwrap();
         });
         let draft = McpServerDraft {
+            resolved_env_headers: Vec::new(),
             name: "remote".to_string(),
             transport: McpTransport::Http,
             command: None,
@@ -5001,6 +5418,7 @@ $response = @{
             axum::serve(listener, router).await.unwrap();
         });
         let mut draft = McpServerDraft {
+            resolved_env_headers: Vec::new(),
             name: "events".to_string(),
             transport: McpTransport::Http,
             command: None,
@@ -5086,6 +5504,7 @@ $response = @{
                 .unwrap();
         });
         let draft = McpServerDraft {
+            resolved_env_headers: Vec::new(),
             name: "inspector".to_string(),
             transport: McpTransport::Http,
             command: None,
@@ -5129,6 +5548,7 @@ $response = @{
                 .unwrap();
         });
         let draft = McpServerDraft {
+            resolved_env_headers: Vec::new(),
             name: "operations".to_string(),
             transport: McpTransport::Http,
             command: None,
@@ -5198,6 +5618,7 @@ $response = @{
             .unwrap();
         });
         let draft = McpServerDraft {
+            resolved_env_headers: Vec::new(),
             name: "partial".to_string(),
             transport: McpTransport::Http,
             command: None,
@@ -5237,6 +5658,7 @@ $response = @{
             .unwrap();
         });
         let draft = McpServerDraft {
+            resolved_env_headers: Vec::new(),
             name: "remote".to_string(),
             transport: McpTransport::Http,
             command: None,
