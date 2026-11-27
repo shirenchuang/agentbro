@@ -706,6 +706,7 @@
       "exportedArchive": "스킬 팩과 파일을 내보냈습니다.",
       "archiveReview": "이 ZIP에서 누락된 스킬을 복원하고 팩을 만들기 전에 내용 차이를 검토하세요.",
       "archiveMember": "ZIP에 포함됨",
+      "archiveRecordedSource": "ZIP에 기록된 GitHub 출처",
       "importFromLink": "링크에서 가져오기",
       "reviewLink": "스킬 팩 검토",
       "readingLink": "GitHub 파일을 불러오는 중…",
@@ -771,6 +772,7 @@
     },
     "sourceUpdates": {
       "installedCommit": "설치된 커밋",
+      "recordedCommit": "기록된 GitHub 커밋",
       "privateRepository": "비공개 저장소",
       "githubToken": "GitHub 액세스 토큰(이번 업데이트에만 사용)",
       "installedAt": "설치 시간",
