@@ -497,6 +497,7 @@ jobs:
           VERIFY_STARTUP_LOCK: ${{ !inputs.windows_artifact_run || inputs.windows_verify_startup_lock }}
           VERIFY_STARTUP_FAILURE: ${{ !inputs.windows_artifact_run || inputs.windows_verify_startup_failure }}
           VERIFY_STARTUP_ORDER: ${{ !inputs.windows_artifact_run }}
+          VERIFY_STARTUP_REOPEN: ${{ !inputs.windows_artifact_run }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           if (-not $installer) {
@@ -526,6 +527,7 @@ jobs:
                   -VerifyStartupLock:($env:VERIFY_STARTUP_LOCK -eq 'true') `
                   -VerifyStartupFailure:($env:VERIFY_STARTUP_FAILURE -eq 'true') `
                   -VerifyStartupOrder:($env:VERIFY_STARTUP_ORDER -eq 'true') `
+                  -VerifyStartupReopen:($env:VERIFY_STARTUP_REOPEN -eq 'true') `
                   -SymbolsDirectory (Join-Path $PWD 'windows-installers')
           } finally {
               if ($wslPromptWatcher) {

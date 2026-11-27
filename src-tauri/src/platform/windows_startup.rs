@@ -1,12 +1,19 @@
+use sha2::{Digest, Sha256};
 use std::fmt::Display;
 use std::io;
 use std::mem::size_of;
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::path::Path;
 use std::ptr::null_mut;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use windows_sys::Win32::Foundation::{HWND, S_OK};
+use windows_sys::Win32::Foundation::{HWND, S_OK, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, SetEvent, WaitForSingleObject, INFINITE,
+};
 use windows_sys::Win32::UI::Controls::{
     TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOG_BUTTON,
     TDF_ALLOW_DIALOG_CANCELLATION, TDF_CALLBACK_TIMER, TDM_CLICK_BUTTON, TDN_CREATED, TDN_TIMER,
@@ -18,6 +25,80 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 pub(crate) const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 const CLOSE_BUTTON: i32 = 100;
+
+pub(crate) struct ReopenEvent(OwnedHandle);
+
+impl ReopenEvent {
+    pub(crate) fn open(directory: &Path, port: u16) -> io::Result<Self> {
+        std::fs::create_dir_all(directory)?;
+        let directory = directory.canonicalize()?;
+        let path_bytes = directory
+            .as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let name = format!(
+            "Local\\AgentBro.reopen.{port}.{:x}",
+            Sha256::digest(path_bytes)
+        )
+        .encode_utf16()
+        .chain([0])
+        .collect::<Vec<_>>();
+        let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(unsafe { OwnedHandle::from_raw_handle(handle) }))
+    }
+
+    pub(crate) fn signal(&self) -> io::Result<()> {
+        if unsafe { SetEvent(self.0.as_raw_handle()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn wait(&self, timeout: u32) -> io::Result<bool> {
+        match unsafe { WaitForSingleObject(self.0.as_raw_handle(), timeout) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+
+    pub(crate) fn watch(
+        self,
+        app: tauri::AppHandle,
+        reopen: fn(&tauri::AppHandle),
+    ) -> io::Result<()> {
+        thread::Builder::new()
+            .name("windows-reopen".to_string())
+            .spawn(move || loop {
+                match self.wait(INFINITE) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        log::warn!("Could not wait for a Windows reopen request: {error}");
+                        return;
+                    }
+                }
+                let handle = app.clone();
+                let (finished, completion) = mpsc::channel();
+                if let Err(error) = app.run_on_main_thread(move || {
+                    reopen(&handle);
+                    let _ = finished.send(());
+                }) {
+                    log::warn!("Could not request the Windows Settings window: {error}");
+                    return;
+                }
+                // WebView creation pumps Windows messages. Let it finish before another open.
+                if completion.recv().is_err() {
+                    return;
+                }
+            })
+            .map(|_| ())
+    }
+}
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 enum Phase {
@@ -215,7 +296,6 @@ mod tests {
     use super::*;
     use crate::data_dir::try_windows_startup_lock;
     use crate::skills::installer::TempInstallDir;
-    use std::path::Path;
     use std::process::{Child, Command, Stdio};
     use std::time::Instant;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -315,6 +395,24 @@ mod tests {
         assert!(try_windows_startup_lock(directory.path(), PORT)
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn reopen_event_keeps_an_early_request_for_the_matching_profile_and_port() {
+        let profile = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let other_profile = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let primary = ReopenEvent::open(profile.path(), PORT).unwrap();
+        let duplicate = ReopenEvent::open(profile.path(), PORT).unwrap();
+        let separate_port = ReopenEvent::open(profile.path(), PORT + 1).unwrap();
+        let separate_profile = ReopenEvent::open(other_profile.path(), PORT).unwrap();
+
+        duplicate.signal().unwrap();
+        duplicate.signal().unwrap();
+        drop(duplicate);
+        assert!(!separate_port.wait(0).unwrap());
+        assert!(!separate_profile.wait(0).unwrap());
+        assert!(primary.wait(0).unwrap());
+        assert!(!primary.wait(0).unwrap());
     }
 
     #[tokio::test]
