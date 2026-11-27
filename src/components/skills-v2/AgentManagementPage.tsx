@@ -5,7 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { homeDir } from '@tauri-apps/api/path'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
-import { agentApi, isAgentPackageOperationBusy, type AgentPackageOutput, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
+import { agentApi, isAgentPackageOperationBusy, usesSharedAntigravityHook, type AgentPackageOutput, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -1058,7 +1058,12 @@ export function AgentManagementPage() {
               <div><strong>{uninstallAgentTarget.appliedPacks.length}</strong><span>技能包关联</span></div>
             )}
             {uninstallProgram?.hooksInstalled && (
-              <div><strong>Hook</strong><span>移除 AgentBro Hook</span></div>
+              <div>
+                <strong>Hook</strong><span>移除 AgentBro Hook</span>
+                {isLocal && usesSharedAntigravityHook(uninstallAgentTarget.id) && (
+                  <span>{t('skills.agentManagement.geminiSharedHook')}</span>
+                )}
+              </div>
             )}
             {!uninstallProgramInstalled && (
               <div><strong>程序</strong><span>未安装，仅清理残留</span></div>
@@ -4416,6 +4421,7 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
 }) {
   const { t } = useTranslation()
   const agentId = detail.id
+  const sharedHook = usesSharedAntigravityHook(agentId)
   const [hook, setHook] = useState<HookStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<'install' | 'uninstall' | 'configure' | null>(null)
@@ -4472,7 +4478,8 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
   }
 
   const uninstall = async () => {
-    if (!confirm(`移除 ${agentId} 的 Hook？`)) return
+    const prompt = `移除 ${detail.displayName} 的 Hook？`
+    if (!confirm(sharedHook ? `${prompt}\n\n${t('skills.agentManagement.geminiSharedHook')}` : prompt)) return
     setBusy('uninstall')
     setError(null)
     try {
@@ -4505,7 +4512,7 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
           <strong>Hook 接入</strong>
           <span>{statusLabel}</span>
           {hook.configPath && <code>{hook.configPath}</code>}
-          {agentId === 'gemini-desktop' && <span>{t('skills.agentManagement.geminiSharedHook')}</span>}
+          {sharedHook && <span>{t('skills.agentManagement.geminiSharedHook')}</span>}
         </div>
         <div className="sm2__btn-row sm2__hook-actions">
           {hook.configPath && (

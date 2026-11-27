@@ -8,6 +8,20 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter};
 
+fn hook_intent_id(agent: &str) -> &str {
+    match agent {
+        crate::agents::gemini_desktop::ID => "antigravity",
+        _ => agent,
+    }
+}
+
+pub(crate) fn hook_intent_enabled(enabled_agents: &[String], agent: &str) -> bool {
+    let id = hook_intent_id(agent);
+    enabled_agents
+        .iter()
+        .any(|saved| hook_intent_id(saved) == id)
+}
+
 /// A custom Claude Code engine instance at a non-default path
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -604,26 +618,31 @@ impl ConfigStore {
     /// `Ok(true)` when the intent set changed (and was persisted). No-op when the
     /// agent is already present, to avoid needless writes / config-changed churn.
     pub fn mark_agent_enabled(&self, agent: &str) -> Result<bool, String> {
-        let mut config = self.get();
-        if config.enabled_agents.iter().any(|a| a == agent) {
-            return Ok(false);
-        }
-        config.enabled_agents.push(agent.to_string());
-        self.update(config)?;
-        Ok(true)
+        self.commit(|current| {
+            if hook_intent_enabled(&current.enabled_agents, agent) {
+                return None;
+            }
+            let mut next = current.clone();
+            next.enabled_agents.push(hook_intent_id(agent).to_string());
+            Some(next)
+        })
+        .map(|change| change.is_some())
     }
 
     /// Drop `agent` from the enabled-hooks intent set. Returns `Ok(true)` when the
     /// set changed.
     pub fn mark_agent_disabled(&self, agent: &str) -> Result<bool, String> {
-        let mut config = self.get();
-        let before = config.enabled_agents.len();
-        config.enabled_agents.retain(|a| a != agent);
-        if config.enabled_agents.len() == before {
-            return Ok(false);
-        }
-        self.update(config)?;
-        Ok(true)
+        self.commit(|current| {
+            if !hook_intent_enabled(&current.enabled_agents, agent) {
+                return None;
+            }
+            let id = hook_intent_id(agent);
+            let mut next = current.clone();
+            next.enabled_agents
+                .retain(|saved| hook_intent_id(saved) != id);
+            Some(next)
+        })
+        .map(|change| change.is_some())
     }
 }
 
@@ -745,6 +764,43 @@ mod tests {
 
         let restored: AppConfig = serde_json::from_value(value).expect("deserialize config");
         assert_eq!(restored.enabled_agents, vec!["claude-code", "codex"]);
+    }
+
+    #[test]
+    fn shared_antigravity_hook_intent_is_removed_from_either_entry() {
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("config.json");
+        let store = ConfigStore {
+            config: Arc::new(RwLock::new(AppConfig::default())),
+            config_path: path.clone(),
+            app_handle: None,
+        };
+        for (enable, disable) in [
+            ("gemini-desktop", "antigravity"),
+            ("antigravity", "gemini-desktop"),
+        ] {
+            assert!(store.mark_agent_enabled(enable).unwrap());
+            assert!(store.mark_agent_disabled(disable).unwrap());
+            assert!(ConfigStore::load_from_disk(&path)
+                .unwrap()
+                .enabled_agents
+                .is_empty());
+        }
+
+        store
+            .update(AppConfig {
+                enabled_agents: ["gemini-desktop", "gemini", "antigravity", "codex"]
+                    .map(str::to_string)
+                    .to_vec(),
+                ..AppConfig::default()
+            })
+            .unwrap();
+        assert!(!store.mark_agent_enabled("gemini-desktop").unwrap());
+        assert!(store.mark_agent_disabled("antigravity").unwrap());
+        assert_eq!(
+            ConfigStore::load_from_disk(&path).unwrap().enabled_agents,
+            ["gemini", "codex"]
+        );
     }
 
     #[test]

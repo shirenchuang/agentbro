@@ -1311,7 +1311,7 @@
       "programOperationInProgress": "另一个 Agent 程序操作正在运行。完成后请重试。",
       "programResultUnverified": "命令已执行，无法确认 {{agent}} 的安装状态或版本。",
       "programStillUndetected": "命令已执行，仍未检测到 {{agent}}。",
-      "geminiSharedHook": "Gemini 编码模式与 Antigravity 共用这组 Hook。",
+      "geminiSharedHook": "Gemini 编码模式与 Antigravity 共用这组 Hook。卸载后会停止监测两边的会话。",
       "programVersionUnchanged": "更新命令已执行，{{agent}} 仍为 {{version}}。",
       "nativeCheckAndUpdate": "检查并更新",
       "nativeUpdateChecked": "更新检查完成，{{agent}} 当前版本为 {{version}}。",

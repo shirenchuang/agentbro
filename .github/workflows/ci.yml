@@ -98,6 +98,8 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::installer::tests::pinned_github_'
       - name: Test Hook bridge repair
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::hook_manager::tests'
+      - name: Test shared Antigravity Hook recovery
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE shared_antigravity_hook_'
       - name: Test Hook Doctor and the active Qoder CLI profile
         run: |
           & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE commands::tests::hook_doctor_

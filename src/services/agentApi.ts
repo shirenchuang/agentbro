@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { isTauri as isTauriRuntime } from './tauriApi'
+import { isWindowsPlatform } from '../utils/platform'
 import {
   LOCAL_RUNTIME_ENVIRONMENT_ID,
   useRuntimeEnvironmentStore,
@@ -14,6 +15,10 @@ const remoteHookCommands = new Map([
 
 export function isAgentPackageOperationBusy(error: unknown) {
   return (error instanceof Error ? error.message : error) === 'agent_package_operation_in_progress'
+}
+
+export function usesSharedAntigravityHook(agentId: string) {
+  return !isWindowsPlatform() && (agentId === 'gemini-desktop' || agentId === 'antigravity')
 }
 
 export interface AgentPackageOutput {

@@ -31,6 +31,7 @@ import {
 } from '../../../services/tauriApi'
 import type { BackendDisplayInfo, HookDoctorCheck, HookDoctorReport, HookEventStatus, UsageProviderStatus } from '../../../services/tauriApi'
 import type { IslandLayoutPreviewMode, IslandLayoutPreviewOptions } from '../../../services/tauriApi'
+import { usesSharedAntigravityHook } from '../../../services/agentApi'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
@@ -2335,6 +2336,9 @@ function IntegrationTab() {
                   )}
                 </div>
                 <div className="hook-tool-row__path">{tool.configPath || tool.status || toolId}</div>
+                {usesSharedAntigravityHook(toolId) && (
+                  <div className="hook-tool-row__description">{t('skills.agentManagement.geminiSharedHook')}</div>
+                )}
               </div>
               <div className={`hook-status-badge hook-status-badge--${installStatus}`}>
                 {hookInstallStatusLabel(t, installStatus)}
