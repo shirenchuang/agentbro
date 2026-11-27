@@ -15,7 +15,7 @@ param(
     [string]$PackManifestLink,
     [string]$DiagnosticsExportPath,
     [switch]$TracePermissionUi,
-    [int]$QuestionTracePort,
+    [switch]$VerifyQuestionReconnect,
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
     [switch]$VerifyDisplayChange,
@@ -859,11 +859,10 @@ function Test-InstalledQuestionReply(
 ) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     $reply = $null
-    $answer = 'Reply to Windows test'
-    $stage = 'connect'
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
         $stream = $connection.GetStream()
+        $answer = 'Reply to Windows test'
         $event = @{
             agent = 'claude-code'
             event = 'AskQuestion'
@@ -883,7 +882,6 @@ function Test-InstalledQuestionReply(
             $group = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($ProjectName) }
             if ($group) { Find-IslandButton $group { param($Name) $Name.EndsWith($answer) } }
         }
-        $stage = 'wait for the card'
         $view = Wait-IslandValue 'the question card or inline answer' {
             $option = & $findOption
             if ($option) { return @{ Option = $option } }
@@ -896,19 +894,16 @@ function Test-InstalledQuestionReply(
         if ($view.ShowSessions) {
             Click-IslandElement $view.ShowSessions 'Question card session list button' -CenterAfterLayout
         }
-        $stage = 'wait for the inline answer'
         $null = Wait-IslandValue 'the inline answer in the waiting session' $findOption
         if ($Disconnect) {
             $connection.Dispose()
         } else {
-            $stage = 'deliver the answer after tool events'
             Send-BackgroundToolFixture 'question-background-read'
             Click-IslandElement -Description 'Inline question answer after background tool activity' -CenterAfterLayout -FindElement $findOption
             if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive an answer from the Windows Island' }
             $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
             if ($response.answer -ne $answer) { throw "Unexpected Hook question answer: $($response.answer)" }
         }
-        $stage = 'wait for the closed question'
         $null = Wait-IslandValue 'the closed question to disappear from the session list' {
             $group = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($ProjectName) }
             $group -and -not (Find-IslandButton $group { param($Name) $Name.EndsWith($answer) })
@@ -919,26 +914,13 @@ function Test-InstalledQuestionReply(
             Write-Output 'Windows Island sent the inline question answer to the original Hook socket.'
         }
     } catch {
-        Write-Host "Question fixture state before cleanup: stage='$stage', disconnect=$Disconnect, pendingRead=$($reply -and -not $reply.IsCompleted)."
+        Write-Host "Question state before cleanup: disconnect=$Disconnect, pendingRead=$($reply -and -not $reply.IsCompleted)."
         try {
             Save-FailedRunnerDesktop
             $current = Find-VisibleIsland
-            if ($current) {
-                $nativeAnswer = Find-IslandButton $current.Element { param($Name) $Name.EndsWith($answer) }
-                $nativeList = Find-IslandButton $current.Element { param($Name) $Name -match '^Show all \d+ sessions$' }
-                Write-Host "Current native question state: answer=$([bool]$nativeAnswer), sessionListButton=$([bool]$nativeList)."
-                Write-IslandAccessibilityBounds $current.Handle $ProjectName
-            }
+            if ($current) { Write-IslandAccessibilityBounds $current.Handle $ProjectName }
         } catch {
             Write-Host "Could not capture the pending question desktop: $_"
-        }
-        if ($QuestionTracePort) {
-            $debugOutput = & node (Join-Path $PSScriptRoot 'probe-windows-question-ui.mjs') $QuestionTracePort $SessionId $answer 2>&1
-            $debugOutput | ForEach-Object { Write-Host "$_" }
-            if ($LASTEXITCODE -ne 0) {
-                Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe' AND ParentProcessId = $AppProcessId" |
-                    ForEach-Object { Write-Host "WebView2 has requested trace port: $($_.CommandLine.Contains("--remote-debugging-port=$QuestionTracePort"))." }
-            }
         }
         throw
     } finally {
@@ -1254,7 +1236,7 @@ try {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
     }
-    $questionAttempts = if ($QuestionTracePort) { 8 } else { 1 }
+    $questionAttempts = if ($VerifyQuestionReconnect) { 8 } else { 1 }
     for ($attempt = 1; $attempt -le $questionAttempts; $attempt++) {
         Write-Output "Windows question reconnect attempt $attempt of $questionAttempts."
         Test-InstalledQuestionReply $island -Disconnect

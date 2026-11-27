@@ -8,7 +8,7 @@ param(
     [switch]$VerifyPinnedPackManifest,
     [string]$PackManifestLink,
     [switch]$TracePermissionUi,
-    [switch]$TraceQuestionUi,
+    [switch]$VerifyQuestionReconnect,
     [string]$SymbolsDirectory,
     [switch]$VerifyDrag,
     [switch]$VerifyDisplayChange,
@@ -177,9 +177,6 @@ $listener.Stop()
 $env:AGENTBRO_HOOK_PORT = "$port"
 if ($TracePermissionUi -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not ($VerifyIsland -or $VerifyPackManifest))) {
     throw 'Permission tracing requires an Island check on an isolated GitHub-hosted runner'
-}
-if ($TraceQuestionUi -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $VerifyIsland)) {
-    throw 'Question tracing requires an Island check on an isolated GitHub-hosted runner'
 }
 if ($VerifyGlobalShortcuts -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $VerifyIsland)) {
     throw 'Global shortcut fixtures require an Island check on an isolated GitHub-hosted runner'
@@ -504,17 +501,8 @@ if ($VerifyStartupFailure) {
 }
 
 if ($VerifyDrag) { $env:AGENTBRO_TRACE_ISLAND_DRAG = '1' }
-$appEnvironment = @{}
-if ($TraceQuestionUi) {
-    $debugListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-    $debugListener.Start()
-    $questionTracePort = $debugListener.LocalEndpoint.Port
-    $debugListener.Stop()
-    $appEnvironment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = "--remote-debugging-port=$questionTracePort --remote-debugging-address=127.0.0.1"
-    $appEnvironment['WEBVIEW2_USER_DATA_FOLDER'] = Join-Path $stage 'question trace WebView2 profile'
-}
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
-    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -Environment $appEnvironment
+    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
     do {
@@ -688,10 +676,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     if ($VerifyAgentPackageConsole) { $start.ArgumentList.Add('-VerifyAgentPackageConsole') }
     if ($VerifyRegisteredAgentApp) { $start.ArgumentList.Add('-VerifyRegisteredAgentApp') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
-    if ($TraceQuestionUi) {
-        $start.ArgumentList.Add('-QuestionTracePort')
-        $start.ArgumentList.Add("$questionTracePort")
-    }
+    if ($VerifyQuestionReconnect) { $start.ArgumentList.Add('-VerifyQuestionReconnect') }
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
     if ($VerifyDisplayChange) { $start.ArgumentList.Add('-VerifyDisplayChange') }
     if ($CloseStartupSettings) { $start.ArgumentList.Add('-CloseStartupSettings') }

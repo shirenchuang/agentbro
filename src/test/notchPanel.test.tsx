@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { Profiler } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NotchPanel } from '../components/notch/NotchPanel'
 import { OverlayCard } from '../components/overlay/OverlayCard'
@@ -1937,6 +1938,43 @@ describe('NotchPanel island shell', () => {
       expect(screen.getByText('agentbro · Port dynamic island')).toBeInTheDocument()
       expect(document.querySelector('.hover-list__inline-perm')).toBeInTheDocument()
     })
+  })
+
+  it('keeps the next question visible when the previous collapse timer expires during its render', async () => {
+    vi.useFakeTimers()
+    try {
+      const first = session({
+        phase: 'waiting_input',
+        pendingQuestion: { toolUseId: 'first-question', question: 'Continue?', options: ['Yes'] },
+      })
+      const second = {
+        ...first,
+        pendingQuestion: { ...first.pendingQuestion!, toolUseId: 'second-question' },
+      }
+      const store = useSessionStore.getState()
+      useSessionStore.setState({ panelState: 'hover', sessions: {}, sessionList: [], activeOverlay: null, overlayQueue: [] })
+      store.replaceAllSessions([first])
+
+      let expireOnCommit = false
+      render(
+        <Profiler id="question" onRender={() => {
+          if (!expireOnCommit) return
+          expireOnCommit = false
+          vi.advanceTimersByTime(800)
+        }}>
+          <NotchPanel />
+        </Profiler>,
+      )
+      await act(async () => { store.replaceAllSessions([session()]) })
+      expect(useSessionStore.getState().panelState).toBe('hover')
+
+      expireOnCommit = true
+      await act(async () => { store.replaceAllSessions([second]) })
+      expect(useSessionStore.getState().panelState).toBe('hover')
+      expect(screen.getByText('Continue?')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps suppressed blocking overlays queued without auto-expanding the island', async () => {

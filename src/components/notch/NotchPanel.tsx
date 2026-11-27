@@ -606,8 +606,13 @@ export function NotchPanel() {
 
     if (blockingAttentionCount === 0 && previousAttentionCount > 0 && panelState === 'hover') {
       collapseTimerRef.current = setTimeout(() => {
-        const current = useSessionStore.getState().panelState
-        if (current === 'hover' && !hasInputDraftRef.current) setPanelState('collapsed')
+        const current = useSessionStore.getState()
+        if (current.panelState === 'hover'
+          && !hasInputDraftRef.current
+          && !current.sessionList.some(sessionNeedsAttention)
+          && !isBlockingOverlay(current.activeOverlay)) {
+          setPanelState('collapsed')
+        }
       }, 800)
     }
 
