@@ -6,7 +6,7 @@ import { usePetStore } from './stores/petStore'
 import { BackgroundUpdater } from './components/BackgroundUpdater'
 import { useTauriInit } from './hooks/useTauri'
 import { useAutoHide } from './hooks/useAutoHide'
-import { getActiveThemeBundle, isTauri } from './services/tauriApi'
+import { isTauri } from './services/tauriApi'
 import { primaryModifierPressed } from './utils/platform'
 import './styles/globals.css'
 
@@ -35,6 +35,7 @@ const BACKEND_MANAGED_CONFIG_KEYS = new Set<keyof ReturnType<typeof useConfigSto
   'tipsEnabled', 'pixelCursorEnabled', 'confettiEnabled',
   'analyticsEnabled', 'analyticsConsentPromptCompleted',
   'islandSurfaceMode', 'islandPetScale', 'islandPetWindowOrigin', 'islandPetWindowAnchor', 'islandActivePetId', 'islandAgentPetMap',
+  'petVitalsDebugOpen',
   'followFocus', 'quietHours', 'idleTimeoutMinutes',
   'idleInteractionRoutingEnabled', 'idleInteractionRoutingMinutes',
 ])
@@ -105,25 +106,11 @@ function App() {
             useThemeStore.setState({ colorTheme: nextTheme })
           }
         }
+        if (isTauri()) return
         const activeThemeName = (persisted.version ?? 0) < 2 && persisted.state?.activeThemeName === 'default'
           ? 'ink-amber'
           : persisted.state?.activeThemeName
-        if (activeThemeName) {
-          const store = useThemeStore.getState()
-          if (store.activeThemeName === activeThemeName && store.activeTheme.name === activeThemeName) return
-          const theme = store.themes.find((candidate) => candidate.name === activeThemeName)
-          if (theme) {
-            store.setActiveTheme(activeThemeName)
-          } else if (isTauri()) {
-            getActiveThemeBundle(activeThemeName)
-              .then((bundle) => {
-                const latest = useThemeStore.getState()
-                latest.loadThemes([...latest.themes, bundle])
-                latest.setActiveTheme(activeThemeName)
-              })
-              .catch(() => {})
-          }
-        }
+        if (activeThemeName) useThemeStore.getState().setActiveTheme(activeThemeName)
       } catch {
         // Ignore malformed persisted theme payloads.
       }
@@ -162,6 +149,7 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (isTauri()) return
     function applyPersistedPet(raw: string | null) {
       if (!raw) return
       try {

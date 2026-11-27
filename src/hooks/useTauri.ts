@@ -6,7 +6,7 @@ import i18n from 'i18next'
 import { isTauri, getSessionSnapshot, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setSoundEventRule, getActiveThemeBundle, setLanguage, getAppStateFlags } from '../services/tauriApi'
 import { usePetStore } from '../stores/petStore'
 import { useMarketStore } from '../stores/marketStore'
-import type { BackendSession, BackendSessionSnapshot, BackendConfig, ParsedMessage, ParsedMessageBlock } from '../services/tauriApi'
+import type { BackendSession, BackendSessionSnapshot, BackendConfig, BackendConfigSnapshot, ParsedMessage, ParsedMessageBlock } from '../services/tauriApi'
 import { useSessionStore } from '../stores/sessionStore'
 import { useConfigStore } from '../stores/configStore'
 import { useThemeStore } from '../stores/themeStore'
@@ -61,9 +61,8 @@ function clearPendingBackendTheme(name?: string) {
 
 function applyBackendThemeChange(theme?: string | null) {
   const backendThemeName = normalizeBackendThemeName(theme)
-  if (!backendThemeName) return
-
   lastBackendThemeName = backendThemeName
+  if (!backendThemeName) return
 
   if (pendingBackendThemeName && pendingBackendThemeName !== backendThemeName) {
     return
@@ -79,6 +78,8 @@ function applyBackendThemeChange(theme?: string | null) {
     } else if (isTauri()) {
       getActiveThemeBundle(backendThemeName)
         .then((bundle) => {
+          if (lastBackendThemeName !== backendThemeName ||
+              (pendingBackendThemeName && pendingBackendThemeName !== backendThemeName)) return
           const latest = useThemeStore.getState()
           if (!latest.themes.some((t) => t.name === bundle.name)) {
             latest.loadThemes([...latest.themes, bundle])
@@ -433,16 +434,20 @@ function syncSoundEventSettingsToBackend() {
 function syncThemesFromBackend(configTheme?: string) {
   const backendThemeName = normalizeBackendThemeName(configTheme)
   const activeThemeNameAtSyncStart = useThemeStore.getState().activeThemeName
-  if (backendThemeName) {
-    lastBackendThemeName = backendThemeName
-  }
+  lastBackendThemeName = backendThemeName
 
   listThemes().then((themes) => {
     const store = useThemeStore.getState()
-    store.loadThemes(themes)
+    const newlyActiveTheme = store.activeThemeName !== activeThemeNameAtSyncStart
+      ? store.themes.find((theme) => theme.name === store.activeThemeName)
+      : undefined
+    store.loadThemes(newlyActiveTheme && !themes.some((theme) => theme.name === newlyActiveTheme.name)
+      ? [...themes, newlyActiveTheme]
+      : themes)
     if (
       backendThemeName &&
       backendThemeName === lastBackendThemeName &&
+      (!pendingBackendThemeName || pendingBackendThemeName === backendThemeName) &&
       store.activeThemeName === activeThemeNameAtSyncStart
     ) {
       store.setActiveTheme(backendThemeName)
@@ -596,37 +601,50 @@ export function useConfigSync(enabled = true, canWriteMigrations = true) {
 
     let unlisten: (() => void) | undefined
     let cancelled = false
+    let latestSnapshot: BackendConfigSnapshot | undefined
 
-    getConfig().then((config) => {
-      if (cancelled) return
-      const localLanguage = useConfigStore.getState().language
-      const effectiveConfig = canWriteMigrations && localLanguage && config.language !== localLanguage
-        ? { ...config, language: localLanguage }
-        : config
-      if (canWriteMigrations && effectiveConfig.language !== config.language) {
-        setLanguage(effectiveConfig.language).catch(e => console.error('[tauri] setLanguage:', e))
-      }
-      applyBackendConfig(effectiveConfig)
-      syncThemesFromBackend(effectiveConfig.theme)
-      const petStore = usePetStore.getState()
-      petStore.hydrateFromConfig(effectiveConfig.islandActivePetId ?? null)
-      void petStore.loadRegistry()
-      if (canWriteMigrations && (!effectiveConfig.soundRules || Object.keys(effectiveConfig.soundRules).length === 0)) {
-        syncSoundEventSettingsToBackend()
-      }
-    })
-      .catch(e => console.error('[tauri] getConfig:', e))
+    const acceptSnapshot = (snapshot: BackendConfigSnapshot) => {
+      if (cancelled || (latestSnapshot && snapshot.revision <= latestSnapshot.revision)) return false
+      latestSnapshot = snapshot
+      return true
+    }
 
-    listenForTauriEvent<BackendConfig>(
+    const applyWindowConfig = (config: BackendConfig) => {
+      applyBackendConfig(config)
+      usePetStore.getState().hydrateFromConfig(config.islandActivePetId ?? null)
+    }
+
+    void listenForTauriEvent<BackendConfigSnapshot>(
       'config-changed',
       (event) => {
-        applyBackendConfig(event.payload)
+        if (!acceptSnapshot(event.payload)) return
+        applyWindowConfig(event.payload)
         applyBackendThemeChange(event.payload.theme)
-        usePetStore.getState().hydrateFromConfig(event.payload.islandActivePetId ?? null)
       },
       (fn) => { unlisten = fn },
       () => cancelled,
-    )
+    ).then(async () => {
+      if (cancelled) return
+      const config = await getConfig()
+      if (cancelled) return
+      // A live save that reached this window already takes precedence over startup migrations.
+      const migrate = canWriteMigrations && !latestSnapshot
+      if (acceptSnapshot(config)) {
+        const localLanguage = useConfigStore.getState().language
+        const effectiveConfig = migrate && localLanguage && config.language !== localLanguage
+          ? { ...config, language: localLanguage }
+          : config
+        if (effectiveConfig.language !== config.language) {
+          setLanguage(effectiveConfig.language).catch(e => console.error('[tauri] setLanguage:', e))
+        }
+        applyWindowConfig(effectiveConfig)
+        if (migrate && (!effectiveConfig.soundRules || Object.keys(effectiveConfig.soundRules).length === 0)) {
+          syncSoundEventSettingsToBackend()
+        }
+      }
+      syncThemesFromBackend(latestSnapshot?.theme)
+      void usePetStore.getState().loadRegistry()
+    }).catch(e => console.error('[tauri] getConfig:', e))
 
     const handleThemeSync = (event: Event) => {
       const detail = (event as CustomEvent<{ status?: string; name?: string }>).detail

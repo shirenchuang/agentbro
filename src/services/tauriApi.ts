@@ -379,6 +379,8 @@ export interface BackendConfig {
   shortcutSkipEnabled: boolean
 }
 
+export type BackendConfigSnapshot = BackendConfig & { revision: number }
+
 export interface BackendDisplayInfo {
   id: string
   name: string
@@ -590,9 +592,10 @@ export async function jumpToTerminal(sessionId: string): Promise<void> {
 
 // ── Config Commands ──────────────────────────────────────────────
 
-export async function getConfig(): Promise<BackendConfig> {
+export async function getConfig(): Promise<BackendConfigSnapshot> {
   if (!isTauri()) {
     return {
+      revision: 0,
       soundEnabled: true,
       soundVolume: 0.7,
       launchAtLogin: false,
@@ -642,7 +645,7 @@ export async function getConfig(): Promise<BackendConfig> {
       shortcutSkipEnabled: false,
     }
   }
-  return invoke<BackendConfig>('get_config')
+  return invoke<BackendConfigSnapshot>('get_config')
 }
 
 export type IslandPreferencesPatch = Partial<Pick<BackendConfig,
