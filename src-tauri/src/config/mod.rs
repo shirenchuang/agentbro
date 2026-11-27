@@ -476,10 +476,17 @@ impl Default for BuddyDeviceConfig {
     }
 }
 
+#[derive(Clone, Default, Serialize)]
+pub(crate) struct ConfigSnapshot {
+    pub(crate) revision: u64,
+    #[serde(flatten)]
+    pub(crate) config: AppConfig,
+}
+
 /// Persistent configuration store
 #[derive(Clone)]
 pub struct ConfigStore {
-    config: Arc<RwLock<AppConfig>>,
+    config: Arc<RwLock<ConfigSnapshot>>,
     config_path: PathBuf,
     app_handle: Option<AppHandle>,
 }
@@ -489,9 +496,15 @@ impl ConfigStore {
     pub fn new() -> Self {
         let config_path = Self::config_file_path();
         let config = Self::load_from_disk(&config_path).unwrap_or_default();
+        Self::from_config(config_path, config)
+    }
 
+    fn from_config(config_path: PathBuf, config: AppConfig) -> Self {
         Self {
-            config: Arc::new(RwLock::new(config)),
+            config: Arc::new(RwLock::new(ConfigSnapshot {
+                revision: 0,
+                config,
+            })),
             config_path,
             app_handle: None,
         }
@@ -565,7 +578,14 @@ impl ConfigStore {
 
     /// Get the current config
     pub fn get(&self) -> AppConfig {
-        self.config.read().map(|c| c.clone()).unwrap_or_default()
+        self.snapshot().config
+    }
+
+    pub(crate) fn snapshot(&self) -> ConfigSnapshot {
+        self.config
+            .read()
+            .map(|snapshot| snapshot.clone())
+            .unwrap_or_default()
     }
 
     /// Save a snapshot without replacing Hook intent or patched Island preferences.
@@ -638,25 +658,30 @@ impl ConfigStore {
             .config
             .write()
             .map_err(|e| format!("Lock error: {e}"))?;
-        let Some(new_config) = change(&config) else {
+        let Some(new_config) = change(&config.config) else {
             return Ok(None);
         };
         if let Err(e) = self.save_to_disk(&new_config) {
             log::error!("Failed to save config: {}", e);
             return Err(format!("Failed to save config: {}", e));
         }
-        let previous = std::mem::replace(&mut *config, new_config.clone());
+        let previous = std::mem::replace(&mut config.config, new_config.clone());
+        config.revision += 1;
+        let committed = ConfigSnapshot {
+            revision: config.revision,
+            config: new_config,
+        };
         drop(config);
 
         // Emit config change event to frontend
         if let Some(ref handle) = self.app_handle {
-            if let Err(e) = handle.emit("config-changed", &new_config) {
+            if let Err(e) = handle.emit("config-changed", &committed) {
                 log::error!("Failed to emit config-changed: {}", e);
             }
         }
 
         log::info!("Config updated and saved");
-        Ok(Some((previous, new_config)))
+        Ok(Some((previous, committed.config)))
     }
 
     /// Record that the user has enabled AgentBro hooks for `agent`. Returns
@@ -716,11 +741,7 @@ mod tests {
             }),
             ..AppConfig::default()
         };
-        let store = ConfigStore {
-            config: Arc::new(RwLock::new(initial.clone())),
-            config_path: path.clone(),
-            app_handle: None,
-        };
+        let store = ConfigStore::from_config(path.clone(), initial.clone());
         store.update(initial).unwrap();
         let (_, committed) = store.complete_first_run("pet".into()).unwrap().unwrap();
         let saved = ConfigStore::load_from_disk(&path).unwrap();
@@ -739,15 +760,12 @@ mod tests {
     }
 
     #[test]
-    fn first_run_setup_leaves_previous_config_on_save_error() {
+    fn config_snapshot_survives_failed_first_run_save() {
         let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
         let path = fixture.path().join("config.json");
-        let store = ConfigStore {
-            config: Arc::new(RwLock::new(AppConfig::default())),
-            config_path: path.clone(),
-            app_handle: None,
-        };
+        let store = ConfigStore::from_config(path.clone(), AppConfig::default());
         store.update(store.get()).unwrap();
+        let revision = store.snapshot().revision;
         let bytes = fs::read(&path).unwrap();
         let permissions = fs::metadata(&path).unwrap().permissions();
         let mut read_only = permissions.clone();
@@ -759,8 +777,37 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(store.get().island_surface_mode, "island");
         assert!(!store.get().analytics_consent_prompt_completed);
+        assert_eq!(store.snapshot().revision, revision);
         assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
         assert!(store.complete_first_run("pet".into()).unwrap().is_some());
+        assert_eq!(store.snapshot().revision, revision + 1);
+    }
+
+    #[test]
+    fn config_snapshot_revisions_follow_persisted_changes() {
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("config.json");
+        let store = ConfigStore::from_config(path.clone(), AppConfig::default());
+        let reader = store.clone();
+        assert_eq!(reader.snapshot().revision, 0);
+
+        assert!(store.mark_agent_enabled("codex").unwrap());
+        let first = reader.snapshot();
+        assert_eq!(first.revision, 1);
+        assert_eq!(first.config.enabled_agents, ["codex"]);
+        assert!(!store.mark_agent_enabled("codex").unwrap());
+        assert_eq!(reader.snapshot().revision, first.revision);
+
+        assert!(store.mark_agent_disabled("codex").unwrap());
+        let current = reader.snapshot();
+        assert_eq!(current.revision, 2);
+        assert!(current.config.enabled_agents.is_empty());
+        let message = serde_json::to_value(&current).unwrap();
+        assert_eq!(message["revision"], 2);
+        assert_eq!(message["enabledAgents"], serde_json::json!([]));
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert!(persisted.get("revision").is_none());
     }
 
     #[test]
@@ -815,11 +862,7 @@ mod tests {
     fn shared_antigravity_hook_intent_is_removed_from_either_entry() {
         let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
         let path = fixture.path().join("config.json");
-        let store = ConfigStore {
-            config: Arc::new(RwLock::new(AppConfig::default())),
-            config_path: path.clone(),
-            app_handle: None,
-        };
+        let store = ConfigStore::from_config(path.clone(), AppConfig::default());
         for (enable, disable) in [
             ("gemini-desktop", "antigravity"),
             ("antigravity", "gemini-desktop"),
@@ -839,11 +882,8 @@ mod tests {
             ..AppConfig::default()
         };
         fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-        let store = ConfigStore {
-            config: Arc::new(RwLock::new(ConfigStore::load_from_disk(&path).unwrap())),
-            config_path: path.clone(),
-            app_handle: None,
-        };
+        let store =
+            ConfigStore::from_config(path.clone(), ConfigStore::load_from_disk(&path).unwrap());
         assert!(!store.mark_agent_enabled("gemini-desktop").unwrap());
         assert!(store.mark_agent_disabled("antigravity").unwrap());
         assert_eq!(
@@ -856,11 +896,7 @@ mod tests {
     fn island_preferences_stale_snapshot_cannot_restore_removed_hook() {
         let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
         let path = fixture.path().join("config.json");
-        let store = ConfigStore {
-            config: Arc::new(RwLock::new(AppConfig::default())),
-            config_path: path.clone(),
-            app_handle: None,
-        };
+        let store = ConfigStore::from_config(path.clone(), AppConfig::default());
         assert!(store.mark_agent_enabled("gemini-desktop").unwrap());
         let mut snapshot = store.get();
         assert!(store.mark_agent_disabled("antigravity").unwrap());
@@ -882,8 +918,9 @@ mod tests {
     fn island_preferences_merge_independent_edits_and_hook_updates() {
         let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
         let path = fixture.path().join("config.json");
-        let store = ConfigStore {
-            config: Arc::new(RwLock::new(AppConfig {
+        let store = ConfigStore::from_config(
+            path.clone(),
+            AppConfig {
                 language: "zh".into(),
                 launch_at_login: true,
                 pet_vitals_debug_open: true,
@@ -900,10 +937,8 @@ mod tests {
                     install_directory: "codex-profile".into(),
                 }],
                 ..AppConfig::default()
-            })),
-            config_path: path.clone(),
-            app_handle: None,
-        };
+            },
+        );
         store.mark_agent_enabled("gemini-desktop").unwrap();
         let edits = [
             serde_json::json!({"usageQueryEnabled": false, "showTokenUsage": false}),

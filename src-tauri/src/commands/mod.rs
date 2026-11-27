@@ -5235,10 +5235,12 @@ fn doctor_status_for_hook_health(
 // ── Config Commands ───────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
-    let mut config = state.config_store.get();
-    config.launch_at_login = get_launch_at_login_state();
-    Ok(config)
+pub(crate) async fn get_config(
+    state: State<'_, AppState>,
+) -> Result<crate::config::ConfigSnapshot, String> {
+    let mut snapshot = state.config_store.snapshot();
+    snapshot.config.launch_at_login = get_launch_at_login_state();
+    Ok(snapshot)
 }
 
 #[tauri::command]
