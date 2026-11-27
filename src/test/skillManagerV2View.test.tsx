@@ -8750,9 +8750,11 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const localId = archivedId.toLowerCase()
     act(() => useSkillStoreV2.setState({ skills: [{ ...skill, id: localId }] }))
     const skillIds = [archivedId, 'local-checklist', 'local-report']
+    const source = { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'skills/审阅 模板/SKILL.md' }
     const manifest: SkillPackManifest = {
-      format: 'agentbro-skill-pack', version: 2, name: 'Offline review', description: '', tags: [],
+      format: 'agentbro-skill-pack', version: 3, name: 'Offline review', description: '', tags: [],
       skillIds, skillFingerprints: Object.fromEntries(skillIds.map((id) => [id, hash])),
+      skillSources: { [archivedId]: source },
     }
     const destinationId = `${archivedId}-restored`
     const restoredIds = [destinationId, ...skillIds.slice(1)]
@@ -8767,6 +8769,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       .mockResolvedValueOnce([conflict, ...reviewed.slice(1)])
       .mockResolvedValueOnce(reviewed)
     const restore = vi.spyOn(skillApiV2, 'restoreArchivedPackMembers').mockResolvedValue({})
+    const restoreFromGitHub = vi.spyOn(skillApiV2, 'restorePackMember')
     const create = vi.spyOn(skillApiV2, 'importReviewedArchivePack').mockResolvedValue({ ...pack, id: 'offline-pack', name: manifest.name })
 
     fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
@@ -8776,6 +8779,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(dialog.getByText(`ID 已被 ${localId} 占用`)).toBeInTheDocument()
     expect(dialog.queryByRole('button', { name: `恢复 ${archivedId}` })).not.toBeInTheDocument()
     expect(dialog.getAllByText('ZIP 中包含此技能')).toHaveLength(3)
+    expect(dialog.getByText('ZIP 记录的 GitHub 来源')).toBeInTheDocument()
+    expect(dialog.getByText(`example/workflows@${source.commit.slice(0, 12)} · ${source.skillPath}`)).toBeInTheDocument()
     const restoreMissing = dialog.getByRole('button', { name: '恢复 2 个缺失技能' })
     fireEvent.click(restoreMissing)
     await waitFor(() => expect(restoreMissing).not.toBeInTheDocument())
@@ -8786,12 +8791,14 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(dialog.getByRole('button', { name: '恢复副本' }))
     await waitFor(() => expect(confirm).toBeEnabled())
     expect(restore).toHaveBeenNthCalledWith(2, file, revision, [{ skillId: archivedId, destinationId }])
+    expect(restoreFromGitHub).not.toHaveBeenCalled()
+    expect(dialog.getByText('ZIP 记录的 GitHub 来源')).toBeInTheDocument()
     fireEvent.click(confirm)
     await waitFor(() => expect(create).toHaveBeenCalledWith({
       ...manifest,
       skillIds: restoredIds,
       skillFingerprints: Object.fromEntries(restoredIds.map((id) => [id, hash])),
-      skillSources: {},
+      skillSources: { [destinationId]: source },
     }, reviewed, false))
   })
 

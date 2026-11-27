@@ -600,6 +600,7 @@
       "exportedArchive": "Beceri Paketi ve dosyaları dışa aktarıldı.",
       "archiveReview": "Eksik becerileri bu ZIP dosyasından geri yükleyin ve paketi oluşturmadan önce içerik farklarını inceleyin.",
       "archiveMember": "ZIP dosyasına dahil",
+      "archiveRecordedSource": "ZIP dosyasında kayıtlı GitHub kaynağı",
       "importFromLink": "Bağlantıdan içe aktar",
       "reviewLink": "Beceri paketini incele",
       "readingLink": "GitHub dosyası yükleniyor…",
@@ -665,6 +666,7 @@
     },
     "sourceUpdates": {
       "installedCommit": "Yüklü commit",
+      "recordedCommit": "Kayıtlı GitHub commit’i",
       "privateRepository": "Özel depo",
       "githubToken": "GitHub erişim belirteci (bu güncelleme için)",
       "installedAt": "Yükleme zamanı",

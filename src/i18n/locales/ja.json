@@ -706,6 +706,7 @@
       "exportedArchive": "スキルパックとファイルをエクスポートしました。",
       "archiveReview": "この ZIP から不足しているスキルを復元し、パックを作成する前に内容の違いを確認します。",
       "archiveMember": "ZIP に含まれています",
+      "archiveRecordedSource": "ZIP に記録された GitHub の取得元",
       "importFromLink": "リンクからインポート",
       "reviewLink": "スキルパックを確認",
       "readingLink": "GitHub ファイルを読み込み中…",
@@ -771,6 +772,7 @@
     },
     "sourceUpdates": {
       "installedCommit": "インストール済みのコミット",
+      "recordedCommit": "記録された GitHub コミット",
       "privateRepository": "プライベートリポジトリ",
       "githubToken": "GitHub アクセストークン（今回の更新用）",
       "installedAt": "インストール日時",

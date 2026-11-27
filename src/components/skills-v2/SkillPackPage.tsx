@@ -864,7 +864,7 @@ export function SkillPackPage() {
               {packImport.manifest.skillIds.map((id) => {
                 const status = packMemberStatuses.get(id)
                 const canRestoreCopy = conflictingMembers.has(id)
-                const source = status === 'missing' || canRestoreCopy ? pinnedSources.get(id) : undefined
+                const source = packImport.archive || status === 'missing' || canRestoreCopy ? pinnedSources.get(id) : undefined
                 const archived = packImport.archive && (status === 'missing' || canRestoreCopy)
                 const copyDraft = canRestoreCopy && packImport.copyDraft?.skillId === id ? packImport.copyDraft : undefined
                 const copyId = copyDraft?.destinationId.trim() ?? ''
@@ -884,8 +884,13 @@ export function SkillPackPage() {
                     )}
                     {(source || archived) && (
                       <div className="sm2__pack-manifest-source">
-                        {archived ? <span>{t('skills.packManifest.archiveMember')}</span>
-                          : source && <code title={source.commit}>{source.repository}@{source.commit.slice(0, 12)} · {source.skillPath}</code>}
+                        {archived && <span>{t('skills.packManifest.archiveMember')}</span>}
+                        {source && (
+                          <>
+                            {packImport.archive && <span>{t('skills.packManifest.archiveRecordedSource')}</span>}
+                            <code title={source.commit}>{source.repository}@{source.commit.slice(0, 12)} · {source.skillPath}</code>
+                          </>
+                        )}
                         {status === 'missing' && (
                           <button className="sm2__btn" type="button" aria-label={t('skills.packManifest.restoreMember', { name: id })}
                             disabled={packImportBusy} onClick={() => void restorePackMembers([id])}>

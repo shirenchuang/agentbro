@@ -705,6 +705,7 @@
       "exportedArchive": "Skill Pack and files exported.",
       "archiveReview": "Restore missing Skills from this ZIP and review any content differences before creating the Pack.",
       "archiveMember": "Included in ZIP",
+      "archiveRecordedSource": "GitHub source recorded in ZIP",
       "importFromLink": "Import from link",
       "reviewLink": "Review Skill Pack",
       "readingLink": "Loading GitHub file…",
@@ -770,6 +771,7 @@
     },
     "sourceUpdates": {
       "installedCommit": "Installed commit",
+      "recordedCommit": "Recorded GitHub commit",
       "privateRepository": "Private repository",
       "githubToken": "GitHub access token (for this update)",
       "installedAt": "Installed at",

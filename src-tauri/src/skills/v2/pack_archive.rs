@@ -1,4 +1,4 @@
-use super::models::{ReviewedSkillPackArchive, SkillPackManifest};
+use super::models::{ReviewedSkillPackArchive, SkillPackGitHubSource, SkillPackManifest};
 use super::{pack_manifest, project_lock};
 use crate::skills::installer::TempInstallDir;
 use sha2::{Digest, Sha256};
@@ -145,7 +145,7 @@ impl Archive {
 pub(super) fn write(
     path: &Path,
     mut manifest: SkillPackManifest,
-    source_directory: impl Fn(&str) -> Result<PathBuf, String>,
+    skill_source: impl Fn(&str) -> Result<(PathBuf, Option<SkillPackGitHubSource>), String>,
 ) -> Result<(), String> {
     validate_member_ids(&manifest)?;
     let parent = path
@@ -157,13 +157,12 @@ pub(super) fn write(
         .skill_ids
         .iter()
         .map(|id| {
-            let directory = source_directory(id)?
-                .canonicalize()
-                .map_err(archive_error)?;
+            let (directory, origin) = skill_source(id)?;
+            let directory = directory.canonicalize().map_err(archive_error)?;
             if parent.starts_with(&directory) {
                 return Err("Choose an export folder outside the Skills in this Pack.".into());
             }
-            Ok(directory)
+            Ok((directory, origin))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let staging = TempInstallDir::create_hidden_in(&parent)?;
@@ -173,7 +172,7 @@ pub(super) fn write(
     let mut names = HashMap::new();
     let mut content_size = 0;
     let mut file_count = 1;
-    for (id, source) in manifest.skill_ids.iter().zip(sources) {
+    for (id, (source, origin)) in manifest.skill_ids.iter().zip(sources) {
         let files = project_lock::portable_skill_files(&source, false)?;
         file_count += files.len();
         if file_count > MAX_ENTRIES {
@@ -209,6 +208,10 @@ pub(super) fn write(
         manifest
             .skill_fingerprints
             .insert(id.clone(), fingerprint(member.path())?);
+        if let Some(origin) = origin {
+            manifest.skill_sources.insert(id.clone(), origin);
+            manifest.version = manifest.version.max(3);
+        }
     }
     let bytes = pack_manifest::encode(&manifest)?;
     check_content_size(content_size, bytes.len() as u64)?;

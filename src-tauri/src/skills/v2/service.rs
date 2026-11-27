@@ -5222,12 +5222,7 @@ impl Service {
                     && fingerprint.is_some()
                     && super::project_lock::valid_skill_name(id)
                 {
-                    self.source_for_skill(id)?.and_then(|source| {
-                        SkillPackGitHubSource::from_recorded_uri(
-                            source.source_uri.as_deref()?,
-                            source.source_ref.as_deref()?,
-                        )
-                    })
+                    self.recorded_pack_skill_source(id)?
                 } else {
                     None
                 };
@@ -5240,6 +5235,18 @@ impl Service {
                 })
             })
             .collect()
+    }
+
+    fn recorded_pack_skill_source(
+        &self,
+        id: &str,
+    ) -> Result<Option<SkillPackGitHubSource>, String> {
+        Ok(self.source_for_skill(id)?.and_then(|source| {
+            SkillPackGitHubSource::from_recorded_uri(
+                source.source_uri.as_deref()?,
+                source.source_ref.as_deref()?,
+            )
+        }))
     }
 
     pub fn archive_skill_pack_fingerprints(
@@ -5331,9 +5338,13 @@ impl Service {
             .lock()
             .map_err(|error| error.to_string())?;
         super::pack_archive::write(path, manifest, |id| {
-            self.skill_row(id)?
-                .map(|row| PathBuf::from(row.center_path))
-                .ok_or_else(|| format!("Skill '{id}' is missing from the center library."))
+            let row = self
+                .skill_row(id)?
+                .ok_or_else(|| format!("Skill '{id}' is missing from the center library."))?;
+            Ok((
+                PathBuf::from(row.center_path),
+                self.recorded_pack_skill_source(id)?,
+            ))
         })
     }
 
@@ -5397,10 +5408,11 @@ impl Service {
                 let staging = TempInstallDir::create_hidden_in(&center)?;
                 let staged = staging.path().join("skill");
                 archive.stage_member(&member.skill_id, &staged)?;
+                let source = archive.review.manifest.skill_sources.get(&member.skill_id);
                 let input = AddCenterSkillInput {
                     source_path: path.display().to_string(),
                     source_type: "archive".to_string(),
-                    source_uri: None,
+                    source_uri: source.map(SkillPackGitHubSource::source_uri).transpose()?,
                     imported_from_agent: None,
                     imported_from_path: None,
                     multi: Some(false),
@@ -5412,7 +5424,7 @@ impl Service {
                     &center.join(id),
                     &staged,
                     &input,
-                    None,
+                    source.map(|source| source.commit.as_str()),
                 )
             })();
             if let Err(error) = result {

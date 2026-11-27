@@ -100,6 +100,11 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
         crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
     let path = transfer.path().join("技能包.agentbro-pack.zip");
     let swapped = transfer.path().join("other.zip");
+    let source = SkillPackGitHubSource {
+        repository: "example/workflows".into(),
+        commit: "a".repeat(40),
+        skill_path: "skills/审阅 模板/SKILL.md".into(),
+    };
     let manifest = SkillPackManifest {
         format: "agentbro-skill-pack".into(),
         version: 4,
@@ -118,6 +123,19 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
         let missing = add_center_test_skill(&sender, "bundle-missing", "portable-missing");
         fs::create_dir(missing.join("resources")).unwrap();
         fs::write(missing.join("resources/示例.bin"), b"\0\r\n").unwrap();
+        sender.db().with_conn(|connection| {
+            let recorded_uri = source.source_uri()?;
+            for (id, uri) in [
+                ("portable-clash", recorded_uri.clone()),
+                ("portable-missing", format!("{recorded_uri}?query=private-fixture")),
+            ] {
+                connection.execute(
+                    "UPDATE skill_sources SET source_type = 'github', source_uri = ?1, source_ref = ?2 WHERE skill_id = ?3",
+                    params![uri, source.commit, id],
+                ).map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        }).unwrap();
         sender.write_pack_archive(&path, manifest.clone()).unwrap();
         let original = fs::read(&path).unwrap();
         let mut changed = manifest.clone();
@@ -136,6 +154,11 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
         manifest.suggested_agent_ids
     );
     assert_eq!(review.manifest.skill_fingerprints.len(), 2);
+    assert_eq!(review.manifest.skill_sources.len(), 1);
+    assert_eq!(
+        review.manifest.skill_sources.get("portable-clash"),
+        Some(&source)
+    );
     let (_home, target, _lock) = fresh_service("pack-zip-target");
     let local = add_center_test_skill(&target, "target-local", "portable-clash");
     let restore = |skill_id: &str, destination_id: &str| SkillPackArchiveRestoreMember {
@@ -176,6 +199,42 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
         b"sender content\r\n"
     );
     assert_eq!(fs::read(local.join("reference.md")).unwrap(), b"center");
+    let restored = target
+        .get_skill_detail("portable-clash-restored")
+        .unwrap()
+        .source
+        .unwrap();
+    assert_eq!(restored.source_type, "archive");
+    assert_eq!(restored.source_uri, Some(source.source_uri().unwrap()));
+    assert_eq!(restored.source_ref.as_deref(), Some(source.commit.as_str()));
+    assert!(target
+        .check_skill_source_update("portable-clash-restored", None)
+        .unwrap_err()
+        .contains("does not have a supported Git source"));
+    let missing_source = target
+        .get_skill_detail("portable-missing")
+        .unwrap()
+        .source
+        .unwrap();
+    assert_eq!(missing_source.source_uri, None);
+    assert_eq!(missing_source.source_ref, None);
+
+    let mut reexport = manifest.clone();
+    reexport.version = 2;
+    reexport.suggested_agent_ids.clear();
+    reexport.skill_ids = vec!["portable-clash-restored".into()];
+    let reexport_path = transfer.path().join("restored.zip");
+    target.write_pack_archive(&reexport_path, reexport).unwrap();
+    let reexported = super::pack_archive::Archive::open(&reexport_path)
+        .unwrap()
+        .review
+        .manifest;
+    assert_eq!(reexported.version, 3);
+    assert_eq!(
+        reexported.skill_sources.get("portable-clash-restored"),
+        Some(&source)
+    );
+
     let mut imported = review.manifest;
     imported.skill_ids[0] = "portable-clash-restored".into();
     let hash = imported
@@ -185,6 +244,10 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
     imported
         .skill_fingerprints
         .insert(imported.skill_ids[0].clone(), hash);
+    let recorded_source = imported.skill_sources.remove("portable-clash").unwrap();
+    imported
+        .skill_sources
+        .insert(imported.skill_ids[0].clone(), recorded_source);
     let reviewed = target
         .archive_skill_pack_fingerprints(&imported.skill_ids)
         .unwrap();
