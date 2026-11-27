@@ -92,6 +92,25 @@ describe('ApprovalBar composer gating', () => {
     expect(screen.queryByText(/cannot receive/i)).not.toBeInTheDocument()
   })
 
+  it.each([
+    ['a reply', {}],
+    ['plan feedback', { phase: 'waiting_approval', planRequestId: 'plan-ime', planTitle: 'Review plan' }],
+    ['a question answer', { phase: 'waiting_input', pendingQuestion: { question: 'Which target?', options: ['Preview'] } }],
+  ] satisfies [string, Partial<SessionState>][])('waits for an ordinary Enter before sending %s from the detail view', (_label, overrides) => {
+    const onSendMessage = vi.fn()
+    renderBar(session(overrides), { onSendMessage })
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: '请等一下' } })
+
+    expect(fireEvent.keyDown(input, { key: 'Enter', isComposing: true })).toBe(true)
+    expect(fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })).toBe(true)
+    expect(onSendMessage).not.toHaveBeenCalled()
+    expect(input).toHaveValue('请等一下')
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSendMessage).toHaveBeenCalledExactlyOnceWith('请等一下')
+  })
+
   it('shows a hint and supports pointer and keyboard activation for Open app', async () => {
     const onJumpToHostApp = vi.fn()
     renderBar(

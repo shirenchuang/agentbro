@@ -1410,6 +1410,34 @@ describe('NotchPanel island shell', () => {
     })
   })
 
+  it.each(['Enter', 'Escape'])('leaves composing %s with the input method while writing denial feedback', async (key) => {
+    const permission = { toolUseId: 'permission-ime', toolName: 'Bash', toolInput: 'pnpm test' }
+    mountIsland({
+      id: 'permission-s1-ime',
+      sessionId: 's1',
+      type: 'permission',
+      data: permission,
+      createdAt: Date.now(),
+    }, { phase: 'waiting_approval', pendingPermission: permission })
+
+    fireEvent.click(screen.getByRole('button', { name: 'notch.deny' }))
+    const input = screen.getByPlaceholderText('Tell Claude why (optional)...')
+    fireEvent.change(input, { target: { value: '先确认改动' } })
+    const panelState = useSessionStore.getState().panelState
+
+    expect(fireEvent.keyDown(input, { key, isComposing: true })).toBe(true)
+    expect(fireEvent.keyDown(input, { key, keyCode: 229 })).toBe(true)
+    expect(screen.getByPlaceholderText('Tell Claude why (optional)...')).toHaveValue('先确认改动')
+    expect(useSessionStore.getState().activeOverlay?.id).toBe('permission-s1-ime')
+    expect(useSessionStore.getState().panelState).toBe(panelState)
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toEqual(permission)
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(tauriMocks.respondPermission).toHaveBeenCalledExactlyOnceWith('s1', false, undefined, 'permission-ime')
+    await waitFor(() => expect(tauriMocks.sendMessage).toHaveBeenCalledExactlyOnceWith('s1', '先确认改动'))
+  })
+
   it('retains denial feedback on delivery failure and sends it after the retry is confirmed', async () => {
     const failure = deferred()
     const retry = deferred()
@@ -2168,7 +2196,7 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('opens and submits a custom question response from the keyboard', async () => {
+  it('keeps the custom question response open until an ordinary Enter submits it', async () => {
     const prompt = { toolUseId: 'keyboard-custom', question: 'What is your plan?', options: [] }
     mountIsland({
       id: 'question-keyboard-custom', sessionId: 's1', type: 'question', data: prompt, createdAt: Date.now(),
@@ -2180,9 +2208,17 @@ describe('NotchPanel island shell', () => {
     await keyboard.keyboard('[Space]')
     const field = await screen.findByPlaceholderText('Type your response...')
     expect(field).toHaveFocus()
-    await keyboard.keyboard('Use the staging environment{Enter}')
+    fireEvent.compositionStart(field)
+    fireEvent.compositionEnd(field, { data: '先在测试环境运行' })
+    fireEvent.change(field, { target: { value: '先在测试环境运行' } })
+    fireEvent.keyDown(field, { key: 'Escape', keyCode: 229 })
+    fireEvent.keyDown(field, { key: 'Enter', keyCode: 229 })
+    expect(field).toHaveValue('先在测试环境运行')
+    expect(field).toHaveFocus()
+    expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
 
-    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Use the staging environment', 'keyboard-custom')
+    await keyboard.keyboard('{Enter}')
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', '先在测试环境运行', 'keyboard-custom')
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
@@ -2445,6 +2481,28 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
   })
 
+  it('keeps composing Enter from sending plan feedback in the alert', async () => {
+    const plan = { planRequestId: 'plan-ime', planTitle: 'Implementation plan', planContent: '1. Fix jump' }
+    mountIsland({
+      id: 'plan-s1-ime',
+      sessionId: 's1',
+      type: 'plan',
+      data: plan,
+      createdAt: Date.now(),
+    }, { ...plan, phase: 'waiting_approval' })
+
+    const input = screen.getByPlaceholderText('Tell Claude what to change...')
+    fireEvent.change(input, { target: { value: '调整顺序' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
+    expect(tauriMocks.respondPlan).not.toHaveBeenCalled()
+    expect(input).toHaveValue('调整顺序')
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'feedback', '调整顺序', 'plan-ime')
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
+  })
+
   it('keeps failed plan feedback visible and retries it for the displayed plan', async () => {
     tauriMocks.respondPlan.mockRejectedValueOnce(new Error('Plan Hook disconnected'))
     const plan = { planRequestId: 'plan-feedback', planTitle: 'Implementation plan', planContent: '1. Fix jump' }
@@ -2609,6 +2667,9 @@ describe('NotchPanel island shell', () => {
 
     fireEvent.compositionEnd(replyInput, { data: '你' })
     fireEvent.change(replyInput, { target: { value: '你' } })
+    fireEvent.keyDown(replyInput, { key: 'Enter', keyCode: 229 })
+    expect(tauriMocks.sendMessage).not.toHaveBeenCalled()
+
     fireEvent.keyDown(replyInput, { key: 'Enter' })
 
     await waitFor(() => expect(tauriMocks.sendMessage).toHaveBeenCalledWith('s1', '你'))

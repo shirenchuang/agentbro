@@ -13,6 +13,7 @@ import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { setNotchFocusable } from '../../services/tauriApi'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
+import { isComposingKey } from '../../utils/keyboardShortcuts'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { formatModelName, getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
@@ -881,7 +882,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                       onCompositionEnd={() => setComposing(false)}
                       onKeyDown={(e) => {
                         e.stopPropagation()
-                        if (e.nativeEvent.isComposing || composing) return
+                        if (isComposingKey(e.nativeEvent) || composing) return
                         if (e.key === 'Enter') {
                           const val = (nestedInputTexts[qi] ?? '').trim()
                           if (val) {
@@ -990,15 +991,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
             </button>
           ))}
           {showCustomInput ? (
-            <form
-              className="hover-list__inline-question-opt hover-list__inline-question-opt--custom-active"
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (composing) return
-                const val = customText.trim()
-                if (val) submitAnswer(val)
-              }}
-            >
+            <div className="hover-list__inline-question-opt hover-list__inline-question-opt--custom-active">
               <span className="hover-list__inline-question-opt-index">{inlineOptions.length + 1}</span>
               <input
                 autoFocus
@@ -1013,15 +1006,18 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                 onCompositionEnd={() => setComposing(false)}
                 onKeyDown={(e) => {
                   e.stopPropagation()
-                  if (e.nativeEvent.isComposing || composing) return
-                  if (e.key === 'Escape') {
+                  if (isComposingKey(e.nativeEvent) || composing) return
+                  if (e.key === 'Enter') {
+                    const val = customText.trim()
+                    if (val) submitAnswer(val)
+                  } else if (e.key === 'Escape') {
                     setShowCustomInput(false)
                     setCustomText('')
                     setNotchFocusable(false)
                   }
                 }}
               />
-            </form>
+            </div>
           ) : (
             <button
               type="button"
@@ -1123,7 +1119,7 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
           onFocus={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
             e.stopPropagation()
-            if (e.key === 'Enter' && trimmedFeedback) {
+            if (e.key === 'Enter' && trimmedFeedback && !isComposingKey(e.nativeEvent)) {
               submitFeedback()
             }
           }}
@@ -1499,7 +1495,7 @@ export function HoverList({
     if (!isPresent || visibleSessions.length === 0) return
 
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented) return
+      if (event.defaultPrevented || isComposingKey(event)) return
       const target = event.target
       if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return
 

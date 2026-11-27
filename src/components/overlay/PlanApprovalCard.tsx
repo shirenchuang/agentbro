@@ -6,6 +6,7 @@ import type { OverlayItem, SessionState, SubagentInfo } from '../../types/agent'
 import { answerDisplayedPlan, planReplyError, useSessionStore, type PlanIdentity } from '../../stores/sessionStore'
 import { formatPlanMarkdown, parsePlanPermission } from '../../utils/plan'
 import { islandActionProps } from '../../utils/islandActions'
+import { isComposingKey } from '../../utils/keyboardShortcuts'
 import { OverlayCard } from './OverlayCard'
 import './PlanApprovalCard.css'
 
@@ -97,7 +98,9 @@ export function PlanApprovalCard({ overlay, session, onJumpToTerminal, onShowSes
               placeholder={t('notch.planFeedback', { defaultValue: 'Tell Claude what to change...' })}
               value={feedback}
               onChange={(e) => setFeedback(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleSendFeedback() }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !isComposingKey(e.nativeEvent)) handleSendFeedback()
+              }}
             />
           </div>
           <div className="plan-approval__actions">

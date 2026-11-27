@@ -13,7 +13,7 @@ import { deriveIslandInteraction, getFollowFocusVisibleSessions, isBlockingOverl
 import { getCollapsedIslandHeight } from '../../utils/islandLayout'
 import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, isCompactPermissionPrompt, type NotificationContentMetrics } from '../../utils/notificationLayout'
 import { getSessionListSubagents } from '../../utils/subagents'
-import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
+import { isComposingKey, shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
 import { isWindowsPlatform, primaryModifierPressed } from '../../utils/platform'
 import { energyIntervalMs, getAppEnergyMode, shouldSilenceAfterWake } from '../../utils/energyPolicy'
 import { CollapsedBar } from './CollapsedBar'
@@ -1101,7 +1101,7 @@ export function NotchPanel() {
       const store = useSessionStore.getState()
       const hitbox = hitboxRef.current
       if (!hitbox || hitbox.dataset.islandHidden === 'true' || store.panelState === 'collapsed'
-        || e.defaultPrevented || e.repeat || e.isComposing || getInputFocusTarget(e.target)) return
+        || e.defaultPrevented || e.repeat || getInputFocusTarget(e.target)) return
 
       // The queue advances before AnimatePresence mounts the next interactive layer.
       const card = hitbox.querySelector<HTMLElement>('[data-blocking-overlay-id]:not([inert])')
@@ -1120,6 +1120,7 @@ export function NotchPanel() {
     }
 
     const handler = (e: KeyboardEvent) => {
+      if (isComposingKey(e)) return
       const store = useSessionStore.getState()
 
       // Progressive ESC
