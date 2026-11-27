@@ -5975,6 +5975,100 @@ async fn resize_notch(
     })
 }
 
+fn configure_startup_notch(app: &tauri::AppHandle) {
+    // Position notch window at top center
+    if let Some(window) = app.get_webview_window("notch") {
+        let monitor = window
+            .current_monitor()
+            .ok()
+            .flatten()
+            .or_else(|| window.primary_monitor().ok().flatten());
+
+        if let Some(monitor) = monitor {
+            let scale = monitor.scale_factor();
+            let screen_width = monitor.size().width as f64 / scale;
+            let monitor_x = monitor.position().x as f64 / scale;
+            let monitor_y = monitor.position().y as f64 / scale;
+            let window_width = 420.0; // 400 panel + 20 shadow padding
+            let x = monitor_x + (screen_width - window_width) / 2.0;
+            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+                x, monitor_y,
+            )));
+        }
+
+        // Set initial compact size (will be dynamically resized by frontend)
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(420.0, 52.0)));
+
+        // Force shadow off for clean transparent look
+        let _ = window.set_shadow(false);
+
+        // Keep the island above the menu bar and present in fullscreen Spaces.
+        apply_notch_window_for_spaces(&window);
+
+        // Reposition the island when display configuration changes (e.g. external monitor connected/disconnected).
+        #[cfg(target_os = "windows")]
+        if let Err(error) = platform::windows_display::watch(&window) {
+            log::warn!("{error}");
+        }
+        #[cfg(target_os = "macos")]
+        watch_macos_display_changes(app);
+    }
+}
+
+fn build_startup_tray(
+    app: &tauri::AppHandle,
+    language: &str,
+) -> tauri::Result<tauri::tray::TrayIcon> {
+    let tray_menu = menu_bar::build_tray_menu(app, language)?;
+
+    TrayIconBuilder::with_id(menu_bar::TRAY_ID)
+        .menu(&tray_menu)
+        .show_menu_on_left_click(false)
+        .tooltip("AgentBro")
+        .icon(menu_bar_icon())
+        .icon_as_template(false)
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button,
+                button_state,
+                rect,
+                ..
+            } = event
+            {
+                if let Ok(mut anchor) = tray_icon_rect().lock() {
+                    *anchor = Some(rect);
+                }
+                if button == MouseButton::Left && button_state == MouseButtonState::Up {
+                    if let Err(error) = show_skill_pack_picker(tray.app_handle()) {
+                        log::warn!("Failed to show skill pack picker: {error}");
+                    }
+                }
+            }
+        })
+        .on_menu_event(|app, event| {
+            let menu_id = event.id().as_ref();
+            if menu_id == menu_bar::SKILL_PACK_PICKER_ID {
+                if let Err(error) = show_skill_pack_picker(app) {
+                    log::warn!("Failed to show skill pack picker: {error}");
+                }
+                return;
+            }
+            match menu_id {
+                "show" => {
+                    show_notch_window(app, "tray");
+                }
+                "settings" => {
+                    let _ = show_settings_window(app);
+                }
+                "quit" => {
+                    std::process::exit(0);
+                }
+                _ => {}
+            }
+        })
+        .build(app)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "windows")]
@@ -6057,63 +6151,15 @@ pub fn run() {
                         return Ok(());
                     }
                 }
-                for config in &configured_windows {
-                    let result = tauri::WebviewWindowBuilder::from_config(app.handle(), config)
-                        .and_then(|builder| builder.build());
-                    if let Err(error) = result {
-                        startup_setup.fail(
-                            &format!("could not create Windows window '{}'", config.label),
-                            error,
-                        );
-                        return Ok(());
-                    }
-                }
-                if !startup_setup.windows_created() {
-                    return Ok(());
-                }
                 socket
             };
+            #[cfg(not(target_os = "windows"))]
             log::info!("Startup: configured windows created");
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            // Position notch window at top center
-            if let Some(window) = app.get_webview_window("notch") {
-                let monitor = window
-                    .current_monitor()
-                    .ok()
-                    .flatten()
-                    .or_else(|| window.primary_monitor().ok().flatten());
-
-                if let Some(monitor) = monitor {
-                    let scale = monitor.scale_factor();
-                    let screen_width = monitor.size().width as f64 / scale;
-                    let monitor_x = monitor.position().x as f64 / scale;
-                    let monitor_y = monitor.position().y as f64 / scale;
-                    let window_width = 420.0; // 400 panel + 20 shadow padding
-                    let x = monitor_x + (screen_width - window_width) / 2.0;
-                    let _ = window.set_position(tauri::Position::Logical(
-                        tauri::LogicalPosition::new(x, monitor_y),
-                    ));
-                }
-
-                // Set initial compact size (will be dynamically resized by frontend)
-                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(420.0, 52.0)));
-
-                // Force shadow off for clean transparent look
-                let _ = window.set_shadow(false);
-
-                // Keep the island above the menu bar and present in fullscreen Spaces.
-                apply_notch_window_for_spaces(&window);
-
-                // Reposition the island when display configuration changes (e.g. external monitor connected/disconnected).
-                #[cfg(target_os = "windows")]
-                if let Err(error) = platform::windows_display::watch(&window) {
-                    log::warn!("{error}");
-                }
-                #[cfg(target_os = "macos")]
-                watch_macos_display_changes(app.handle());
-            }
+            #[cfg(not(target_os = "windows"))]
+            configure_startup_notch(app.handle());
 
             // Settings window is created on demand by `show_settings_window`.
             // No setup work needed here — it doesn't exist at launch anymore.
@@ -6131,6 +6177,7 @@ pub fn run() {
             // Pet window: position to the saved (or default) corner and show
             // only when pet surface mode is active. The pet lives in its own
             // Tauri window so dragging it doesn't move the island shell.
+            #[cfg(not(target_os = "windows"))]
             sync_pet_window_visibility(app.handle(), &config_store.get());
 
             // Cursor-monitor tracker: a single background poller that emits
@@ -6312,31 +6359,24 @@ pub fn run() {
                 }
             });
 
-            log::info!("Startup: scheduling Hook server");
             // Initialize and start hook server
             let hook_server = HookServer::new(session_store.clone(), adapters.clone());
             let hook_server = Arc::new(hook_server);
             hook_server.set_app_handle(app.handle().clone());
             hook_server.set_config_store(config_store.clone());
 
-            let server = hook_server.clone();
             #[cfg(not(target_os = "windows"))]
-            let app_handle_for_server = app.handle().clone();
-            #[cfg(target_os = "windows")]
-            let startup_for_server = Arc::clone(&startup_setup);
-            tauri::async_runtime::spawn(async move {
-                #[cfg(target_os = "windows")]
-                if let Err(error) = server.start_with_reserved_socket(hook_socket).await {
-                    tauri::async_runtime::spawn_blocking(move || {
-                        startup_for_server.fail_hook_listener(endpoint.tcp_port, error);
-                    });
-                }
-                #[cfg(not(target_os = "windows"))]
-                if let Err(error) = server.start().await {
-                    log::error!("Failed to start HookServer: {error}");
-                    app_handle_for_server.exit(1);
-                }
-            });
+            {
+                log::info!("Startup: scheduling Hook server");
+                let server = hook_server.clone();
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = server.start().await {
+                        log::error!("Failed to start HookServer: {error}");
+                        app_handle.exit(1);
+                    }
+                });
+            }
 
             // Start hook auto-recovery watcher
             hooks::recovery::start_hook_recovery(
@@ -6381,56 +6421,6 @@ pub fn run() {
             } else {
                 log::warn!("Sound engine failed to initialize (no audio output)");
             }
-
-            // Build macOS menu bar / system tray shortcut with menu.
-            let tray_menu = menu_bar::build_tray_menu(app, &config_store.get().language)?;
-
-            let tray_icon = TrayIconBuilder::with_id(menu_bar::TRAY_ID)
-                .menu(&tray_menu)
-                .show_menu_on_left_click(false)
-                .tooltip("AgentBro")
-                .icon(menu_bar_icon())
-                .icon_as_template(false)
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button,
-                        button_state,
-                        rect,
-                        ..
-                    } = event
-                    {
-                        if let Ok(mut anchor) = tray_icon_rect().lock() {
-                            *anchor = Some(rect);
-                        }
-                        if button == MouseButton::Left && button_state == MouseButtonState::Up {
-                            if let Err(error) = show_skill_pack_picker(tray.app_handle()) {
-                                log::warn!("Failed to show skill pack picker: {error}");
-                            }
-                        }
-                    }
-                })
-                .on_menu_event(|app, event| {
-                    let menu_id = event.id().as_ref();
-                    if menu_id == menu_bar::SKILL_PACK_PICKER_ID {
-                        if let Err(error) = show_skill_pack_picker(app) {
-                            log::warn!("Failed to show skill pack picker: {error}");
-                        }
-                        return;
-                    }
-                    match menu_id {
-                        "show" => {
-                            show_notch_window(app, "tray");
-                        }
-                        "settings" => {
-                            let _ = show_settings_window(app);
-                        }
-                        "quit" => {
-                            std::process::exit(0);
-                        }
-                        _ => {}
-                    }
-                })
-                .build(app)?;
 
             // Start conversation file watcher (watches projects dirs for JSONL changes)
             let extra_roots: Vec<std::path::PathBuf> = {
@@ -6513,7 +6503,6 @@ pub fn run() {
                 network_monitor,
                 switch_db,
                 telemetry,
-                tray_icon,
             };
             {
                 let telemetry = app_state.telemetry.clone();
@@ -6529,6 +6518,51 @@ pub fn run() {
             );
             app.manage(app_state);
 
+            #[cfg(target_os = "windows")]
+            {
+                log::info!("Startup: scheduling Hook server");
+                let state = app.state::<AppState>();
+                if let Err(error) = tauri::async_runtime::block_on(
+                    state.hook_server.start_with_reserved_socket(hook_socket),
+                ) {
+                    startup_setup.fail_hook_listener(endpoint.tcp_port, error);
+                    return Ok(());
+                }
+                if !startup_setup.hook_listening() {
+                    return Ok(());
+                }
+
+                log::info!("Startup: creating configured windows");
+                for config in &configured_windows {
+                    log::info!("Startup: creating Windows window '{}'", config.label);
+                    let result = tauri::WebviewWindowBuilder::from_config(app.handle(), config)
+                        .and_then(|builder| builder.build());
+                    if let Err(error) = result {
+                        startup_setup.fail(
+                            &format!("could not create Windows window '{}'", config.label),
+                            error,
+                        );
+                        return Ok(());
+                    }
+                    if !startup_setup.is_starting() {
+                        return Ok(());
+                    }
+                }
+                log::info!("Startup: configured windows created");
+                configure_startup_notch(app.handle());
+                let config = state.config_store.get();
+                log::info!(
+                    "Startup: applying saved Windows surface '{}'",
+                    config.island_surface_mode
+                );
+                sync_pet_window_visibility(app.handle(), &config);
+            }
+
+            let language = app.state::<AppState>().config_store.get().language;
+            let tray_icon = build_startup_tray(app.handle(), &language)?;
+            app.manage(tray_icon);
+
+            #[cfg(not(target_os = "windows"))]
             if let Err(error) = build_skill_pack_picker_window(app.handle()) {
                 log::warn!("Failed to prewarm skill pack picker: {error}");
             }
@@ -6537,6 +6571,8 @@ pub fn run() {
                 log::warn!("Failed to register island global shortcuts: {}", err);
             }
             if should_show_onboarding {
+                #[cfg(target_os = "windows")]
+                log::info!("Startup: opening Windows onboarding settings");
                 let _ = show_settings_window(app.handle());
             }
 
@@ -6553,6 +6589,13 @@ pub fn run() {
                 });
             }
 
+            #[cfg(target_os = "windows")]
+            {
+                if !startup_setup.setup_finished() {
+                    return Ok(());
+                }
+                log::info!("Startup: Windows desktop setup complete");
+            }
             log::info!("AgentBro started");
             Ok(())
         })
@@ -6910,9 +6953,10 @@ pub fn run() {
         ])
         .build(context)
         .expect("error while building AgentBro");
+    #[cfg(not(target_os = "windows"))]
     log::info!("Startup: creating configured windows");
     #[cfg(target_os = "windows")]
-    if let Err(error) = startup.watch(platform::windows_startup::WINDOW_TIMEOUT) {
+    if let Err(error) = startup.watch(platform::windows_startup::STARTUP_TIMEOUT) {
         log::warn!("Could not start the Windows startup monitor: {error}");
     }
     app.run(|_, _| {});

@@ -65,8 +65,6 @@ pub struct AppState {
     pub network_monitor: Arc<NetworkMonitor>,
     pub switch_db: Arc<SwitchDatabase>,
     pub telemetry: Arc<TelemetryService>,
-    #[allow(dead_code)]
-    pub tray_icon: tauri::tray::TrayIcon,
 }
 
 #[derive(Clone)]
