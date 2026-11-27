@@ -15,6 +15,7 @@ param(
     [string]$PackManifestLink,
     [string]$DiagnosticsExportPath,
     [switch]$TracePermissionUi,
+    [switch]$VerifyQuestionReconnect,
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
     [switch]$VerifyDisplayChange,
@@ -857,6 +858,7 @@ function Test-InstalledQuestionReply(
     [switch]$Disconnect
 ) {
     $connection = [System.Net.Sockets.TcpClient]::new()
+    $reply = $null
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
         $stream = $connection.GetStream()
@@ -911,6 +913,16 @@ function Test-InstalledQuestionReply(
         } else {
             Write-Output 'Windows Island sent the inline question answer to the original Hook socket.'
         }
+    } catch {
+        Write-Host "Question state before cleanup: disconnect=$Disconnect, pendingRead=$($reply -and -not $reply.IsCompleted)."
+        try {
+            Save-FailedRunnerDesktop
+            $current = Find-VisibleIsland
+            if ($current) { Write-IslandAccessibilityBounds $current.Handle $ProjectName }
+        } catch {
+            Write-Host "Could not capture the pending question desktop: $_"
+        }
+        throw
     } finally {
         $connection.Dispose()
     }
@@ -1224,8 +1236,12 @@ try {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
     }
-    Test-InstalledQuestionReply $island -Disconnect
-    Test-InstalledQuestionReply $island
+    $questionAttempts = if ($VerifyQuestionReconnect) { 8 } else { 1 }
+    for ($attempt = 1; $attempt -le $questionAttempts; $attempt++) {
+        Write-Output "Windows question reconnect attempt $attempt of $questionAttempts."
+        Test-InstalledQuestionReply $island -Disconnect
+        Test-InstalledQuestionReply $island
+    }
     Test-InstalledPlanReview $island -Disconnect
     Test-InstalledPlanReview $island
     if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $DiagnosticsExportPath -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {

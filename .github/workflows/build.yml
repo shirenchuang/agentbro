@@ -61,6 +61,10 @@ on:
         description: Repeat approval and record Hook timing, screenshots and accessibility state
         type: boolean
         default: false
+      windows_verify_question_reconnect:
+        description: Repeat the installed Island question disconnect and reply sequence
+        type: boolean
+        default: false
       windows_verify_drag:
         description: Move the installed Island with native pointer input and verify that it stops on release
         type: boolean
@@ -483,6 +487,7 @@ jobs:
           VERIFY_DIAGNOSTICS_EXPORT: ${{ inputs.windows_verify_diagnostics_export }}
           VERIFY_REGISTERED_AGENT_APP: ${{ inputs.windows_verify_registered_agent_app }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
+          VERIFY_QUESTION_RECONNECT: ${{ inputs.windows_verify_question_reconnect }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
           VERIFY_DISPLAY_CHANGE: ${{ inputs.windows_verify_display_change }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
@@ -510,6 +515,7 @@ jobs:
                   -VerifyDiagnosticsExport:($env:VERIFY_DIAGNOSTICS_EXPORT -eq 'true') `
                   -VerifyRegisteredAgentApp:($env:VERIFY_REGISTERED_AGENT_APP -eq 'true') `
                   -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
+                  -VerifyQuestionReconnect:($env:VERIFY_QUESTION_RECONNECT -eq 'true') `
                   -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
                   -VerifyDisplayChange:($env:VERIFY_DISPLAY_CHANGE -eq 'true') `
                   -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `

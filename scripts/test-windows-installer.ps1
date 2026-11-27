@@ -8,6 +8,7 @@ param(
     [switch]$VerifyPinnedPackManifest,
     [string]$PackManifestLink,
     [switch]$TracePermissionUi,
+    [switch]$VerifyQuestionReconnect,
     [string]$SymbolsDirectory,
     [switch]$VerifyDrag,
     [switch]$VerifyDisplayChange,
@@ -675,6 +676,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     if ($VerifyAgentPackageConsole) { $start.ArgumentList.Add('-VerifyAgentPackageConsole') }
     if ($VerifyRegisteredAgentApp) { $start.ArgumentList.Add('-VerifyRegisteredAgentApp') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
+    if ($VerifyQuestionReconnect) { $start.ArgumentList.Add('-VerifyQuestionReconnect') }
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
     if ($VerifyDisplayChange) { $start.ArgumentList.Add('-VerifyDisplayChange') }
     if ($CloseStartupSettings) { $start.ArgumentList.Add('-CloseStartupSettings') }

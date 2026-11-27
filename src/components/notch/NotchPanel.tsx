@@ -606,8 +606,13 @@ export function NotchPanel() {
 
     if (blockingAttentionCount === 0 && previousAttentionCount > 0 && panelState === 'hover') {
       collapseTimerRef.current = setTimeout(() => {
-        const current = useSessionStore.getState().panelState
-        if (current === 'hover' && !hasInputDraftRef.current) setPanelState('collapsed')
+        const current = useSessionStore.getState()
+        if (current.panelState === 'hover'
+          && !hasInputDraftRef.current
+          && !current.sessionList.some(sessionNeedsAttention)
+          && !isBlockingOverlay(current.activeOverlay)) {
+          setPanelState('collapsed')
+        }
       }, 800)
     }
 
@@ -937,18 +942,18 @@ export function NotchPanel() {
       }
       overlayDismissPendingRef.current = null
     }
-    if (!autoCollapse) return
-    if (hasInputDraftRef.current) return
+    if (!autoCollapse || leaveTimerRef.current) return
     const currentPanelState = useSessionStore.getState().panelState
     if (currentPanelState === 'hover' || currentPanelState === 'expanded') {
       const delay = collapseDelay > 0 ? collapseDelay : dwellDuration
       leaveTimerRef.current = setTimeout(() => {
+        leaveTimerRef.current = undefined
+        if (Date.now() < interactionLockUntilRef.current || hasInputDraftRef.current) return
         const current = useSessionStore.getState().panelState
         if (current === 'hover' || current === 'expanded') {
           detailModeRef.current = false
           detailBackGuardUntilRef.current = 0
           markActiveBlockingOverlayInline()
-          if (hasInputDraftRef.current) return
           setNotchFocusable(false).catch(() => {})
           setPanelState('collapsed')
         }
