@@ -1978,6 +1978,35 @@ describe('NotchPanel island shell', () => {
     }
   })
 
+  it('cancels pointer-leave collapse when a new question arrives after duplicate leave events', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    try {
+      useConfigStore.setState({ autoCollapse: true, collapseDelay: 600 })
+      const firstQuestion = { toolUseId: 'first', question: 'First question?', options: ['Yes'] }
+      mountIsland({
+        id: 'question-first', sessionId: 's1', type: 'question', data: firstQuestion, createdAt: Date.now(),
+      }, { phase: 'waiting_input', pendingQuestion: firstQuestion })
+      const hitbox = screen.getByRole('region', { name: 'AgentBro' }).parentElement!
+
+      await act(async () => { vi.advanceTimersByTime(1201) })
+      fireEvent.pointerLeave(hitbox)
+      await act(async () => { vi.advanceTimersByTime(100) })
+      fireEvent.pointerLeave(hitbox)
+      await act(async () => {
+        useSessionStore.getState().replaceAllSessions([session({
+          phase: 'waiting_input',
+          pendingQuestion: { ...firstQuestion, toolUseId: 'second', question: 'Second question?' },
+        })])
+      })
+
+      await act(async () => { vi.advanceTimersByTime(600) })
+      expect(useSessionStore.getState().panelState).toBe('hover')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps suppressed blocking overlays queued without auto-expanding the island', async () => {
     const activeOverlay: OverlayItem = {
       id: 'permission-s1-suppressed',

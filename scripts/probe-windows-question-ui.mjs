@@ -29,6 +29,29 @@ const expression = `(${async (id, expectedAnswer, action) => {
       frames.push({ at: new Date().toISOString(), event, ...detail })
       if (frames.length > 160) frames.shift()
     }
+    const timers = new Map()
+    const nativeSetTimeout = window.setTimeout.bind(window)
+    const nativeClearTimeout = window.clearTimeout.bind(window)
+    window.setTimeout = (callback, delay, ...args) => {
+      if (typeof callback !== 'function' || !callback.toString().includes('collapsed')) {
+        return nativeSetTimeout(callback, delay, ...args)
+      }
+      const id = nativeSetTimeout((...values) => {
+        timers.delete(id)
+        record('timer-fired', { id, delay })
+        callback.apply(window, values)
+      }, delay, ...args)
+      timers.set(id, delay)
+      record('timer-scheduled', { id, delay })
+      return id
+    }
+    window.clearTimeout = id => {
+      if (timers.has(id)) {
+        record('timer-cleared', { id, delay: timers.get(id) })
+        timers.delete(id)
+      }
+      nativeClearTimeout(id)
+    }
     let lastView = ''
     const traceView = () => {
       const view = currentView()
