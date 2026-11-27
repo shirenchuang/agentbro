@@ -65,6 +65,10 @@ on:
         description: Repeat the installed Island question disconnect and reply sequence
         type: boolean
         default: false
+      windows_trace_question_ui:
+        description: Trace question presentation in the isolated installed webview
+        type: boolean
+        default: false
       windows_verify_drag:
         description: Move the installed Island with native pointer input and verify that it stops on release
         type: boolean
@@ -474,6 +478,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Set up Node.js for the question trace
+        if: inputs.windows_trace_question_ui
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Install and exercise the Windows app
         shell: pwsh
         timeout-minutes: 5
@@ -488,6 +498,7 @@ jobs:
           VERIFY_REGISTERED_AGENT_APP: ${{ inputs.windows_verify_registered_agent_app }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
           VERIFY_QUESTION_RECONNECT: ${{ inputs.windows_verify_question_reconnect }}
+          TRACE_QUESTION_UI: ${{ inputs.windows_trace_question_ui }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
           VERIFY_DISPLAY_CHANGE: ${{ inputs.windows_verify_display_change }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
@@ -526,6 +537,9 @@ jobs:
                   -VerifyStartupFailure:($env:VERIFY_STARTUP_FAILURE -eq 'true') `
                   -SymbolsDirectory (Join-Path $PWD 'windows-installers')
           } finally {
+              if ($env:AGENTBRO_QUESTION_TRACE_PORT) {
+                  Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments' -Name 'agentbro.exe'
+              }
               if ($wslPromptWatcher) {
                   Stop-Job -Job $wslPromptWatcher
                   Receive-Job -Job $wslPromptWatcher -ErrorAction Continue
