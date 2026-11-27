@@ -431,6 +431,7 @@
     "sendFeedback": "发送反馈",
     "feedbackEmail": "shi_rc@foxmail.com",
     "latestVersion": "已是最新版本",
+    "updateInstallerPending": "正在等待 {{version}} 安装包发布。",
     "updateChecking": "正在检查更新...",
     "updateAvailable": "发现新版本 {{version}}",
     "updateAvailableHomebrew": "发现新版本 {{version}}。你通过 Homebrew 安装，请运行：{{command}}",

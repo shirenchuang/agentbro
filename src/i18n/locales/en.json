@@ -404,6 +404,7 @@
     "sendFeedback": "Send Feedback",
     "feedbackEmail": "shi_rc@foxmail.com",
     "latestVersion": "You're on the latest version",
+    "updateInstallerPending": "Waiting for the {{version}} installer to be published.",
     "updateChecking": "Checking for updates...",
     "updateAvailable": "Update {{version}} available",
     "updateAvailableHomebrew": "Update {{version}} is available. Since AgentBro was installed with Homebrew, run: {{command}}",

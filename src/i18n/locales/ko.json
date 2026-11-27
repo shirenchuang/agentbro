@@ -361,6 +361,7 @@
     "sendFeedback": "피드백 보내기",
     "feedbackEmail": "shi_rc@foxmail.com",
     "latestVersion": "최신 버전입니다",
+    "updateInstallerPending": "{{version}} 설치 프로그램이 게시되기를 기다리고 있습니다.",
     "checkNow": "지금 확인",
     "exportDiagnostics": "진단 내보내기",
     "exportDiagnosticsDesc": "개인정보 보호 진단 ZIP 생성 (경로 및 비밀 마스킹됨), 문제 해결에 사용",

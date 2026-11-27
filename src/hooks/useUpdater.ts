@@ -6,12 +6,10 @@ import { useSessionStore } from '../stores/sessionStore'
 import { blockingBackgroundSessionCount } from '../utils/energyPolicy'
 import { isWindowsPlatform } from '../utils/platform'
 
-export type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
+export type UpdateStatus = 'idle' | 'checking' | 'installer-pending' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
 export type UpdateInstallChannel = 'direct' | 'homebrew'
 
 const RELEASE_API_URL = 'https://api.github.com/repos/shirenchuang/agentbro/releases/latest'
-const LATEST_DMG_URL = 'https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_universal.dmg'
-const LATEST_WINDOWS_SETUP_URL = 'https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_x64-setup.exe'
 const UPDATE_CHECK_TIMEOUT_MS = 8_000
 const SETTINGS_AUTO_CHECK_DELAY_MS = 5_000
 const BACKGROUND_AUTO_CHECK_DELAY_MS = 60_000
@@ -70,114 +68,73 @@ export function useUpdater(options: UseUpdaterOptions = {}) {
   const checkForUpdate = useCallback(async () => {
     if (!isTauri()) return
 
-    setState(prev => ({ ...prev, status: 'checking', error: null }))
+    updateRef.current = null
+    manualDownloadUrlRef.current = null
+    installChannelRef.current = 'direct'
+    autoInstallTriggeredRef.current = false
+    setState(createEmptyState('checking', 'direct'))
 
     try {
-      // Fire the install-channel probe and the network check concurrently so the
-      // homebrew round-trip doesn't add latency before the GitHub request starts.
-      const homebrewPromise = isHomebrewInstall()
-      const homebrewReleasePromise = homebrewPromise.then((isHomebrew) =>
-        isHomebrew ? checkGitHubLatestRelease() : null,
-      )
-
-      const homebrewInstall = await homebrewPromise
+      const homebrewInstall = await isHomebrewInstall().catch((error) => {
+        console.warn('[updater] could not detect the install channel:', error)
+        return null
+      })
       if (homebrewInstall) {
-        const fallback = (await homebrewReleasePromise)!
-        updateRef.current = null
-        manualDownloadUrlRef.current = null
         installChannelRef.current = 'homebrew'
-        autoInstallTriggeredRef.current = false
-
-        if (fallback.available) {
-          setState({
-            status: 'available',
-            installChannel: 'homebrew',
-            version: fallback.version,
-            notes: fallback.notes,
-            date: fallback.date,
-            error: null,
-            manualDownloadUrl: null,
-            downloadProgress: null,
-            restartPending: false,
-            restartBlockedByActivity: false,
-            blockingSessionCount: 0,
-          })
-        } else {
-          setState(createEmptyState('up-to-date', 'homebrew'))
-        }
+        const release = await checkGitHubLatestRelease()
+        setState(release.available ? {
+          ...createEmptyState('available', 'homebrew'),
+          version: release.version,
+          notes: release.notes,
+          date: release.date,
+        } : createEmptyState('up-to-date', 'homebrew'))
         return
       }
 
-      installChannelRef.current = 'direct'
-      const { check } = await import('@tauri-apps/plugin-updater')
-      const update = await check({
-        timeout: UPDATE_CHECK_TIMEOUT_MS,
-        headers: { 'X-Update-Channel': 'stable' },
-      })
+      let update: Update | null = null
+      if (homebrewInstall === false) {
+        try {
+          const { check } = await import('@tauri-apps/plugin-updater')
+          update = await check({
+            timeout: UPDATE_CHECK_TIMEOUT_MS,
+            headers: { 'X-Update-Channel': 'stable' },
+          })
+          if (!update && !isWindowsPlatform()) {
+            setState(createEmptyState('up-to-date', 'direct'))
+            return
+          }
+        } catch (error) {
+          console.warn('[updater] signed check failed; checking GitHub releases:', error)
+        }
+      }
 
       if (update) {
         updateRef.current = update
-        manualDownloadUrlRef.current = null
-        installChannelRef.current = 'direct'
-        autoInstallTriggeredRef.current = false
         setState({
-          status: 'available',
-          installChannel: 'direct',
+          ...createEmptyState('available', 'direct'),
           version: update.version,
           notes: update.body ?? null,
           date: update.date ?? null,
-          error: null,
-          manualDownloadUrl: null,
-          downloadProgress: null,
-          restartPending: false,
-          restartBlockedByActivity: false,
-          blockingSessionCount: 0,
         })
-      } else {
-        updateRef.current = null
-        manualDownloadUrlRef.current = null
-        installChannelRef.current = 'direct'
-        autoInstallTriggeredRef.current = false
-        setState(createEmptyState('up-to-date', 'direct'))
+        return
       }
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e)
 
-      try {
-        const fallback = await checkGitHubLatestRelease()
-        if (fallback.available) {
-          console.warn('[updater] direct check failed; using GitHub release fallback:', message)
-          updateRef.current = null
-          manualDownloadUrlRef.current = fallback.downloadUrl
-          installChannelRef.current = 'direct'
-          autoInstallTriggeredRef.current = false
-          setState({
-            status: 'available',
-            installChannel: 'direct',
-            version: fallback.version,
-            notes: fallback.notes,
-            date: fallback.date,
-            error: null,
-            manualDownloadUrl: fallback.downloadUrl,
-            downloadProgress: null,
-            restartPending: false,
-            restartBlockedByActivity: false,
-            blockingSessionCount: 0,
-          })
-          return
-        }
-
-        updateRef.current = null
-        manualDownloadUrlRef.current = null
-        installChannelRef.current = 'direct'
-        autoInstallTriggeredRef.current = false
+      const release = await checkGitHubLatestRelease()
+      if (!release.available) {
         setState(createEmptyState('up-to-date', 'direct'))
-      } catch (fallbackError) {
-        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
-        console.error('[updater] check failed:', message)
-        console.error('[updater] fallback check failed:', fallbackMessage)
-        setState(createEmptyState('error', 'direct'))
+        return
       }
+      manualDownloadUrlRef.current = release.downloadUrl
+      setState({
+        ...createEmptyState(release.downloadUrl ? 'available' : 'installer-pending', 'direct'),
+        version: release.version,
+        notes: release.notes,
+        date: release.date,
+        manualDownloadUrl: release.downloadUrl,
+      })
+    } catch (error) {
+      console.error('[updater] check failed:', error)
+      setState(createEmptyState('error', installChannelRef.current))
     }
   }, [])
 
@@ -379,6 +336,7 @@ interface GitHubRelease {
   published_at: string | null
   assets: Array<{
     name: string
+    state: string
     browser_download_url: string
   }>
 }
@@ -413,7 +371,7 @@ async function checkGitHubLatestRelease(): Promise<{
   const release = await response.json() as GitHubRelease
   const latestVersion = release.tag_name.replace(/^v/, '')
   const currentVersion = await getCurrentAppVersion()
-  const downloadPlatform = getUpdateDownloadPlatform()
+  const downloadPlatform = isWindowsPlatform() ? 'windows' : 'macos'
   const downloadAsset = selectReleaseDownloadAsset(release.assets, downloadPlatform)
 
   return {
@@ -421,31 +379,24 @@ async function checkGitHubLatestRelease(): Promise<{
     version: latestVersion,
     notes: release.body,
     date: release.published_at,
-    downloadUrl: downloadAsset?.browser_download_url ?? fallbackDownloadUrl(downloadPlatform),
+    downloadUrl: downloadAsset?.browser_download_url ?? null,
   }
-}
-
-function getUpdateDownloadPlatform(): UpdateDownloadPlatform {
-  return isWindowsPlatform() ? 'windows' : 'macos'
 }
 
 export function selectReleaseDownloadAsset(
   assets: GitHubRelease['assets'],
   platform: UpdateDownloadPlatform,
 ): GitHubRelease['assets'][number] | undefined {
+  const uploaded = assets.filter((asset) => asset.state === 'uploaded' && asset.browser_download_url)
   if (platform === 'windows') {
-    return assets.find((asset) => asset.name === 'AgentBro_latest_x64-setup.exe')
-      ?? assets.find((asset) => asset.name === 'AgentBro_latest_x64.msi')
-      ?? assets.find((asset) => asset.name.endsWith('_x64-setup.exe'))
-      ?? assets.find((asset) => asset.name.endsWith('_x64.msi'))
+    return uploaded.find((asset) => asset.name === 'AgentBro_latest_x64-setup.exe')
+      ?? uploaded.find((asset) => asset.name === 'AgentBro_latest_x64.msi')
+      ?? uploaded.find((asset) => asset.name.endsWith('_x64-setup.exe'))
+      ?? uploaded.find((asset) => /_x64(?:_[\w-]+)?\.msi$/i.test(asset.name))
   }
 
-  return assets.find((asset) => asset.name === 'AgentBro_latest_universal.dmg')
-    ?? assets.find((asset) => asset.name.endsWith('_universal.dmg'))
-}
-
-function fallbackDownloadUrl(platform: UpdateDownloadPlatform): string {
-  return platform === 'windows' ? LATEST_WINDOWS_SETUP_URL : LATEST_DMG_URL
+  return uploaded.find((asset) => asset.name === 'AgentBro_latest_universal.dmg')
+    ?? uploaded.find((asset) => asset.name.endsWith('_universal.dmg'))
 }
 
 function compareVersions(left: string, right: string): number {
