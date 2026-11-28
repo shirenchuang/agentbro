@@ -29,7 +29,7 @@ import { skillModeLabel, skillSourceTypeLabel } from './skillLabels'
 type BuilderMode = 'create' | 'edit' | 'duplicate'
 type PackRuntime = Pick<ReturnType<typeof useRuntimeEnvironmentStore.getState>, 'selectedEnvironmentId' | 'selectionRevision'>
 type PackExportMode = 'definition' | 'sources' | 'migration' | 'archive'
-type PackArchive = { path: string; revision: string }
+type PackArchive = { path: string; revision: string; executableFingerprints?: Record<string, string> }
 type PackImport = {
   manifest: SkillPackManifest
   sourceUrl?: string
@@ -47,7 +47,7 @@ type PackLink = {
   loading: boolean
   error: string | null
 }
-type PackMemberStatus = 'missing' | 'occupied' | 'unavailable' | 'unrecorded' | 'different' | 'match'
+type PackMemberStatus = 'missing' | 'occupied' | 'unavailable' | 'unrecorded' | 'different' | 'differentPermissions' | 'match'
 type PackRemoval =
   | { kind: 'delete'; preview: DeleteSkillPackPreview }
   | { kind: 'member'; preview: RemoveSkillFromPackPreview }
@@ -157,6 +157,14 @@ function getPackReview(manifest: SkillPackManifest, runtime: PackRuntime, archiv
     : skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
 }
 
+function expectedExecutableFingerprints({ archive, manifest, restoredFrom }: PackImport) {
+  const original = new Map(Object.entries(archive?.executableFingerprints ?? {}))
+  return new Map(manifest.skillIds.flatMap((id) => {
+    const fingerprint = original.get(restoredFrom.get(id) ?? id)
+    return fingerprint ? [[id, fingerprint] as const] : []
+  }))
+}
+
 export function SkillPackPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
@@ -242,12 +250,16 @@ export function SkillPackPage() {
       return result
     }
     const expected = new Map(Object.entries(manifest.skillFingerprints ?? {}))
+    const executable = expectedExecutableFingerprints(packImport)
     for (const member of reviewed) {
+      const expectedExecutable = executable.get(member.skillId)
       if (member.occupiedBy) result.set(member.skillId, 'occupied')
       else if (member.missing) result.set(member.skillId, 'missing')
-      else if (!member.fingerprint) result.set(member.skillId, 'unavailable')
+      else if (!member.fingerprint || (expectedExecutable && !member.executableFingerprint)) result.set(member.skillId, 'unavailable')
       else if (!expected.has(member.skillId)) result.set(member.skillId, 'unrecorded')
-      else result.set(member.skillId, expected.get(member.skillId) === member.fingerprint ? 'match' : 'different')
+      else if (expected.get(member.skillId) !== member.fingerprint) result.set(member.skillId, 'different')
+      else if (expectedExecutable && expectedExecutable !== member.executableFingerprint) result.set(member.skillId, 'differentPermissions')
+      else result.set(member.skillId, 'match')
     }
     return result
   }, [packImport, state.skills])
@@ -255,7 +267,8 @@ export function SkillPackPage() {
   const hasMissingPackSkills = importStatuses.includes('missing')
   const hasOccupiedPackSkills = importStatuses.includes('occupied')
   const hasUnavailablePackSkills = importStatuses.includes('unavailable')
-  const needsLocalCopyConfirmation = importStatuses.includes('different') || importStatuses.includes('unrecorded')
+  const hasPermissionDifferences = importStatuses.includes('differentPermissions')
+  const needsLocalCopyConfirmation = importStatuses.includes('different') || importStatuses.includes('unrecorded') || hasPermissionDifferences
   const packImportNeedsReview = Boolean(packImport && packImport.manifest.version >= 2 && !packImport.reviewed)
   const packImportBlocked = packImportNeedsReview || hasMissingPackSkills || hasOccupiedPackSkills || hasUnavailablePackSkills
     || (needsLocalCopyConfirmation && !packImport?.acceptLocalCopies)
@@ -265,7 +278,7 @@ export function SkillPackPage() {
   const restorableIds = restorableMembers.filter((id) => packMemberStatuses.get(id) === 'missing')
   const conflictingMembers = new Set(restorableMembers.filter((id) => {
     const status = packMemberStatuses.get(id)
-    return status === 'different' || status === 'unavailable' || status === 'occupied'
+    return status === 'different' || status === 'differentPermissions' || status === 'unavailable' || status === 'occupied'
   }))
   const packMemberIds = packImport?.manifest.skillIds
   const occupiedSkillIds = useMemo(() => new Set([
@@ -321,8 +334,8 @@ export function SkillPackPage() {
       })
       if (typeof path !== 'string' || !isPackRuntimeCurrent(runtime)) return
       if (local && path.toLowerCase().endsWith('.zip')) {
-        const { manifest, revision } = await skillApiV2.readPackArchive(path)
-        await preparePackReview(manifest, runtime, { archive: { path, revision } })
+        const { manifest, revision, executableFingerprints } = await skillApiV2.readPackArchive(path)
+        await preparePackReview(manifest, runtime, { archive: { path, revision, executableFingerprints } })
       } else {
         const manifest = await skillApiV2.readPackManifest(path)
         await preparePackReview(manifest, runtime)
@@ -461,7 +474,9 @@ export function SkillPackPage() {
     try {
       const pack = reviewed
         ? archive
-          ? await skillApiV2.importReviewedArchivePack(manifest, reviewed, acceptLocalCopies)
+          ? await skillApiV2.importReviewedArchivePack(
+              manifest, reviewed, acceptLocalCopies, Object.fromEntries(expectedExecutableFingerprints(packImport)),
+            )
           : await skillApiV2.importReviewedPack(manifest, reviewed, acceptLocalCopies, runtime.selectedEnvironmentId)
         : await skillApiV2.upsertPack({
             id: '',
@@ -939,7 +954,7 @@ export function SkillPackPage() {
                 disabled={packImportBusy || hasMissingPackSkills || hasOccupiedPackSkills || hasUnavailablePackSkills}
                 onChange={(event) => setPackImport({ ...packImport, acceptLocalCopies: event.target.checked })}
               />
-              {t('skills.packManifest.useLocalCopies')}
+              {t(hasPermissionDifferences ? 'skills.packManifest.useLocalCopiesWithPermissions' : 'skills.packManifest.useLocalCopies')}
             </label>
           )}
           {packImport.manifest.version >= 2 && (

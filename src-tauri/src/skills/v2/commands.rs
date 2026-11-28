@@ -469,12 +469,14 @@ pub fn execute_import_skill_pack_manifest(
     reviewed: Vec<SkillPackFingerprint>,
     accept_local_copies: bool,
     archive_review: Option<bool>,
+    archive_executable_fingerprints: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<SkillPackDetail, String> {
     svc()?.import_reviewed_skill_pack(
         manifest,
         &reviewed,
         accept_local_copies,
         archive_review.unwrap_or(false),
+        archive_executable_fingerprints.as_ref(),
     )
 }
 

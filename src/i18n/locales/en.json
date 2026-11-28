@@ -734,6 +734,8 @@
       "restoring": "Restoring…",
       "match": "Content matches",
       "different": "Different content",
+      "differentPermissions": "Executable permissions differ",
+      "useLocalCopiesWithPermissions": "Keep the local copies, including their current executable permissions",
       "unrecorded": "No fingerprint in the manifest",
       "unavailable": "Could not verify content",
       "unavailableHelp": "Check that the Skills can be read in the center library, then recheck.",

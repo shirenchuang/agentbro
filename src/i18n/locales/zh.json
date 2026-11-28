@@ -775,6 +775,8 @@
       "restoring": "恢复中…",
       "match": "内容一致",
       "different": "内容不同",
+      "differentPermissions": "执行权限不同",
+      "useLocalCopiesWithPermissions": "保留当前库中的技能及其执行权限",
       "unrecorded": "清单未记录指纹",
       "unavailable": "无法验证内容",
       "unavailableHelp": "确认中心库中的技能文件可读，然后重新比对。",

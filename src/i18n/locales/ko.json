@@ -735,6 +735,8 @@
       "restoring": "복원 중…",
       "match": "내용 일치",
       "different": "내용이 다름",
+      "differentPermissions": "실행 권한이 다름",
+      "useLocalCopiesWithPermissions": "현재 실행 권한을 포함하여 라이브러리의 사본 유지",
       "unrecorded": "매니페스트에 지문이 없음",
       "unavailable": "내용을 확인할 수 없음",
       "unavailableHelp": "중앙 라이브러리의 스킬을 읽을 수 있는지 확인한 후 다시 비교하세요.",
