@@ -5687,7 +5687,9 @@ pub async fn get_chat_history(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<ParsedMessage>, String> {
-    parse_session_messages_for_command(&state, &session_id, false).map(|history| history.messages)
+    parse_session_messages_for_command(&state, &session_id, false)
+        .await
+        .map(|history| history.messages)
 }
 
 /// Paginated slice of a session's chat history.
@@ -5717,7 +5719,7 @@ pub async fn get_chat_history_tail(
     let minimum = min_conversation_messages
         .unwrap_or(0)
         .min(MAX_CONVERSATION_MINIMUM);
-    let history = parse_session_messages_for_command(&state, &session_id, minimum > 0)?;
+    let history = parse_session_messages_for_command(&state, &session_id, minimum > 0).await?;
     let messages = &history.messages;
     let total_count = messages.len();
     let end = match before_id.as_deref() {
@@ -5795,7 +5797,7 @@ fn resolve_transcript_path_for_session(
     session_id: &str,
 ) -> Option<PathBuf> {
     let session = state.session_store.get_session(session_id)?;
-    if session.wsl_distribution.is_some() {
+    if session.wsl_distribution.is_some() || session.agent_type == "zcode" {
         return None;
     }
     if matches!(
@@ -5834,17 +5836,35 @@ fn resolve_transcript_path_for_session(
     }
 }
 
-fn parse_session_messages_for_command(
+async fn parse_session_messages_for_command(
     state: &State<'_, AppState>,
     session_id: &str,
     include_all_history: bool,
 ) -> Result<SessionMessagesResult, String> {
     let session = state.session_store.get_session(session_id);
+    let is_zcode = session
+        .as_ref()
+        .is_some_and(|session| session.agent_type == "zcode");
+    if session.as_ref().is_some_and(|session| {
+        is_zcode
+            && session.wsl_distribution.is_none()
+            && session.remote_host_id.is_none()
+            && session.remote_host_name.is_none()
+    }) {
+        let messages = crate::hooks::zcode_history::read_local_messages(session_id).await;
+        if !messages.is_empty() {
+            return Ok(SessionMessagesResult {
+                messages,
+                transcript_path: None,
+            });
+        }
+    }
     let file_path = resolve_transcript_path_for_session(state, session_id);
 
     let Some(file_path) = file_path else {
         let raw_events = state.hook_server.raw_events_for_session(session_id);
         if raw_events.is_empty()
+            && !is_zcode
             && !session.as_ref().is_some_and(|session| {
                 session.remote_host_id.is_some() || session.remote_host_name.is_some()
             })

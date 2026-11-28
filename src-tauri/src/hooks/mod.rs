@@ -10,3 +10,4 @@ pub mod recovery;
 pub mod server;
 pub mod session_store;
 pub mod tool_processor;
+pub mod zcode_history;
