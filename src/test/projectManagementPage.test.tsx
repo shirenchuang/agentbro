@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { ProjectManagementPage } from '../components/skills-v2/ProjectManagementPage'
 import { SkillManagerShell } from '../components/skills-v2/SkillManagerShell'
 import { SettingsSidebar } from '../components/settings/SettingsSidebar'
 import { skillApiV2 } from '../services/skillApiV2'
+import * as tauriApi from '../services/tauriApi'
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../stores/runtimeEnvironmentStore'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
 import i18n from '../i18n'
@@ -12,6 +14,7 @@ import type { AddCenterSkillPreview, ProjectDetail, SkillManagerOverview, SkillS
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }))
 
 function makeSkill(): SkillSummary {
   return {
@@ -169,6 +172,62 @@ describe('ProjectManagementPage', () => {
     await waitFor(() => {
       expect(install).toHaveBeenCalledWith('project-1', 'codex', ['release-checklist'], 'link')
     })
+  })
+
+  it('reviews selected ZCode transcripts and maps the same preview to export and Codex import', async () => {
+    await i18n.changeLanguage('en')
+    vi.spyOn(tauriApi, 'isTauri').mockReturnValue(true)
+    vi.mocked(openDialog).mockResolvedValue('/projects/target')
+    vi.mocked(saveDialog).mockResolvedValue('/exports/handoff.zip')
+    const sessions = [
+      { id: 'saved', title: 'Finish the fix', cwd: '/Users/me/agentbro', archived: false, updatedAt: null, directoryExists: true },
+      { id: 'older', title: 'Prior approach', cwd: '/Users/me/agentbro', archived: true, updatedAt: null, directoryExists: true },
+    ]
+    const selection = { projectId: 'project-1', sessionIds: ['saved', 'older'], targetDirectory: '/projects/target' }
+    vi.spyOn(skillApiV2, 'listProjectZCodeConversations').mockResolvedValue(sessions)
+    const review = vi.spyOn(skillApiV2, 'previewProjectConversationMigration').mockResolvedValue({
+      revision: 'verified-content',
+      bundle: {
+        projectRoot: '/Users/me/agentbro',
+        targetDirectory: '/projects/target',
+        conversations: [
+          { ...sessions[0], readIssue: null, git: null, messages: [
+            { id: 'q', role: 'user', timestamp: null, text: 'Apply the confirmed fix.' },
+            { id: 'a', role: 'assistant', timestamp: null, text: 'The change is ready to test.' },
+          ] },
+          { ...sessions[1], readIssue: 'empty', git: null, messages: [] },
+        ],
+      },
+    })
+    const save = vi.spyOn(skillApiV2, 'exportProjectConversationHandoff').mockResolvedValue()
+    const migrate = vi.spyOn(skillApiV2, 'migrateProjectConversationsToCodex').mockResolvedValue([{ sourceId: 'saved', targetId: 'codex-fork', reused: true }])
+    const open = vi.spyOn(skillApiV2, 'openMigratedCodexThread').mockResolvedValue()
+    render(<ProjectManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversations' }))
+    expect(await screen.findByRole('checkbox', { name: /Prior approach.*Archived/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Preview migration' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
+    await screen.findByText('/projects/target')
+    fireEvent.click(screen.getByRole('button', { name: 'Preview migration' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Preview migration' })
+    expect(review).toHaveBeenCalledWith(selection)
+    expect(within(dialog).getByText('Apply the confirmed fix.')).toBeInTheDocument()
+    expect(within(dialog).getByText('The change is ready to test.')).toBeInTheDocument()
+    expect(within(dialog).getByText('No readable messages for this conversation.')).toBeInTheDocument()
+    expect(migrate).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save handoff' }))
+    await screen.findByText('Handoff saved.')
+    expect(save).toHaveBeenCalledWith(selection, 'verified-content', '/exports/handoff.zip')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview migration' }))
+    const nextDialog = await screen.findByRole('dialog', { name: 'Preview migration' })
+    fireEvent.click(within(nextDialog).getByRole('button', { name: 'Migrate to Codex' }))
+    expect(await screen.findByText('Already migrated')).toBeInTheDocument()
+    expect(migrate).toHaveBeenCalledExactlyOnceWith(selection, 'verified-content')
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Codex' }))
+    expect(open).toHaveBeenCalledExactlyOnceWith('codex-fork')
   })
 
   it('previews a project lock and restores only checked Skills with per-Skill feedback', async () => {

@@ -1565,6 +1565,12 @@ impl Service {
         self.project_detail_for_row(&row)
     }
 
+    pub(super) fn project_root(&self, project_id: &str) -> Result<String, String> {
+        self.project_row(project_id)?
+            .map(|row| row.root_path)
+            .ok_or_else(|| format!("Project not found: {project_id}"))
+    }
+
     pub fn scan_project(&self, project_id: &str) -> Result<ProjectDetail, String> {
         let now = db::now_iso();
         self.db.with_conn(|c| {

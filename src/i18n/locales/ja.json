@@ -700,6 +700,33 @@
     "dismiss": "閉じる"
   },
   "skills": {
+    "conversationMigration": {
+      "missingFolder": "移行元フォルダーが見つかりません",
+      "tab": "会話",
+      "direction": "ZCode → Codex",
+      "loading": "会話を読み込んでいます…",
+      "empty": "このプロジェクトには保存された ZCode 会話がありません。",
+      "selectAll": "すべて選択",
+      "clear": "選択を解除",
+      "archived": "アーカイブ済み",
+      "targetFolder": "移行先フォルダー",
+      "chooseFolder": "フォルダーを選ぶ",
+      "preview": "移行をプレビュー",
+      "archive": "ZIP アーカイブ",
+      "export": "引き継ぎを保存",
+      "saved": "引き継ぎを保存しました。",
+      "results": "移行結果",
+      "alreadyImported": "移行済み",
+      "imported": "移行しました",
+      "openCodex": "Codex で開く",
+      "working": "移行しています…",
+      "migrate": "Codex に移行",
+      "sourceProject": "移行元のプロジェクト",
+      "messageCount": "{{count}} 件のメッセージ",
+      "unreadable": "この会話には読み取れるメッセージがありません。",
+      "user": "ユーザー",
+      "assistant": "アシスタント"
+    },
     "projectsTab": "プロジェクト",
     "packManifest": {
       "occupiedBy": "ID は {{id}} が使用中です",

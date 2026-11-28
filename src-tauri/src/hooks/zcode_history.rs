@@ -1,13 +1,13 @@
 use super::conversation_parser::{ChatRole, MessageBlock, ParsedMessage};
 use rusqlite::{Connection, OpenFlags};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub async fn read_local_messages(session_id: &str) -> Vec<ParsedMessage> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    let path = home.join(".zcode/cli/db/db.sqlite");
+    let path = database_path(&home);
     let session_id = session_id.to_owned();
     match tokio::task::spawn_blocking(move || read_messages(&path, &session_id)).await {
         Ok(Ok(messages)) => messages,
@@ -22,9 +22,27 @@ pub async fn read_local_messages(session_id: &str) -> Vec<ParsedMessage> {
     }
 }
 
-fn read_messages(database: &Path, session_id: &str) -> rusqlite::Result<Vec<ParsedMessage>> {
+pub(crate) fn database_path(home: &Path) -> PathBuf {
+    home.join(".zcode/cli/db/db.sqlite")
+}
+
+pub(crate) fn open_database(database: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     conn.busy_timeout(Duration::from_millis(150))?;
+    Ok(conn)
+}
+
+pub(crate) fn read_messages(
+    database: &Path,
+    session_id: &str,
+) -> rusqlite::Result<Vec<ParsedMessage>> {
+    query_messages(&open_database(database)?, session_id)
+}
+
+pub(crate) fn query_messages(
+    conn: &Connection,
+    session_id: &str,
+) -> rusqlite::Result<Vec<ParsedMessage>> {
     let mut statement = conn.prepare(
         "SELECT m.id, m.time_created,
                 CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.role') END AS role,

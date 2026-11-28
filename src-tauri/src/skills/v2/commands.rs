@@ -10,7 +10,7 @@ use crate::skills::v2::service::{
     AdoptBatchItem, AdoptBatchResult, ClaimOrigin, DeleteSkillTargetDistributionsResult,
     DeleteUnmanagedAgentSkillsResult, Service, UpsertPackInput,
 };
-use crate::skills::v2::{diagnosis, fsutil, snapshot};
+use crate::skills::v2::{diagnosis, fsutil, session_migration, snapshot};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -707,6 +707,47 @@ pub fn get_skill_project_detail_v2(project_id: String) -> Result<ProjectDetail, 
 #[tauri::command(async)]
 pub fn scan_skill_project_v2(project_id: String) -> Result<ProjectDetail, String> {
     svc()?.scan_project(&project_id)
+}
+
+#[tauri::command(async)]
+pub fn list_project_zcode_conversations(
+    project_id: String,
+) -> Result<Vec<session_migration::SessionSummary>, String> {
+    let service = svc()?;
+    session_migration::list(&service, &project_id)
+}
+
+#[tauri::command(async)]
+pub fn preview_project_conversation_migration(
+    selection: session_migration::HandoffSelection,
+) -> Result<session_migration::HandoffPreview, String> {
+    let service = svc()?;
+    session_migration::preview(&service, selection)
+}
+
+#[tauri::command(async)]
+pub fn export_project_conversation_handoff(
+    selection: session_migration::HandoffSelection,
+    revision: String,
+    destination: String,
+) -> Result<(), String> {
+    let service = svc()?;
+    let bundle = session_migration::reviewed(&service, selection, &revision)?;
+    session_migration::export(&bundle, std::path::Path::new(&destination))
+}
+
+#[tauri::command]
+pub async fn migrate_project_conversations_to_codex(
+    selection: session_migration::HandoffSelection,
+    revision: String,
+) -> Result<Vec<session_migration::MigratedConversation>, String> {
+    let bundle = tauri::async_runtime::spawn_blocking(move || {
+        let service = svc()?;
+        session_migration::reviewed(&service, selection, &revision)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    session_migration::migrate(bundle).await
 }
 
 #[tauri::command]

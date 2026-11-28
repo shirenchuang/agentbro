@@ -699,6 +699,33 @@
     "dismiss": "Dismiss"
   },
   "skills": {
+    "conversationMigration": {
+      "missingFolder": "Source folder missing",
+      "tab": "Conversations",
+      "direction": "ZCode → Codex",
+      "loading": "Loading conversations…",
+      "empty": "No saved ZCode conversations found in this project.",
+      "selectAll": "Select all",
+      "clear": "Clear selection",
+      "archived": "Archived",
+      "targetFolder": "Target directory",
+      "chooseFolder": "Choose folder",
+      "preview": "Preview migration",
+      "archive": "ZIP archive",
+      "export": "Save handoff",
+      "saved": "Handoff saved.",
+      "results": "Migration results",
+      "alreadyImported": "Already migrated",
+      "imported": "Migrated",
+      "openCodex": "Open in Codex",
+      "working": "Migrating…",
+      "migrate": "Migrate to Codex",
+      "sourceProject": "Source project",
+      "messageCount": "{{count}} messages",
+      "unreadable": "No readable messages for this conversation.",
+      "user": "User",
+      "assistant": "Assistant"
+    },
     "projectsTab": "Projects",
     "packManifest": {
       "occupiedBy": "ID is occupied by {{id}}",

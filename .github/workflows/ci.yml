@@ -107,6 +107,8 @@ jobs:
           & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::server::tests::antigravity_completion_
       - name: Test saved ZCode conversation history
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::zcode_history::tests'
+      - name: Test project conversation migration
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::session_migration::'
       - name: Test concurrent Island preference saves
         run: |
           & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE config::tests::island_preferences_

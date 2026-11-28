@@ -594,6 +594,33 @@
     "dismiss": "Kapat"
   },
   "skills": {
+    "conversationMigration": {
+      "missingFolder": "Kaynak klasör eksik",
+      "tab": "Konuşmalar",
+      "direction": "ZCode → Codex",
+      "loading": "Konuşmalar yükleniyor…",
+      "empty": "Bu projede kayıtlı ZCode konuşması bulunamadı.",
+      "selectAll": "Tümünü seç",
+      "clear": "Seçimi temizle",
+      "archived": "Arşivlendi",
+      "targetFolder": "Hedef dizin",
+      "chooseFolder": "Klasör seç",
+      "preview": "Taşımayı önizle",
+      "archive": "ZIP arşivi",
+      "export": "Devir dosyasını kaydet",
+      "saved": "Devir dosyası kaydedildi.",
+      "results": "Taşıma sonuçları",
+      "alreadyImported": "Daha önce taşındı",
+      "imported": "Taşındı",
+      "openCodex": "Codex'te aç",
+      "working": "Taşınıyor…",
+      "migrate": "Codex'e taşı",
+      "sourceProject": "Kaynak proje",
+      "messageCount": "{{count}} mesaj",
+      "unreadable": "Bu konuşmada okunabilir mesaj yok.",
+      "user": "Kullanıcı",
+      "assistant": "Asistan"
+    },
     "projectsTab": "Projeler",
     "packManifest": {
       "occupiedBy": "Kimlik {{id}} tarafından kullanılıyor",
