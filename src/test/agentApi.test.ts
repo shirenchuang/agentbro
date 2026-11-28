@@ -88,6 +88,17 @@ describe('agentApi seedAgentPrograms', () => {
     }
   })
 
+  it('sends the reviewed desktop app to the local uninstall command', async () => {
+    const { agentApi } = await import('../services/agentApi')
+    const { LOCAL_RUNTIME_ENVIRONMENT_ID } = await import('../stores/runtimeEnvironmentStore')
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    const target = { path: '/Applications/Cursor.app', identity: 'reviewed-app' }
+
+    await agentApi.uninstall('cursor', LOCAL_RUNTIME_ENVIRONMENT_ID, undefined, target)
+
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('agent_uninstall', { agentId: 'cursor', expectedApp: target })
+  })
+
   it('routes Agent Management program and custom Agent commands to the requested runtime', async () => {
     const { agentApi } = await import('../services/agentApi')
     const { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } = await import('../stores/runtimeEnvironmentStore')

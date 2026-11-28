@@ -56,6 +56,13 @@ enum PackageOperationOutcome {
     NoNewerVersion,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUninstallTarget {
+    path: String,
+    identity: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProgramInfo {
@@ -71,6 +78,8 @@ pub struct AgentProgramInfo {
     pub binary_path: Option<String>,
     pub config_dir: Option<String>,
     pub app_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_uninstall: Option<AppUninstallTarget>,
     pub download_url: Option<String>,
     pub install_command: Option<String>,
     pub update_command: Option<String>,
@@ -216,7 +225,7 @@ pub async fn agent_install(
     state: State<'_, AppState>,
     agent_id: String,
 ) -> Result<(), String> {
-    run_agent_command(app, &state.adapters, &agent_id, "install", None)
+    run_agent_command(app, &state.adapters, &agent_id, "install", None, None)
         .await
         .map(|_| ())
 }
@@ -234,6 +243,7 @@ pub async fn agent_update(
         &agent_id,
         "update",
         expected_binary_path.as_deref(),
+        None,
     )
     .await
     .map(|outcome| match outcome {
@@ -248,6 +258,7 @@ pub async fn agent_uninstall(
     state: State<'_, AppState>,
     agent_id: String,
     expected_binary_path: Option<String>,
+    expected_app: Option<AppUninstallTarget>,
 ) -> Result<(), String> {
     run_agent_command(
         app,
@@ -255,6 +266,7 @@ pub async fn agent_uninstall(
         &agent_id,
         "uninstall",
         expected_binary_path.as_deref(),
+        expected_app.as_ref(),
     )
     .await
     .map(|_| ())
@@ -560,13 +572,15 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         AgentProgramKind::Cli => None,
         AgentProgramKind::App => installed_app_path(&id, &meta),
     };
-    if meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND)
-        && app_path
-            .as_deref()
-            .is_some_and(|path| !is_trashable_app_path(Path::new(path)))
-    {
-        meta.uninstall_command = None;
-    }
+    let app_uninstall = if meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND) {
+        let target = app_path.as_deref().and_then(app_uninstall_target);
+        if target.is_none() {
+            meta.uninstall_command = None;
+        }
+        target
+    } else {
+        None
+    };
     let display_app_path = if id == "antigravity" {
         app_path.clone()
     } else {
@@ -636,6 +650,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
             .map(|path| path.display().to_string()),
         config_dir,
         app_path: display_app_path,
+        app_uninstall,
         download_url: meta.download_url.map(ToString::to_string),
         install_command: meta.install_command.map(ToString::to_string),
         update_command: meta.update_command.map(ToString::to_string),
@@ -938,6 +953,7 @@ fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo 
         binary_path: None,
         config_dir: Some(config_dir),
         app_path: None,
+        app_uninstall: None,
         download_url: None,
         install_command: None,
         update_command: None,
@@ -960,6 +976,7 @@ async fn run_agent_command(
     agent_id: &str,
     operation: &str,
     expected_binary_path: Option<&str>,
+    expected_app: Option<&AppUninstallTarget>,
 ) -> Result<PackageOperationOutcome, String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let _package_operation = claim_agent_package_operation()?;
@@ -979,6 +996,7 @@ async fn run_agent_command(
         &meta,
         installed_binary.as_deref(),
         expected_binary_path,
+        expected_app,
     )
     .await;
     let (stream, message) = match &result {
@@ -1005,8 +1023,17 @@ async fn execute_package_operation(
     meta: &ProgramMetadata,
     installed_binary: Option<&Path>,
     expected_binary_path: Option<&str>,
+    expected_app: Option<&AppUninstallTarget>,
 ) -> Result<PackageOperationOutcome, String> {
     let npm = meta.reviewed_npm_installation(installed_binary, expected_binary_path)?;
+    if operation == "uninstall"
+        && meta.kind == AgentProgramKind::App
+        && meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND)
+    {
+        return trash_agent_app(app, agent_id, meta, expected_app)
+            .await
+            .map(PackageOperationOutcome::Completed);
+    }
     if operation == "uninstall"
         && !program_is_installed_for_agent(
             agent_id,
@@ -1018,14 +1045,6 @@ async fn execute_package_operation(
         return Ok(PackageOperationOutcome::Completed(
             "Agent is already uninstalled",
         ));
-    }
-    if operation == "uninstall"
-        && meta.kind == AgentProgramKind::App
-        && meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND)
-    {
-        return trash_agent_app(app, agent_id, meta)
-            .await
-            .map(PackageOperationOutcome::Completed);
     }
     let (command_line, command) = if let Some(launcher) =
         native_claude_launcher(agent_id, installed_binary)
@@ -1249,14 +1268,12 @@ async fn trash_agent_app(
     app: &AppHandle,
     agent_id: &str,
     meta: &ProgramMetadata,
+    expected_app: Option<&AppUninstallTarget>,
 ) -> Result<&'static str, String> {
-    let app_path = installed_app_path(agent_id, meta)
-        .ok_or_else(|| format!("Application is not installed for {agent_id}"))?;
-    if !is_trashable_app_path(Path::new(&app_path)) {
-        return Err(format!(
-            "Refusing to trash unexpected application path: {app_path}"
-        ));
-    }
+    let detected = installed_app_path(agent_id, meta)
+        .as_deref()
+        .and_then(app_uninstall_target);
+    let app_path = reviewed_app_uninstall_target(detected, expected_app)?.path;
 
     emit_output(
         app,
@@ -1291,12 +1308,60 @@ async fn trash_agent_app(
     }
 }
 
-fn is_trashable_app_path(path: &Path) -> bool {
-    let user_apps = dirs::home_dir().map(|home| home.join("Applications"));
-    path.extension() == Some(OsStr::new("app"))
-        && path.parent().is_some_and(|parent| {
-            parent == Path::new("/Applications") || user_apps.as_deref() == Some(parent)
+fn reviewed_app_uninstall_target(
+    detected: Option<AppUninstallTarget>,
+    expected: Option<&AppUninstallTarget>,
+) -> Result<AppUninstallTarget, String> {
+    detected.filter(|target| Some(target) == expected).ok_or_else(|| {
+        "The desktop Agent application changed. Refresh Agent Management and review the installation again.".to_string()
+    })
+}
+
+fn app_uninstall_target(path: &str) -> Option<AppUninstallTarget> {
+    #[cfg(target_os = "macos")]
+    {
+        let user_apps = dirs::home_dir().map(|home| home.join("Applications"));
+        app_uninstall_target_at(path, user_apps.as_deref())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn app_uninstall_target_at(app_path: &str, user_apps: Option<&Path>) -> Option<AppUninstallTarget> {
+    use std::os::unix::fs::MetadataExt;
+
+    let path = Path::new(app_path);
+    let parent = path.parent()?;
+    if path.extension() != Some(OsStr::new("app"))
+        || (parent != Path::new("/Applications") && Some(parent) != user_apps)
+    {
+        return None;
+    }
+    let bundle = std::fs::symlink_metadata(path).ok()?;
+    let plist = std::fs::symlink_metadata(path.join("Contents/Info.plist")).ok()?;
+    if !bundle.is_dir() || !plist.is_file() {
+        return None;
+    }
+    // Checking the plist also catches an update written inside the same bundle directory.
+    let identity = [bundle, plist]
+        .map(|entry| {
+            format!(
+                "{}:{}:{}:{}",
+                entry.dev(),
+                entry.ino(),
+                entry.ctime(),
+                entry.ctime_nsec()
+            )
         })
+        .join("/");
+    Some(AppUninstallTarget {
+        path: app_path.to_string(),
+        identity,
+    })
 }
 
 fn emit_output(
@@ -2934,6 +2999,62 @@ mod tests {
 
         let cline = metadata_for("cline").expect("cline metadata");
         assert_eq!(cline.uninstall_command, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn desktop_trash_requires_the_original_reviewed_bundle() {
+        let fixture = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary applications");
+        let apps = fixture.path().join("Applications");
+        let original = apps.join("Cursor.app");
+        let alternate = apps.join("Cursor Copy.app");
+        let saved = fixture.path().join("saved.app");
+        for bundle in [&original, &alternate] {
+            std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+            std::fs::write(
+                bundle.join("Contents/Info.plist"),
+                br#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.todesktop.230313mzl4w4u92</string></dict></plist>"#,
+            )
+            .unwrap();
+        }
+        let inspect = |path: &std::path::Path| {
+            super::app_uninstall_target_at(path.to_str().unwrap(), Some(&apps))
+        };
+        let reviewed = inspect(&original).unwrap();
+        assert_eq!(
+            super::reviewed_app_uninstall_target(inspect(&original), Some(&reviewed)).unwrap(),
+            reviewed
+        );
+        assert!(super::reviewed_app_uninstall_target(inspect(&original), None).is_err());
+        assert!(
+            super::reviewed_app_uninstall_target(inspect(&alternate), Some(&reviewed)).is_err()
+        );
+        assert!(super::app_uninstall_target_at(original.to_str().unwrap(), None).is_none());
+
+        std::fs::rename(&original, &saved).unwrap();
+        assert!(super::reviewed_app_uninstall_target(inspect(&original), Some(&reviewed)).is_err());
+        std::fs::rename(&alternate, &original).unwrap();
+        let replacement = inspect(&original).unwrap();
+        assert_eq!(replacement.path, reviewed.path);
+        assert!(
+            super::reviewed_app_uninstall_target(Some(replacement.clone()), Some(&reviewed))
+                .is_err()
+        );
+        assert!(
+            super::reviewed_app_uninstall_target(inspect(&original), Some(&replacement)).is_ok()
+        );
+
+        let plist = original.join("Contents/Info.plist");
+        std::fs::rename(&plist, fixture.path().join("old.plist")).unwrap();
+        std::fs::copy(saved.join("Contents/Info.plist"), &plist).unwrap();
+        assert!(
+            super::reviewed_app_uninstall_target(inspect(&original), Some(&replacement)).is_err()
+        );
+        std::os::unix::fs::symlink(&saved, &alternate).unwrap();
+        assert!(inspect(&alternate).is_none());
+        assert!(saved.join("Contents/Info.plist").is_file());
+        assert!(plist.is_file());
     }
 
     #[test]

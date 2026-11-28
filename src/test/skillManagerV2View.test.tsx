@@ -8186,6 +8186,33 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(useSkillStoreV2.getState().selectedAgentId).toBe('claude-code')
   })
 
+  it('passes the reviewed desktop app to uninstall and preserves its resources if it changed', async () => {
+    const app = { path: '/Applications/Cursor.app', identity: 'original-app' }
+    const reviewed = makeProgram({
+      kind: 'app', packageManager: 'app', binaryPath: null, appPath: app.path,
+      appUninstall: app, uninstallCommand: 'Move application to Trash', hooksInstalled: true,
+    })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([reviewed])
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockRejectedValue('The desktop Agent application changed.')
+    const remove = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions')
+    const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill')
+    const uninstallHook = vi.spyOn(agentApi, 'uninstallHook')
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(app.path)
+    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The desktop Agent application changed.')
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, undefined, app)
+    expect(remove).not.toHaveBeenCalled()
+    expect(removeUnmanaged).not.toHaveBeenCalled()
+    expect(uninstallHook).not.toHaveBeenCalled()
+  })
+
   it.each([
     { issue: 'the command failed', commandError: 'Access denied', detected: [], message: 'Access denied' },
     {
