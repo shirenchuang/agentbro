@@ -8186,14 +8186,24 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(useSkillStoreV2.getState().selectedAgentId).toBe('claude-code')
   })
 
-  it('passes the reviewed desktop app to uninstall and preserves its resources if it changed', async () => {
-    const app = { path: '/Applications/Cursor.app', identity: 'original-app' }
-    const reviewed = makeProgram({
-      kind: 'app', packageManager: 'app', binaryPath: null, appPath: app.path,
-      appUninstall: app, uninstallCommand: 'Move application to Trash', hooksInstalled: true,
+  it.each(['app', 'aider'] as const)('passes the reviewed %s target to uninstall and preserves its resources if it changed', async (kind) => {
+    const target = { path: kind === 'app' ? '/Applications/Cursor.app' : '/tools/bin/aider', identity: 'reviewed' }
+    const reviewed = makeProgram(kind === 'app' ? {
+      kind: 'app', packageManager: 'app', binaryPath: null, appPath: target.path,
+      appUninstall: target, uninstallCommand: 'Move application to Trash', hooksInstalled: true,
+    } : {
+      id: 'aider', displayName: 'Aider', icon: 'aider', packageManager: 'pipx', binaryPath: target.path,
+      aiderUninstall: target, uninstallCommand: 'pipx uninstall aider-chat', hooksInstalled: true,
     })
+    if (kind === 'aider') {
+      useSkillStoreV2.setState((state) => ({
+        agents: state.agents.map((agent) => ({ ...agent, id: 'aider', displayName: 'Aider', iconKey: 'aider' })),
+        selectedAgentId: 'aider',
+        selectedAgentDetail: { ...agentDetail, id: 'aider', displayName: 'Aider', iconKey: 'aider' },
+      }))
+    }
     vi.spyOn(agentApi, 'refresh').mockResolvedValue([reviewed])
-    const uninstall = vi.spyOn(agentApi, 'uninstall').mockRejectedValue('The desktop Agent application changed.')
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockRejectedValue('The reviewed installation changed.')
     const remove = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions')
     const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill')
     const uninstallHook = vi.spyOn(agentApi, 'uninstallHook')
@@ -8203,11 +8213,12 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<AgentManagementPage />)
 
     fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
-    expect(screen.getByRole('dialog')).toHaveTextContent(app.path)
+    expect(screen.getByRole('dialog')).toHaveTextContent(target.path)
+    if (kind === 'aider') expect(screen.getByRole('dialog')).toHaveTextContent('pipx uninstall aider-chat')
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('The desktop Agent application changed.')
-    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, undefined, app)
+    expect(await screen.findByRole('alert')).toHaveTextContent('The reviewed installation changed.')
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith(reviewed.id, LOCAL_RUNTIME_ENVIRONMENT_ID, undefined, target)
     expect(remove).not.toHaveBeenCalled()
     expect(removeUnmanaged).not.toHaveBeenCalled()
     expect(uninstallHook).not.toHaveBeenCalled()

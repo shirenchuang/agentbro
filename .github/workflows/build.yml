@@ -375,7 +375,7 @@ jobs:
           & $testExecutable --exact agents::programs::tests::windows_qwenwork_candidates_include_the_packaged_launcher
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          & $testExecutable --exact agents::programs::tests::windows_aider_uninstall_reuses_the_detected_python_launcher
+          & $testExecutable agents::programs::aider_installation::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable agents::programs::tests::native_claude_

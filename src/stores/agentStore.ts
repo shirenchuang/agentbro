@@ -134,7 +134,7 @@ export const useAgentStore = create<AgentState & AgentActions>()((set, get) => (
       if (operation === 'update') await agentApi.update(agentId)
       if (operation === 'uninstall') {
         const program = get().agents.find((agent) => agent.id === agentId)
-        await agentApi.uninstall(agentId, undefined, undefined, program?.appUninstall ?? undefined)
+        await agentApi.uninstall(agentId, undefined, undefined, program?.appUninstall ?? program?.aiderUninstall ?? undefined)
       }
       if (operation === 'open') {
         const agent = get().agents.find((item) => item.id === agentId)
