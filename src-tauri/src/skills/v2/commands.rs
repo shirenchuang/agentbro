@@ -710,11 +710,12 @@ pub fn scan_skill_project_v2(project_id: String) -> Result<ProjectDetail, String
 }
 
 #[tauri::command(async)]
-pub fn list_project_zcode_conversations(
+pub fn list_project_conversations(
     project_id: String,
+    direction: session_migration::MigrationDirection,
 ) -> Result<Vec<session_migration::SessionSummary>, String> {
     let service = svc()?;
-    session_migration::list(&service, &project_id)
+    session_migration::list(&service, &project_id, direction)
 }
 
 #[tauri::command(async)]
@@ -737,17 +738,18 @@ pub fn export_project_conversation_handoff(
 }
 
 #[tauri::command]
-pub async fn migrate_project_conversations_to_codex(
+pub async fn migrate_project_conversations(
     selection: session_migration::HandoffSelection,
     revision: String,
 ) -> Result<Vec<session_migration::MigratedConversation>, String> {
-    let bundle = tauri::async_runtime::spawn_blocking(move || {
+    let (home, bundle) = tauri::async_runtime::spawn_blocking(move || {
         let service = svc()?;
-        session_migration::reviewed(&service, selection, &revision)
+        let bundle = session_migration::reviewed(&service, selection, &revision)?;
+        Ok::<_, String>((service.home().to_owned(), bundle))
     })
     .await
     .map_err(|error| error.to_string())??;
-    session_migration::migrate(bundle).await
+    session_migration::migrate(home, bundle).await
 }
 
 #[tauri::command]

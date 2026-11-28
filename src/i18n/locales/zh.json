@@ -741,11 +741,16 @@
   },
   "skills": {
     "conversationMigration": {
+      "directionLabel": "迁移方向",
+      "openZcode": "打开 ZCode",
+      "migrateZcode": "迁移到 ZCode",
+      "partiallyReadable": "部分内容无法读取。以下是可读消息。",
+      "returnedHistory": "原 ZCode 会话 {{id}} · {{count}} 条消息与原历史一致",
+      "continuedMessages": "原有历史之后的消息",
       "missingFolder": "来源目录不存在",
       "tab": "会话",
-      "direction": "ZCode → Codex",
       "loading": "正在读取会话…",
-      "empty": "这个项目没有已保存的 ZCode 会话。",
+      "empty": "这个项目没有已保存的会话。",
       "selectAll": "全选",
       "clear": "清空选择",
       "archived": "已归档",

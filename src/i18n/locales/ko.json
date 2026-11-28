@@ -701,11 +701,16 @@
   },
   "skills": {
     "conversationMigration": {
+      "directionLabel": "이전 방향",
+      "openZcode": "ZCode 열기",
+      "migrateZcode": "ZCode로 이전",
+      "partiallyReadable": "일부 내용을 읽을 수 없습니다. 읽을 수 있는 메시지는 아래에 표시됩니다.",
+      "returnedHistory": "원래 ZCode 대화 {{id}} · 일치하는 메시지 {{count}}개",
+      "continuedMessages": "원래 기록 이후의 메시지",
       "missingFolder": "원본 폴더가 없음",
       "tab": "대화",
-      "direction": "ZCode → Codex",
       "loading": "대화를 불러오는 중…",
-      "empty": "이 프로젝트에 저장된 ZCode 대화가 없습니다.",
+      "empty": "이 프로젝트에 저장된 대화가 없습니다.",
       "selectAll": "모두 선택",
       "clear": "선택 해제",
       "archived": "보관됨",

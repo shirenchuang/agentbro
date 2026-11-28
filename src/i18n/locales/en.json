@@ -700,11 +700,16 @@
   },
   "skills": {
     "conversationMigration": {
+      "directionLabel": "Migration direction",
+      "openZcode": "Open ZCode",
+      "migrateZcode": "Migrate to ZCode",
+      "partiallyReadable": "Some content was unavailable. The readable messages are shown below.",
+      "returnedHistory": "Original ZCode session {{id}} · {{count}} matching messages",
+      "continuedMessages": "Messages after the original history",
       "missingFolder": "Source folder missing",
       "tab": "Conversations",
-      "direction": "ZCode → Codex",
       "loading": "Loading conversations…",
-      "empty": "No saved ZCode conversations found in this project.",
+      "empty": "No saved conversations found in this project.",
       "selectAll": "Select all",
       "clear": "Clear selection",
       "archived": "Archived",
