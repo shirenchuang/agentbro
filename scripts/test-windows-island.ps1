@@ -916,6 +916,7 @@ function Send-BackgroundToolFixture([string]$ToolUseId) {
 
 function Test-InstalledQuestionReply(
     [Windows.Automation.AutomationElement]$Island,
+    [IntPtr]$WindowHandle,
     [switch]$Disconnect,
     [switch]$VerifyFooterHandoff
 ) {
@@ -965,7 +966,7 @@ function Test-InstalledQuestionReply(
                 throw 'Could not read the cursor position after clicking the question footer'
             }
             $null = Wait-IslandValue 'click-through at the old question footer' {
-                [AgentBroSmokeInput]::ProcessAtCursor() -ne $AppProcessId
+                [AgentBroSmokeInput]::WindowAtCursor() -ne $WindowHandle
             }
             Start-Sleep -Milliseconds 450
             $cursor = [AgentBroSmokeInput+Point]::new()
@@ -1327,8 +1328,8 @@ try {
     $questionAttempts = if ($VerifyQuestionReconnect) { 8 } else { 1 }
     for ($attempt = 1; $attempt -le $questionAttempts; $attempt++) {
         Write-Output "Windows question reconnect attempt $attempt of $questionAttempts."
-        Test-InstalledQuestionReply $island -Disconnect
-        Test-InstalledQuestionReply $island -VerifyFooterHandoff:($VerifyQuestionReconnect -and $attempt -eq 1)
+        Test-InstalledQuestionReply $island $islandWindow.Handle -Disconnect
+        Test-InstalledQuestionReply $island $islandWindow.Handle -VerifyFooterHandoff:($VerifyQuestionReconnect -and $attempt -eq 1)
     }
     Test-InstalledPlanReview $island -Disconnect
     Test-InstalledPlanReview $island
