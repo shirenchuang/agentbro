@@ -142,6 +142,7 @@ function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: Ag
     && reviewed.kind === current.kind
     && reviewed.binaryPath === current.binaryPath
     && reviewed.appPath === current.appPath
+    && reviewed.appUninstall?.identity === current.appUninstall?.identity
     && reviewed.installedVersion === current.installedVersion
     && reviewed.packageManager === current.packageManager
     && reviewed.packageName === current.packageName
@@ -664,6 +665,8 @@ export function AgentManagementPage() {
         try {
           if (isNpmProgram(program) && program.binaryPath) {
             await agentApi.uninstall(agent.id, environmentId, program.binaryPath)
+          } else if (program.appUninstall) {
+            await agentApi.uninstall(agent.id, environmentId, undefined, program.appUninstall)
           } else {
             await agentApi.uninstall(agent.id, environmentId)
           }
