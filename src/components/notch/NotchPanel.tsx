@@ -337,6 +337,7 @@ export function NotchPanel() {
   const dragStopListenerReadyRef = useRef<Promise<void> | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
   const nativeHoverProbeRef = useRef({ width: 420, height: 52, anchorOffsetX: 0, passesOutside: false })
+  const previousBlockingHitboxRef = useRef<typeof nativeHoverProbeRef.current | null>(null)
   const hasInputDraftRef = useRef(false)
 
   useEffect(() => {
@@ -914,6 +915,7 @@ export function NotchPanel() {
 
   // Mouse leave
   const handleMouseLeave = useCallback(() => {
+    if (previousBlockingHitboxRef.current) return
     if (Date.now() < interactionLockUntilRef.current) return
     if (openedQuestionFromKeyboardRef.current && document.hasFocus()) return
     openedQuestionFromKeyboardRef.current = false
@@ -1001,6 +1003,12 @@ export function NotchPanel() {
   }, [requestNativeIgnoreCursorEvents])
 
   useEffect(() => {
+    if (panelState !== 'hover' || activeOverlay || !islandEnabled || layoutPreview || islandSurfaceMode === 'pet') {
+      previousBlockingHitboxRef.current = null
+    }
+  }, [activeOverlay, islandEnabled, islandSurfaceMode, layoutPreview, panelState])
+
+  useEffect(() => {
     if (!isTauri()) return
     if (islandSurfaceMode === 'pet') {
       requestNativeIgnoreCursorEvents(true, { force: true })
@@ -1015,10 +1023,13 @@ export function NotchPanel() {
       if (cancelled || inFlight || isDragging) return
       inFlight = true
       try {
-        const probe = nativeHoverProbeRef.current
-        const { width, height, anchorOffsetX } = probe
+        const { width, height, anchorOffsetX } = nativeHoverProbeRef.current
+        const previousHitbox = previousBlockingHitboxRef.current
         const isOver = await isCursorOverNotch(width, height, anchorOffsetX)
-        if (cancelled) return
+        if (cancelled || previousBlockingHitboxRef.current !== previousHitbox) return
+        const isOverPrevious = previousHitbox && !isOver
+          && await isCursorOverNotch(previousHitbox.width, previousHitbox.height, previousHitbox.anchorOffsetX)
+        if (cancelled || previousBlockingHitboxRef.current !== previousHitbox) return
         const currentProbe = nativeHoverProbeRef.current
         if (width !== currentProbe.width || height !== currentProbe.height || anchorOffsetX !== currentProbe.anchorOffsetX) return
         const currentPanelState = useSessionStore.getState().panelState
@@ -1035,6 +1046,10 @@ export function NotchPanel() {
             && (currentProbe.passesOutside || (currentPanelState === 'collapsed' && !visibleFeedbackOverlay))
           )
         requestNativeIgnoreCursorEvents(ignoreTransparentHost)
+        if (isOverPrevious) return
+        if (previousHitbox && (!isOver || hoverContentRef.current)) {
+          previousBlockingHitboxRef.current = null
+        }
         const wasOver = nativeHoverInsideRef.current
         if (isOver && !wasOver) {
           requestNativeIgnoreCursorEvents(false, { force: true })
@@ -1385,6 +1400,10 @@ export function NotchPanel() {
     }
     const overlay = useSessionStore.getState().activeOverlay
     if (overlay) {
+      if (isTauri() && isWindowsPlatform() && isBlockingOverlay(overlay)) {
+        // The old footer can sit below the new list in the same Windows viewport.
+        previousBlockingHitboxRef.current = nativeHoverProbeRef.current
+      }
       useSessionStore.getState().dismissOverlay(overlay.id)
     }
     nativeHoverInsideRef.current = true

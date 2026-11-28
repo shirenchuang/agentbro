@@ -916,7 +916,8 @@ function Send-BackgroundToolFixture([string]$ToolUseId) {
 
 function Test-InstalledQuestionReply(
     [Windows.Automation.AutomationElement]$Island,
-    [switch]$Disconnect
+    [switch]$Disconnect,
+    [switch]$VerifyFooterHandoff
 ) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     $reply = $null
@@ -945,7 +946,7 @@ function Test-InstalledQuestionReply(
         }
         $view = Wait-IslandValue 'the question card or inline answer' {
             $option = & $findOption
-            if ($option) { return @{ Option = $option } }
+            if ($option -and -not $VerifyFooterHandoff) { return @{ Option = $option } }
             $showSessions = Find-IslandButton $Island {
                 param($Name)
                 $Name -eq 'Make agents easier to use' -or $Name -match '^Show all \d+ sessions$'
@@ -953,7 +954,29 @@ function Test-InstalledQuestionReply(
             if ($showSessions) { return @{ ShowSessions = $showSessions } }
         }
         if ($view.ShowSessions) {
+            if ($VerifyFooterHandoff) {
+                Start-Sleep -Milliseconds 1250
+            }
             Click-IslandElement $view.ShowSessions 'Question card session list button' -CenterAfterLayout
+        }
+        if ($VerifyFooterHandoff) {
+            $footerPoint = [AgentBroSmokeInput+Point]::new()
+            if (-not [AgentBroSmokeInput]::GetCursorPos([ref]$footerPoint)) {
+                throw 'Could not read the cursor position after clicking the question footer'
+            }
+            $null = Wait-IslandValue 'click-through at the old question footer' {
+                [AgentBroSmokeInput]::ProcessAtCursor() -ne $AppProcessId
+            }
+            Start-Sleep -Milliseconds 450
+            $cursor = [AgentBroSmokeInput+Point]::new()
+            if (-not [AgentBroSmokeInput]::GetCursorPos([ref]$cursor) -or
+                $cursor.X -ne $footerPoint.X -or $cursor.Y -ne $footerPoint.Y) {
+                throw 'The cursor moved during the question footer handoff'
+            }
+            if (-not (& $findOption)) {
+                throw 'The inline answer disappeared while the cursor stayed at the old question footer'
+            }
+            Write-Output 'Windows Island kept the inline answer available with click-through at the old question footer.'
         }
         $null = Wait-IslandValue 'the inline answer in the waiting session' $findOption
         if ($Disconnect) {
@@ -1305,7 +1328,7 @@ try {
     for ($attempt = 1; $attempt -le $questionAttempts; $attempt++) {
         Write-Output "Windows question reconnect attempt $attempt of $questionAttempts."
         Test-InstalledQuestionReply $island -Disconnect
-        Test-InstalledQuestionReply $island
+        Test-InstalledQuestionReply $island -VerifyFooterHandoff:($VerifyQuestionReconnect -and $attempt -eq 1)
     }
     Test-InstalledPlanReview $island -Disconnect
     Test-InstalledPlanReview $island

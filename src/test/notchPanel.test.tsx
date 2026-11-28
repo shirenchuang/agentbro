@@ -26,7 +26,7 @@ const tauriMocks = vi.hoisted(() => ({
     void ignore
     return Promise.resolve()
   }),
-  isCursorOverNotch: vi.fn(() => Promise.resolve(false)),
+  isCursorOverNotch: vi.fn<typeof import('../services/tauriApi').isCursorOverNotch>(() => Promise.resolve(false)),
   isTauri: vi.fn(() => false),
   resizeNotch: vi.fn<typeof import('../services/tauriApi').resizeNotch>(() => Promise.resolve({ anchorOffsetX: 0 })),
   startNotchDrag: vi.fn<typeof import('../services/tauriApi').startNotchDrag>(() => Promise.resolve(0)),
@@ -512,6 +512,50 @@ describe('NotchPanel island shell', () => {
     expect(list).toBeInTheDocument()
     expect(list).toHaveAttribute('inert')
     expect(list).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it.each(['into the list', 'away from both'])('keeps the Windows question list available until the pointer moves %s', async (movement) => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      tauriMocks.isTauri.mockReturnValue(true)
+      let cursorY = 0
+      tauriMocks.isCursorOverNotch.mockImplementation((_width, height) => Promise.resolve(cursorY <= (height ?? 0)))
+      useConfigStore.setState({ autoCollapse: true, collapseDelay: 50, islandAnimationScale: 0.1 })
+      const question = { toolUseId: 'question-footer', question: 'Can the Island return this answer?', options: ['Return answer'] }
+      mountIsland({
+        id: 'question-footer', sessionId: 's1', type: 'question', data: question, createdAt: now,
+      }, { phase: 'waiting_input', pendingQuestion: question })
+
+      const panel = screen.getByRole('region', { name: 'AgentBro' })
+      const container = panel.closest<HTMLElement>('.notch-container')!
+      const hitboxHeight = () => parseFloat(container.style.getPropertyValue('--notch-hitbox-height'))
+      const footerY = hitboxHeight() - 24
+      cursorY = footerY
+      await waitFor(() => expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(expect.any(Number), hitboxHeight(), 0))
+      clock.mockReturnValue(now + 1201)
+      fireEvent.mouseDown(screen.getByRole('button', { name: 'notch.showAllSessions' }))
+
+      await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenLastCalledWith(true))
+      expect(hitboxHeight()).toBeLessThan(footerY)
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)) })
+      expect(useSessionStore.getState().panelState).toBe('hover')
+      await waitFor(() => expect(screen.getByRole('button', { name: /Return answer/ })).toBeVisible())
+
+      if (movement === 'into the list') {
+        cursorY = 10
+        await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenLastCalledWith(false))
+        cursorY = footerY
+      } else {
+        cursorY = Number.POSITIVE_INFINITY
+      }
+      await waitFor(() => expect(useSessionStore.getState().panelState).toBe('collapsed'))
+      expect(useSessionStore.getState().sessions.s1.pendingQuestion).toEqual(question)
+    } finally {
+      platform.mockRestore()
+      clock.mockRestore()
+    }
   })
 
   it('keeps the Windows viewport steady when opening and resolving a permission', async () => {
