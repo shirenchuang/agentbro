@@ -20,6 +20,7 @@ export function ProjectManagementPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
   const environmentId = useRuntimeEnvironmentStore((value) => value.selectedEnvironmentId)
+  const environmentRevision = useRuntimeEnvironmentStore((value) => value.selectionRevision)
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState<ProjectTab>('overview')
   const [agentFilter, setAgentFilter] = useState('all')
@@ -80,7 +81,7 @@ export function ProjectManagementPage() {
 
       <div className="sm2__project-layout">
         <aside className="sm2__project-sidebar settings-scroll">
-          {environmentId === state.runtimeEnvironmentId && <ProjectImportPanel key={environmentId} environmentId={environmentId} />}
+          {environmentId === state.runtimeEnvironmentId && <ProjectImportPanel key={`${environmentId}:${environmentRevision}`} environmentId={environmentId} />}
 
           <input
             className="sm2__search sm2__search--full"

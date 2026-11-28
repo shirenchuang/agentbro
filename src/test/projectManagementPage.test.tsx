@@ -235,7 +235,7 @@ describe('ProjectManagementPage', () => {
     expect(within(dialog).getByRole('checkbox', { name: /Moved later/ })).toBeChecked()
   })
 
-  it('drops a discovery result when switching away from the local runtime', async () => {
+  it.each([false, true])('drops a discovery result after switching runtimes with return to local %s', async (returnToLocal) => {
     await i18n.changeLanguage('en')
     vi.spyOn(tauriApi, 'isTauri').mockReturnValue(true)
     const pending = deferred<ProjectDiscovery>()
@@ -244,7 +244,9 @@ describe('ProjectManagementPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Recent projects' }))
     expect(await screen.findByRole('dialog')).toBeInTheDocument()
     await act(async () => {
-      useRuntimeEnvironmentStore.getState().selectEnvironment('other-machine')
+      const runtime = useRuntimeEnvironmentStore.getState()
+      runtime.selectEnvironment('other-machine')
+      if (returnToLocal) runtime.selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
       pending.resolve({ candidates: [candidate('/local/private-repo')], unavailableSources: [] })
     })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
