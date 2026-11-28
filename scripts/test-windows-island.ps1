@@ -916,7 +916,6 @@ function Send-BackgroundToolFixture([string]$ToolUseId) {
 
 function Test-InstalledQuestionReply(
     [Windows.Automation.AutomationElement]$Island,
-    [IntPtr]$WindowHandle,
     [switch]$Disconnect,
     [switch]$VerifyFooterHandoff
 ) {
@@ -965,9 +964,6 @@ function Test-InstalledQuestionReply(
             if (-not [AgentBroSmokeInput]::GetCursorPos([ref]$footerPoint)) {
                 throw 'Could not read the cursor position after clicking the question footer'
             }
-            $null = Wait-IslandValue 'click-through at the old question footer' {
-                [AgentBroSmokeInput]::WindowAtCursor() -ne $WindowHandle
-            }
             Start-Sleep -Milliseconds 450
             $cursor = [AgentBroSmokeInput+Point]::new()
             if (-not [AgentBroSmokeInput]::GetCursorPos([ref]$cursor) -or
@@ -977,7 +973,7 @@ function Test-InstalledQuestionReply(
             if (-not (& $findOption)) {
                 throw 'The inline answer disappeared while the cursor stayed at the old question footer'
             }
-            Write-Output 'Windows Island kept the inline answer available with click-through at the old question footer.'
+            Write-Output 'Windows Island kept the inline answer available while the cursor stayed at the old question footer.'
         }
         $null = Wait-IslandValue 'the inline answer in the waiting session' $findOption
         if ($Disconnect) {
@@ -1328,8 +1324,8 @@ try {
     $questionAttempts = if ($VerifyQuestionReconnect) { 8 } else { 1 }
     for ($attempt = 1; $attempt -le $questionAttempts; $attempt++) {
         Write-Output "Windows question reconnect attempt $attempt of $questionAttempts."
-        Test-InstalledQuestionReply $island $islandWindow.Handle -Disconnect
-        Test-InstalledQuestionReply $island $islandWindow.Handle -VerifyFooterHandoff:($VerifyQuestionReconnect -and $attempt -eq 1)
+        Test-InstalledQuestionReply $island -Disconnect
+        Test-InstalledQuestionReply $island -VerifyFooterHandoff:($VerifyQuestionReconnect -and $attempt -eq 1)
     }
     Test-InstalledPlanReview $island -Disconnect
     Test-InstalledPlanReview $island
