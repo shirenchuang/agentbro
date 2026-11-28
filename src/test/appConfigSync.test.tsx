@@ -1,4 +1,5 @@
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
+import type { PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { useConfigStore } from '../stores/configStore'
@@ -12,10 +13,20 @@ vi.mock('../services/tauriApi', async (importOriginal) => ({
 }))
 vi.mock('../hooks/useTauri', () => ({ useTauriInit: vi.fn() }))
 vi.mock('../hooks/useAutoHide', () => ({ useAutoHide: vi.fn() }))
-vi.mock('../components/notch/NotchPanel', () => ({ NotchPanel: () => null }))
+vi.mock('../components/dev/ClaudeHookUiLab', () => ({
+  ClaudeHookUiLab: ({ children }: PropsWithChildren) => children,
+}))
+vi.mock('../components/notch/NotchPanel', () => ({
+  NotchPanel: () => <div data-testid="notch-panel" />,
+}))
 vi.mock('../components/BackgroundUpdater', () => ({ BackgroundUpdater: () => null }))
 
 const configKey = 'agentbro-config'
+
+async function renderApp() {
+  render(<App />)
+  await screen.findByTestId('notch-panel')
+}
 
 function receiveConfig(value: string) {
   window.dispatchEvent(new StorageEvent('storage', {
@@ -36,7 +47,7 @@ describe('configuration notifications between windows', () => {
 
   it('keeps the released position when an older notification arrives', async () => {
     const older = window.localStorage.getItem(configKey)!
-    render(<App />)
+    await renderApp()
 
     await act(async () => useConfigStore.getState().updateConfig('panelHorizontalOffset', 28))
     const saved = window.localStorage.getItem(configKey)
@@ -47,7 +58,7 @@ describe('configuration notifications between windows', () => {
   })
 
   it('applies a current window preference while preserving backend settings', async () => {
-    render(<App />)
+    await renderApp()
     const snapshot = JSON.stringify({
       state: { panelHorizontalOffset: 35, volume: 8 },
       version: 0,
@@ -70,7 +81,7 @@ describe('configuration notifications between windows', () => {
     useThemeStore.getState().setActiveTheme(backendTheme.name)
     useConfigStore.setState({ petVitalsDebugOpen: false })
     usePetStore.getState().hydrateFromConfig('backend-pet')
-    render(<App />)
+    await renderApp()
 
     window.localStorage.setItem(configKey, JSON.stringify({ state: { petVitalsDebugOpen: true, panelHorizontalOffset: 26 } }))
     window.localStorage.setItem('agentbro-pet', JSON.stringify({ state: { activePetId: 'cached-pet' } }))
