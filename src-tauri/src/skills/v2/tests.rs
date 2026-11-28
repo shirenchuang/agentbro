@@ -148,6 +148,8 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
     }
 
     let review = super::pack_archive::Archive::open(&path).unwrap().review;
+    #[cfg(not(unix))]
+    assert!(review.executable_fingerprints.is_empty());
     assert_eq!(review.manifest.skill_ids, manifest.skill_ids);
     assert_eq!(
         review.manifest.suggested_agent_ids,
@@ -252,7 +254,7 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
         .archive_skill_pack_fingerprints(&imported.skill_ids)
         .unwrap();
     let detail = target
-        .import_reviewed_skill_pack(imported.clone(), &reviewed, false, true)
+        .import_reviewed_skill_pack(imported.clone(), &reviewed, false, true, None)
         .unwrap();
     assert_eq!(
         detail
@@ -262,6 +264,101 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
             .collect::<Vec<_>>(),
         imported.skill_ids
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn offline_skill_pack_reviews_executable_permissions_and_restores_a_runnable_copy() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let transfer =
+        crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+    let path = transfer.path().join("script-pack.zip");
+    let skill_id = "review-script";
+    let script_name = "审阅.sh";
+    let script_content = b"#!/bin/sh\nprintf 'ready\\n'\n";
+    let manifest = SkillPackManifest {
+        format: "agentbro-skill-pack".into(),
+        version: 2,
+        name: "Executable review".into(),
+        description: String::new(),
+        tags: vec![],
+        skill_ids: vec![skill_id.into()],
+        skill_fingerprints: Default::default(),
+        skill_sources: Default::default(),
+        suggested_agent_ids: vec![],
+    };
+    {
+        let (_home, sender, _lock) = fresh_service("pack-executable-sender");
+        let script = add_center_test_skill(&sender, skill_id, skill_id).join(script_name);
+        fs::write(&script, script_content).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        sender.write_pack_archive(&path, manifest).unwrap();
+    }
+
+    let review = super::pack_archive::Archive::open(&path).unwrap().review;
+    let (_home, target, _lock) = fresh_service("pack-executable-target");
+    let original = add_center_test_skill(&target, skill_id, skill_id).join(script_name);
+    fs::write(&original, script_content).unwrap();
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o644)).unwrap();
+    let fingerprint = target
+        .archive_skill_pack_fingerprints(&review.manifest.skill_ids)
+        .unwrap();
+    assert_eq!(
+        fingerprint[0].fingerprint.as_ref(),
+        review.manifest.skill_fingerprints.get(skill_id)
+    );
+    assert_ne!(
+        fingerprint[0].executable_fingerprint.as_ref(),
+        review.executable_fingerprints.get(skill_id)
+    );
+    let create = |reviewed: &[SkillPackFingerprint], keep_local| {
+        target.import_reviewed_skill_pack(
+            review.manifest.clone(),
+            reviewed,
+            keep_local,
+            true,
+            Some(&review.executable_fingerprints),
+        )
+    };
+    assert!(create(&fingerprint, false)
+        .unwrap_err()
+        .contains("executable permissions differ"));
+    assert_eq!(
+        create(&fingerprint, true).unwrap().members[0].skill_id,
+        skill_id
+    );
+
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(create(&fingerprint, true)
+        .unwrap_err()
+        .contains("changed since review"));
+
+    let destination_id = "review-script-restored";
+    let restore = SkillPackArchiveRestoreMember {
+        skill_id: skill_id.into(),
+        destination_id: destination_id.into(),
+    };
+    assert!(target
+        .restore_archived_pack_skills(&path, &review.revision, &[restore])
+        .unwrap()
+        .is_empty());
+    let restored = target
+        .center_path()
+        .unwrap()
+        .join(destination_id)
+        .join(script_name);
+    assert_eq!(
+        fs::metadata(&restored).unwrap().permissions().mode() & 0o111,
+        0o111
+    );
+    assert_eq!(
+        fs::metadata(&original).unwrap().permissions().mode() & 0o111,
+        0o100
+    );
+    let result = std::process::Command::new(restored).output().unwrap();
+    assert!(result.status.success());
+    assert_eq!(result.stdout, b"ready\n");
 }
 
 #[test]
@@ -363,7 +460,7 @@ fn offline_skill_pack_protects_case_collisions_before_and_after_review() {
         .archive_skill_pack_fingerprints(&manifest.skill_ids)
         .unwrap();
     let pack = target
-        .import_reviewed_skill_pack(manifest, &reviewed, false, true)
+        .import_reviewed_skill_pack(manifest, &reviewed, false, true, None)
         .unwrap();
     assert_eq!(
         pack.members
@@ -415,7 +512,7 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
     text[0] = b'y';
     fs::write(docs.join("notes.txt"), &text).unwrap();
     let error = svc
-        .import_reviewed_skill_pack(manifest.clone(), &reviewed, true, false)
+        .import_reviewed_skill_pack(manifest.clone(), &reviewed, true, false, None)
         .unwrap_err();
     assert!(error.contains("changed since review"));
     let updated = svc
@@ -423,13 +520,13 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
         .unwrap();
     assert_ne!(reviewed, updated);
     let error = svc
-        .import_reviewed_skill_pack(manifest.clone(), &updated, false, false)
+        .import_reviewed_skill_pack(manifest.clone(), &updated, false, false, None)
         .unwrap_err();
     assert!(error.contains("Confirm the local copy"));
     assert_eq!(svc.list_skill_packs().unwrap().len(), initial_packs);
 
     let pack = svc
-        .import_reviewed_skill_pack(manifest, &updated, true, false)
+        .import_reviewed_skill_pack(manifest, &updated, true, false, None)
         .unwrap();
     assert_eq!(pack.name, "Shared review");
     assert_eq!(pack.members[0].skill_id, "review");
@@ -480,7 +577,7 @@ fn pack_recheck_discovers_a_manually_copied_skill_in_a_cold_library() {
         Some(fingerprint.as_str())
     );
     let pack = svc
-        .import_reviewed_skill_pack(manifest, &reviewed, false, false)
+        .import_reviewed_skill_pack(manifest, &reviewed, false, false, None)
         .unwrap();
     assert_eq!(pack.members[0].skill_id, "manual-review");
     assert!(!pack.members[0].missing);
@@ -600,7 +697,7 @@ fn pack_restore_checks_the_pinned_git_content_before_installing() {
     svc.restore_pack_skill_with(&pair, &unchanged, fetch)
         .unwrap();
     let pack = svc
-        .import_reviewed_skill_pack(manifest, &reviewed, false, false)
+        .import_reviewed_skill_pack(manifest, &reviewed, false, false, None)
         .unwrap();
     assert_eq!(pack.members[0].skill_id, skill_id);
 

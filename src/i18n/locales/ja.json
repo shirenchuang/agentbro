@@ -735,6 +735,8 @@
       "restoring": "復元中…",
       "match": "内容が一致",
       "different": "内容が異なります",
+      "differentPermissions": "実行権限が異なります",
+      "useLocalCopiesWithPermissions": "現在の実行権限のまま、ライブラリ内のコピーを使用する",
       "unrecorded": "マニフェストにフィンガープリントがありません",
       "unavailable": "内容を確認できません",
       "unavailableHelp": "中央ライブラリのスキルを読み取れることを確認し、再確認してください。",

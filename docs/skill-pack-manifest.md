@@ -4,6 +4,8 @@ Use **Export with Skill files (ZIP)** to move a local Skill Pack between macOS a
 
 If a local ID differs from an archived ID only by case, the preview identifies the occupied ID and offers **Restore as a copy**.
 
+On macOS, the preview also compares executable permissions for ZIP imports. If the files match but the permissions differ, you can restore the archived copy under a new ID or explicitly keep the library’s copy. AgentBro rechecks the permissions before creating the Pack.
+
 The preview shows any recorded GitHub repository, Skill path, and commit included in the ZIP. Restoration uses the files in the ZIP offline, including any local edits made after the recorded commit. The restored Skill keeps that source history when you give it a new ID or export it again.
 
 ZIP files must be 128 MiB or smaller, with at most 20,000 files and 256 MiB of uncompressed content. Export includes regular files and in-folder link targets. Git and Python cache directories and links outside the Skill folder are skipped. JSON manifests support the local library and SSH environments.

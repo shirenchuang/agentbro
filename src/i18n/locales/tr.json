@@ -629,6 +629,8 @@
       "restoring": "Geri yükleniyor…",
       "match": "İçerik eşleşiyor",
       "different": "Farklı içerik",
+      "differentPermissions": "Çalıştırma izinleri farklı",
+      "useLocalCopiesWithPermissions": "Yerel kopyaları geçerli çalıştırma izinleriyle koru",
       "unrecorded": "Bildirim dosyasında parmak izi yok",
       "unavailable": "İçerik doğrulanamadı",
       "unavailableHelp": "Merkezi kitaplıktaki becerilerin okunabildiğini kontrol edin ve yeniden karşılaştırın.",

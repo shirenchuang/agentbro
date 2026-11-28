@@ -5174,10 +5174,10 @@ impl Service {
                 .center_import_lock
                 .lock()
                 .map_err(|error| error.to_string())?;
-            let current = self.read_skill_pack_fingerprints(skill_ids, include_sources)?;
+            let current = self.read_skill_pack_fingerprints(skill_ids, include_sources, false)?;
             if current.iter().any(|member| member.missing) {
                 self.scan_center_into_db()?;
-                self.read_skill_pack_fingerprints(skill_ids, include_sources)?
+                self.read_skill_pack_fingerprints(skill_ids, include_sources, false)?
             } else {
                 current
             }
@@ -5192,6 +5192,7 @@ impl Service {
         &self,
         skill_ids: &[String],
         include_sources: bool,
+        archive_review: bool,
     ) -> Result<Vec<SkillPackFingerprint>, String> {
         skill_ids
             .iter()
@@ -5201,15 +5202,24 @@ impl Service {
                         skill_id: id.clone(),
                         missing: true,
                         fingerprint: None,
+                        executable_fingerprint: None,
                         occupied_by: None,
                         source: None,
                     });
                 };
                 let path = Path::new(&row.center_path);
-                let fingerprint = path.canonicalize().ok().and_then(|directory| {
-                    super::project_lock::fingerprint_canonical_skill_directory(&directory, false)
+                let directory = path.canonicalize().ok();
+                let fingerprint = directory.as_deref().and_then(|directory| {
+                    super::project_lock::fingerprint_canonical_skill_directory(directory, false)
                         .ok()
                 });
+                let executable_fingerprint = if archive_review && fingerprint.is_some() {
+                    directory
+                        .as_deref()
+                        .and_then(super::pack_archive::directory_executable_fingerprint)
+                } else {
+                    None
+                };
                 let missing = fingerprint.is_none()
                     && path
                         .join("SKILL.md")
@@ -5232,6 +5242,7 @@ impl Service {
                     skill_id: id.clone(),
                     missing,
                     fingerprint,
+                    executable_fingerprint,
                     occupied_by: None,
                     source,
                 })
@@ -5266,13 +5277,13 @@ impl Service {
         &self,
         skill_ids: &[String],
     ) -> Result<Vec<SkillPackFingerprint>, String> {
-        let mut current = self.read_skill_pack_fingerprints(skill_ids, false)?;
+        let mut current = self.read_skill_pack_fingerprints(skill_ids, false, true)?;
         let mut live_ids = BTreeMap::new();
         if current.iter().any(|member| member.missing) {
             for id in self.scan_center_into_db()? {
                 live_ids.insert(id.to_lowercase(), id);
             }
-            current = self.read_skill_pack_fingerprints(skill_ids, false)?;
+            current = self.read_skill_pack_fingerprints(skill_ids, false, true)?;
         }
         let names = archive_destination_names(&self.center_path()?)?;
         for member in &mut current {
@@ -5286,6 +5297,7 @@ impl Service {
             if let Some(occupied) = occupied {
                 member.missing = false;
                 member.fingerprint = None;
+                member.executable_fingerprint = None;
                 member.occupied_by = Some(occupied.clone());
             }
         }
@@ -5298,6 +5310,7 @@ impl Service {
         reviewed: &[SkillPackFingerprint],
         accept_local_copies: bool,
         archive_review: bool,
+        archive_executable_fingerprints: Option<&BTreeMap<String, String>>,
     ) -> Result<SkillPackDetail, String> {
         super::pack_manifest::validate(&manifest)?;
         if manifest.version < 2 {
@@ -5310,9 +5323,15 @@ impl Service {
         let current = if archive_review {
             self.read_archive_skill_pack_fingerprints(&manifest.skill_ids)?
         } else {
-            self.read_skill_pack_fingerprints(&manifest.skill_ids, false)?
+            self.read_skill_pack_fingerprints(&manifest.skill_ids, false, false)?
         };
-        super::pack_manifest::validate_review(&manifest, reviewed, &current, accept_local_copies)?;
+        super::pack_manifest::validate_review(
+            &manifest,
+            reviewed,
+            &current,
+            accept_local_copies,
+            archive_executable_fingerprints,
+        )?;
         self.upsert_skill_pack_deferred(UpsertPackInput {
             id: String::new(),
             name: manifest.name,
@@ -5401,7 +5420,7 @@ impl Service {
                     ));
                 }
                 if self
-                    .read_skill_pack_fingerprints(std::slice::from_ref(id), false)?
+                    .read_skill_pack_fingerprints(std::slice::from_ref(id), false, false)?
                     .iter()
                     .any(|item| !item.missing)
                 {
@@ -5465,7 +5484,7 @@ impl Service {
             .lock()
             .map_err(|error| error.to_string())?;
         self.scan_center_into_db()?;
-        if !missing(&self.read_skill_pack_fingerprints(&skill_ids, false)?) {
+        if !missing(&self.read_skill_pack_fingerprints(&skill_ids, false, false)?) {
             return Err("The Skill already exists in the selected library.".to_string());
         }
         let center = self.center_path()?;

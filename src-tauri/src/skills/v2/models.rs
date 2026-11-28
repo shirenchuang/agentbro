@@ -422,6 +422,8 @@ pub struct LinkedSkillPackManifest {
 pub struct ReviewedSkillPackArchive {
     pub manifest: SkillPackManifest,
     pub revision: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub executable_fingerprints: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -445,6 +447,8 @@ pub struct SkillPackFingerprint {
     pub skill_id: String,
     pub missing: bool,
     pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occupied_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -8833,7 +8833,50 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillIds: restoredIds,
       skillFingerprints: Object.fromEntries(restoredIds.map((id) => [id, hash])),
       skillSources: { [destinationId]: source },
-    }, reviewed, false))
+    }, reviewed, false, {}))
+  })
+
+  it('offers a runnable archive copy when only the executable permissions differ', async () => {
+    const { pack, skill } = await renderPackPage()
+    const hash = 'a'.repeat(64)
+    const archiveExecutable = 'b'.repeat(64)
+    const localExecutable = 'c'.repeat(64)
+    const destinationId = `${skill.id}-restored`
+    const archive = '/Team/review-pack.zip'
+    const revision = 'd'.repeat(64)
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack', version: 2, name: 'Review scripts', description: '', tags: [],
+      skillIds: [skill.id], skillFingerprints: { [skill.id]: hash },
+    }
+    const reviewed = [{ skillId: destinationId, fingerprint: hash, missing: false, executableFingerprint: archiveExecutable }]
+    vi.mocked(openDialog).mockResolvedValueOnce(archive)
+    vi.spyOn(skillApiV2, 'readPackArchive').mockResolvedValue({
+      manifest, revision, executableFingerprints: { [skill.id]: archiveExecutable },
+    })
+    vi.spyOn(skillApiV2, 'getArchivePackFingerprints')
+      .mockResolvedValueOnce([{ skillId: skill.id, fingerprint: hash, missing: false, executableFingerprint: localExecutable }])
+      .mockResolvedValueOnce(reviewed)
+    const restore = vi.spyOn(skillApiV2, 'restoreArchivedPackMembers').mockResolvedValue({})
+    const create = vi.spyOn(skillApiV2, 'importReviewedArchivePack').mockResolvedValue({ ...pack, id: 'review-pack' })
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    const confirm = dialog.getByRole('button', { name: '创建技能包' })
+    expect(dialog.getByText('执行权限不同')).toBeInTheDocument()
+    expect(confirm).toBeDisabled()
+    const keep = dialog.getByRole('checkbox', { name: '保留当前库中的技能及其执行权限' })
+    fireEvent.click(keep)
+    expect(confirm).toBeEnabled()
+    fireEvent.click(keep)
+
+    fireEvent.click(dialog.getByRole('button', { name: `将 ${skill.id} 恢复为副本` }))
+    fireEvent.click(dialog.getByRole('button', { name: '恢复副本' }))
+    await waitFor(() => expect(confirm).toBeEnabled())
+    expect(restore).toHaveBeenCalledWith(archive, revision, [{ skillId: skill.id, destinationId }])
+    fireEvent.click(confirm)
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      skillIds: [destinationId],
+    }), reviewed, false, { [destinationId]: archiveExecutable }))
   })
 
   it('exports the verified GitHub sources and keeps fingerprints for edited Skills', async () => {
