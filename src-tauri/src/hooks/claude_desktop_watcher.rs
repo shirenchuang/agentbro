@@ -56,17 +56,21 @@ pub fn start(session_store: Arc<SessionStore>, app_handle: AppHandle) {
 }
 
 pub fn find_audit_file_for_cli_session(session_id: &str) -> Option<PathBuf> {
-    let root = sessions_root()?;
-    for metadata_path in metadata_files(&root) {
+    find_session_audit(session_id, metadata_files(&sessions_root()?))
+}
+
+fn find_session_audit(
+    session_id: &str,
+    metadata_paths: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    metadata_paths.into_iter().find_map(|metadata_path| {
         let metadata = read_metadata(&metadata_path)?;
-        if metadata.cli_session_id == session_id {
-            let audit_path = audit_path_for_metadata(&metadata_path)?;
-            if audit_path.is_file() {
-                return Some(audit_path);
-            }
+        if metadata.cli_session_id != session_id {
+            return None;
         }
-    }
-    None
+        let audit_path = audit_path_for_metadata(&metadata_path)?;
+        audit_path.is_file().then_some(audit_path)
+    })
 }
 
 async fn run_loop(root: PathBuf, session_store: Arc<SessionStore>, app_handle: AppHandle) {
@@ -517,6 +521,34 @@ mod tests {
         assert!(!result.is_error);
         assert_eq!(result.num_turns, 3);
         assert_eq!(result.result.as_deref(), Some("Done"));
+    }
+
+    #[test]
+    fn finds_claude_desktop_audit_after_unreadable_metadata_and_missing_audit() {
+        let root =
+            std::env::temp_dir().join(format!("agentbro-claude-audit-{}", uuid::Uuid::new_v4()));
+        let invalid = root.join("local_invalid.json");
+        let missing_audit = root.join("local_missing.json");
+        let valid = root.join("local_valid.json");
+        let audit = audit_path_for_metadata(&valid).unwrap();
+        fs::create_dir_all(audit.parent().unwrap()).unwrap();
+        fs::write(&invalid, "{").unwrap();
+        fs::write(
+            &missing_audit,
+            r#"{"sessionId":"local_missing","cliSessionId":"session-1"}"#,
+        )
+        .unwrap();
+        fs::write(
+            &valid,
+            r#"{"sessionId":"local_valid","cliSessionId":"session-1"}"#,
+        )
+        .unwrap();
+        fs::write(&audit, "").unwrap();
+        assert_eq!(
+            find_session_audit("session-1", [invalid, missing_audit, valid]),
+            Some(audit)
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

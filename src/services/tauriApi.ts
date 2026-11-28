@@ -1026,13 +1026,13 @@ export interface ChatHistorySlice {
 }
 
 /**
- * Load only the tail (most recent N messages) of a session's transcript.
+ * Load the recent transcript window, with optional older dialog messages.
  * `beforeId` is kept for backend compatibility, but the floating chat view
  * intentionally avoids loading older pages for performance.
  */
 export async function getChatHistoryTail(
   sessionId: string,
-  options: { limit?: number; beforeId?: string } = {},
+  options: { limit?: number; beforeId?: string; minConversationMessages?: number } = {},
 ): Promise<ChatHistorySlice> {
   if (!isTauri()) {
     return { messages: [], hasMore: false, firstMessageId: null, totalCount: 0, transcriptPath: null }
@@ -1041,6 +1041,7 @@ export async function getChatHistoryTail(
     sessionId,
     limit: options.limit ?? 50,
     beforeId: options.beforeId ?? null,
+    minConversationMessages: options.minConversationMessages ?? null,
   })
 }
 

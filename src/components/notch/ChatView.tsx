@@ -144,7 +144,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
     queueMicrotask(() => {
       if (cancelled) return
       setLoadingHistory(activeSessionChatLength === 0)
-      getChatHistoryTail(activeSessionId, { limit: 50 })
+      getChatHistoryTail(activeSessionId, { limit: 50, minConversationMessages: 10 })
         .then((slice) => {
           if (cancelled) return
           if (slice.messages.length > 0) {
