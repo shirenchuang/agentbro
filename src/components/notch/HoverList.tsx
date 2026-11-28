@@ -1,5 +1,5 @@
 /* Hover List — Flat session list sorted by priority */
-import { useCallback, useEffect, useId, useRef, useState, useMemo, type MouseEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, useMemo, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
@@ -13,6 +13,7 @@ import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { setNotchFocusable } from '../../services/tauriApi'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
+import { isComposingKey } from '../../utils/keyboardShortcuts'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { formatModelName, getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
@@ -42,6 +43,7 @@ const AGENT_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
   'codex': { bg: 'rgba(16, 185, 129, 0.15)', text: '#10b981' },
   'gemini': { bg: 'rgba(99, 102, 241, 0.15)', text: '#818cf8' },
   'gemini-cli': { bg: 'rgba(99, 102, 241, 0.15)', text: '#818cf8' },
+  'gemini-desktop': { bg: 'rgba(99, 102, 241, 0.15)', text: '#818cf8' },
   'cursor': { bg: 'rgba(139, 92, 246, 0.15)', text: '#a78bfa' },
   'cursor-cli': { bg: 'rgba(139, 92, 246, 0.15)', text: '#a78bfa' },
   'opencode': { bg: 'rgba(139, 92, 246, 0.15)', text: '#8b5cf6' },
@@ -880,7 +882,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                       onCompositionEnd={() => setComposing(false)}
                       onKeyDown={(e) => {
                         e.stopPropagation()
-                        if (e.nativeEvent.isComposing || composing) return
+                        if (isComposingKey(e.nativeEvent) || composing) return
                         if (e.key === 'Enter') {
                           const val = (nestedInputTexts[qi] ?? '').trim()
                           if (val) {
@@ -989,15 +991,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
             </button>
           ))}
           {showCustomInput ? (
-            <form
-              className="hover-list__inline-question-opt hover-list__inline-question-opt--custom-active"
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (composing) return
-                const val = customText.trim()
-                if (val) submitAnswer(val)
-              }}
-            >
+            <div className="hover-list__inline-question-opt hover-list__inline-question-opt--custom-active">
               <span className="hover-list__inline-question-opt-index">{inlineOptions.length + 1}</span>
               <input
                 autoFocus
@@ -1012,15 +1006,18 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                 onCompositionEnd={() => setComposing(false)}
                 onKeyDown={(e) => {
                   e.stopPropagation()
-                  if (e.nativeEvent.isComposing || composing) return
-                  if (e.key === 'Escape') {
+                  if (isComposingKey(e.nativeEvent) || composing) return
+                  if (e.key === 'Enter') {
+                    const val = customText.trim()
+                    if (val) submitAnswer(val)
+                  } else if (e.key === 'Escape') {
                     setShowCustomInput(false)
                     setCustomText('')
                     setNotchFocusable(false)
                   }
                 }}
               />
-            </form>
+            </div>
           ) : (
             <button
               type="button"
@@ -1122,7 +1119,7 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
           onFocus={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
             e.stopPropagation()
-            if (e.key === 'Enter' && trimmedFeedback) {
+            if (e.key === 'Enter' && trimmedFeedback && !isComposingKey(e.nativeEvent)) {
               submitFeedback()
             }
           }}
@@ -1224,7 +1221,8 @@ function SessionCard({
         actionLabel: t('notch.openHostApp', 'Open app'),
       }
     : inferSessionNotice(session)
-  const jumpLabel = session.agentType === 'qoder-desktop' ? t('notch.openHostApp') : t('notch.jumpToTerminal')
+  const jumpLabel = session.agentType === 'qoder-desktop' || session.agentType === 'gemini-desktop'
+    ? t('notch.openHostApp') : t('notch.jumpToTerminal')
   const listSubagents = getSessionListSubagents(session)
   const iconAgentType = appLabel === 'Codex App' ? 'codex' : session.agentType
   const shouldShowAgentIcon = !showPassiveDot && (isStatic || appLabel === 'Codex App' || session.agentType === 'codex')
@@ -1467,6 +1465,7 @@ export function HoverList({
   hideBrandFooter = false,
 }: HoverListProps) {
   const { t } = useTranslation()
+  const isPresent = useIsPresent()
 
   const hoverSpeed = useConfigStore((s) => s.hoverSpeed)
   const islandAnimationScaleValue = useConfigStore((s) => s.islandAnimationScale)
@@ -1478,13 +1477,8 @@ export function HoverList({
   const animDuration = (HOVER_SPEED_MS[hoverSpeed] ?? 0.2) * islandAnimationScale
 
   const [showAll, setShowAll] = useState(false)
-  const [selectedIndex, setSelectedIndexState] = useState(-1)
-  const selectedIndexRef = useRef(-1)
-  const setSelectedIndex = useCallback((next: number | ((index: number) => number)) => {
-    const resolved = typeof next === 'function' ? next(selectedIndexRef.current) : next
-    selectedIndexRef.current = resolved
-    setSelectedIndexState(resolved)
-  }, [])
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const selectedSessionIdRef = useRef<string | null>(null)
 
   const hookNotification = useSessionStore((s) => s.hookNotification)
   const activeOverlay = useSessionStore((s) => s.activeOverlay)
@@ -1497,39 +1491,38 @@ export function HoverList({
   const isLimited = maxVisibleSessions > 0 && !showAll && totalSessions > maxVisibleSessions
   const visibleSessions = isLimited ? sorted.slice(0, maxVisibleSessions) : sorted
 
-  useEffect(() => {
-    if (visibleSessions.length === 0) return
+  useLayoutEffect(() => {
+    if (!isPresent || visibleSessions.length === 0) return
 
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented) return
+      if (event.defaultPrevented || isComposingKey(event)) return
       const target = event.target
       if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return
 
-      if (event.key === 'ArrowDown') {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()
-        setSelectedIndex((index) => Math.min(index + 1, visibleSessions.length - 1))
-        return
-      }
-
-      if (event.key === 'ArrowUp') {
-        event.preventDefault()
-        setSelectedIndex((index) => index < 0 ? 0 : Math.max(index - 1, 0))
+        const currentIndex = visibleSessions.findIndex((session) => session.id === selectedSessionIdRef.current)
+        const step = event.key === 'ArrowDown' ? 1 : -1
+        const nextIndex = Math.max(0, Math.min(currentIndex + step, visibleSessions.length - 1))
+        const nextId = visibleSessions[nextIndex].id
+        selectedSessionIdRef.current = nextId
+        setSelectedSessionId(nextId)
         return
       }
 
       if (event.key === 'Enter') {
         if (target instanceof HTMLElement && target.closest('button, [role="button"], a[href]')) return
+        const id = selectedSessionIdRef.current
+        if (id === null || !visibleSessions.some((session) => session.id === id)) return
         event.preventDefault()
-        const session = visibleSessions[selectedIndexRef.current]
-        if (!session) return
-        if (onJumpToTerminal) onJumpToTerminal(session.id)
-        else onSessionClick(session.id)
+        if (onJumpToTerminal) onJumpToTerminal(id)
+        else onSessionClick(id)
       }
     }
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [onJumpToTerminal, onSessionClick, setSelectedIndex, visibleSessions])
+  }, [isPresent, onJumpToTerminal, onSessionClick, visibleSessions])
 
   if (sorted.length === 0) {
     return (
@@ -1583,7 +1576,7 @@ export function HoverList({
             onInputDraftStateChange={onInputDraftStateChange}
             animDuration={animDuration}
             animDelay={index * 0.03 * islandAnimationScale}
-            selected={index === selectedIndex}
+            selected={session.id === selectedSessionId}
             activeOverlay={activeOverlay}
           />
         ))}

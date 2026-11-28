@@ -5,7 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { homeDir } from '@tauri-apps/api/path'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
-import { agentApi, isAgentPackageOperationBusy, type AgentPackageOutput, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
+import { agentApi, isAgentPackageOperationBusy, usesSharedAntigravityHook, type AgentPackageOutput, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -120,10 +120,21 @@ function isCurrentAgentSkillScope(scope: AgentSkillScope) {
 
 function isUninstallProgramPresent(program: AgentProgramInfo, environmentId: string) {
   // SSH inventory can mark a CLI installed based on its remaining configuration or Skills.
-  if (environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID && program.kind === 'cli' && program.uninstallCommand) {
-    return program.binaryPath !== null
+  if (environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID && program.kind === 'cli') {
+    return Boolean(program.binaryPath)
   }
   return isAgentProgramInstalled(program)
+}
+
+function isNpmProgram(program: AgentProgramInfo | undefined) {
+  return program?.kind === 'cli' && program.packageManager === 'npm'
+}
+
+function canCheckForProgramUpdate(program: AgentProgramInfo | undefined, environmentId: string) {
+  return Boolean(program?.updateCommand && (
+    program.packageManager === 'native'
+    || (environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID && isNpmProgram(program) && program.binaryPath && !program.latestVersion)
+  ))
 }
 
 function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: AgentProgramInfo) {
@@ -131,6 +142,7 @@ function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: Ag
     && reviewed.kind === current.kind
     && reviewed.binaryPath === current.binaryPath
     && reviewed.appPath === current.appPath
+    && reviewed.appUninstall?.identity === current.appUninstall?.identity
     && reviewed.installedVersion === current.installedVersion
     && reviewed.packageManager === current.packageManager
     && reviewed.packageName === current.packageName
@@ -536,14 +548,25 @@ export function AgentManagementPage() {
     const previousVersion = previous?.packageManager === 'native'
       ? previous.installedVersion
       : previous?.installedVersion ?? (detail?.id === agentId ? detail.version : null)
+    const expectedBinaryPath = operation === 'update' && isNpmProgram(previous)
+      ? previous?.binaryPath
+      : null
     const active = { ...runtimeSelection, agentId, operation }
     if (!state.beginAgentProgramOperation(active)) return
     setNotice(null)
     state.setError(null)
     try {
       let commandError: string | null = null
+      let noNewerVersion = false
       try {
-        await agentApi[operation](agentId, runtimeSelection.environmentId)
+        if (operation === 'update') {
+          const outcome = expectedBinaryPath
+            ? await agentApi.update(agentId, runtimeEnvironmentId, expectedBinaryPath)
+            : await agentApi.update(agentId, runtimeEnvironmentId)
+          noNewerVersion = outcome === 'noNewerVersion'
+        } else {
+          await agentApi.install(agentId, runtimeEnvironmentId)
+        }
       } catch (error) {
         if (isAgentPackageOperationBusy(error)) {
           if (isCurrentRuntime()) state.setError(t('skills.agentManagement.programOperationInProgress'))
@@ -575,12 +598,14 @@ export function AgentManagementPage() {
       }
       if (operation === 'update') {
         const { installedVersion, latestVersion } = detected
-        const nativeUpdate = detected.packageManager === 'native'
-        if (!installedVersion || (!nativeUpdate && !previousVersion && installedVersion !== latestVersion)) {
+        const checkedForUpdate = canCheckForProgramUpdate(detected, runtimeEnvironmentId)
+        if (!installedVersion
+          || (expectedBinaryPath && (detected.binaryPath !== expectedBinaryPath || !detected.updateCommand))
+          || (!noNewerVersion && !checkedForUpdate && !previousVersion && installedVersion !== latestVersion)) {
           state.setError(t('skills.agentManagement.programResultUnverified', { agent }))
           return
         }
-        if (nativeUpdate && (!previousVersion || installedVersion === previousVersion)) {
+        if (noNewerVersion || (checkedForUpdate && (!previousVersion || installedVersion === previousVersion))) {
           setNotice(t('skills.agentManagement.nativeUpdateChecked', { agent, version: installedVersion }))
           return
         }
@@ -638,7 +663,13 @@ export function AgentManagementPage() {
       let preserveSkills = preservesSharedSkills
       if (uninstallProgram) {
         try {
-          await agentApi.uninstall(agent.id, environmentId)
+          if (isNpmProgram(program) && program.binaryPath) {
+            await agentApi.uninstall(agent.id, environmentId, program.binaryPath)
+          } else if (program.appUninstall) {
+            await agentApi.uninstall(agent.id, environmentId, undefined, program.appUninstall)
+          } else {
+            await agentApi.uninstall(agent.id, environmentId)
+          }
         } catch (error) {
           if (isAgentPackageOperationBusy(error)) {
             if (isCurrent()) {
@@ -920,6 +951,7 @@ export function AgentManagementPage() {
             opening={openingAgentId === detail.id}
             adoptingUnmanagedId={adoptingUnmanagedId}
             program={programs[detail.id] || null}
+            canCheckForUpdate={canCheckForProgramUpdate(programs[detail.id], runtimeEnvironmentId)}
             hookCleanupRevision={hookCleanupRevision}
             runHookMutation={runHookMutation}
             agentInstalled={agents.find((agent) => agent.id === detail.id)?.installed ?? Boolean(detail.version || detail.skillsDir)}
@@ -1029,7 +1061,12 @@ export function AgentManagementPage() {
               <div><strong>{uninstallAgentTarget.appliedPacks.length}</strong><span>技能包关联</span></div>
             )}
             {uninstallProgram?.hooksInstalled && (
-              <div><strong>Hook</strong><span>移除 AgentBro Hook</span></div>
+              <div>
+                <strong>Hook</strong><span>移除 AgentBro Hook</span>
+                {isLocal && usesSharedAntigravityHook(uninstallAgentTarget.id) && (
+                  <span>{t('skills.agentManagement.geminiSharedHook')}</span>
+                )}
+              </div>
             )}
             {!uninstallProgramInstalled && (
               <div><strong>程序</strong><span>未安装，仅清理残留</span></div>
@@ -1047,6 +1084,7 @@ export function AgentManagementPage() {
               {uninstallProgram.kind === 'app'
                 ? `移到废纸篓：${uninstallProgram.appPath}`
                 : uninstallProgram.uninstallCommand}
+              {isNpmProgram(uninstallProgram) && uninstallProgram.binaryPath && <><br /><span>{uninstallProgram.binaryPath}</span></>}
             </code>
           )}
         </PreviewDialog>
@@ -1369,6 +1407,7 @@ function AgentDetailView({
   opening,
   adoptingUnmanagedId,
   program,
+  canCheckForUpdate,
   hookCleanupRevision,
   runHookMutation,
   agentInstalled,
@@ -1395,6 +1434,7 @@ function AgentDetailView({
   opening: boolean
   adoptingUnmanagedId: string | null
   program: AgentProgramInfo | null
+  canCheckForUpdate: boolean
   hookCleanupRevision: number
   runHookMutation: RunHookMutation
   agentInstalled: boolean
@@ -1437,23 +1477,23 @@ function AgentDetailView({
     readOnlySkills,
   )
   const updateAvailable = program?.status === 'updateAvailable' && Boolean(program.latestVersion && program.updateCommand)
-  const nativeUpdater = installed && nativeProgram && Boolean(program.updateCommand)
+  const checkForUpdateAvailable = installed && canCheckForUpdate
   const versionLabel = installed ? installedVersion || '未知' : '未安装'
   const updateLabel = desktopManaged ? t('skills.agentManagement.desktopManagedUpdate') : !installed
     ? canInstall ? '可一键安装' : canOpenDownload ? '可打开安装页' : '未提供安装方式'
-    : nativeUpdater ? null : updateAvailable
+    : checkForUpdateAvailable ? null : updateAvailable
       ? `可更新到 ${program.latestVersion}`
       : program?.latestVersion
         ? program.latestVersion === installedVersion ? '已是最新版本' : null
         : programLoading ? '正在获取最新版本' : '未检测到最新版本'
-  const updateButtonLabel = nativeUpdater
+  const updateButtonLabel = checkForUpdateAvailable
     ? t('skills.agentManagement.nativeCheckAndUpdate')
     : updateAvailable ? '更新此 Agent' : '无需更新'
   const primaryAction = !installed
     ? canInstall
       ? { label: installing ? '正在安装' : '安装此 Agent', disabled: busy || installing, onClick: () => onInstall(detail.id), busy: installing }
       : { label: opening ? '正在打开' : '打开安装页', disabled: busy || !canOpenDownload, onClick: () => onOpenDownload(detail.id), busy: opening }
-    : { label: updating ? '正在更新' : updateButtonLabel, disabled: busy || scanning || updating || (!updateAvailable && !nativeUpdater), onClick: () => onUpdate(detail.id), busy: updating }
+    : { label: updating ? '正在更新' : updateButtonLabel, disabled: busy || scanning || updating || (!updateAvailable && !checkForUpdateAvailable), onClick: () => onUpdate(detail.id), busy: updating }
   const tabs: Array<{ id: DetailTab; label: string }> = [
     { id: 'overview', label: '概览' },
     { id: 'skills', label: `Skills (${logicalSkillCount})` },
@@ -4384,6 +4424,7 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
 }) {
   const { t } = useTranslation()
   const agentId = detail.id
+  const sharedHook = usesSharedAntigravityHook(agentId)
   const [hook, setHook] = useState<HookStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<'install' | 'uninstall' | 'configure' | null>(null)
@@ -4440,7 +4481,8 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
   }
 
   const uninstall = async () => {
-    if (!confirm(`移除 ${agentId} 的 Hook？`)) return
+    const prompt = `移除 ${detail.displayName} 的 Hook？`
+    if (!confirm(sharedHook ? `${prompt}\n\n${t('skills.agentManagement.geminiSharedHook')}` : prompt)) return
     setBusy('uninstall')
     setError(null)
     try {
@@ -4473,6 +4515,7 @@ function LocalHooksTab({ detail, scope, disabled, runHookMutation }: {
           <strong>Hook 接入</strong>
           <span>{statusLabel}</span>
           {hook.configPath && <code>{hook.configPath}</code>}
+          {sharedHook && <span>{t('skills.agentManagement.geminiSharedHook')}</span>}
         </div>
         <div className="sm2__btn-row sm2__hook-actions">
           {hook.configPath && (

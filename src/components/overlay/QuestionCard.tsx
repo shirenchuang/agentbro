@@ -6,6 +6,7 @@ import { OverlayCard } from './OverlayCard'
 import { setNotchFocusable } from '../../services/tauriApi'
 import { answerDisplayedQuestion, questionReplyError, useSessionStore, type QuestionIdentity } from '../../stores/sessionStore'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
+import { isComposingKey } from '../../utils/keyboardShortcuts'
 import './QuestionCard.css'
 
 interface QuestionOption {
@@ -205,7 +206,7 @@ function MultiQuestionView({ data, onAnswer, onDraftStateChange }: { data: Quest
                     onCompositionEnd={() => setComposing(false)}
                     onKeyDown={(e) => {
                       e.stopPropagation()
-                      if (e.nativeEvent.isComposing || composing) return
+                      if (isComposingKey(e.nativeEvent) || composing) return
                       if (e.key === 'Enter') {
                         const trimmed = (inputTexts[qi] ?? '').trim()
                         if (trimmed) {
@@ -335,12 +336,6 @@ export function QuestionCard({ overlay, session, onShowSessions, onDismiss, onDr
     }
   }
 
-  const handleCustomSubmit = () => {
-    if (customComposing) return
-    const val = customText.trim()
-    if (val) onAnswer(val)
-  }
-
   const showCustomInput = async () => {
     setResponseState({ overlayId: overlay.id, selected, showCustom: true, customText })
     await setNotchFocusable(true).catch(() => undefined)
@@ -422,7 +417,7 @@ export function QuestionCard({ overlay, session, onShowSessions, onDismiss, onDr
             />
           </motion.div>
         ) : (
-          <form className="question-card__option-row question-card__option-row--custom-active" onSubmit={(e) => { e.preventDefault(); handleCustomSubmit() }}>
+          <div className="question-card__option-row question-card__option-row--custom-active">
             <span className="question-card__option-index">{options.length + 1}</span>
             <input
               ref={customInputRef}
@@ -437,14 +432,18 @@ export function QuestionCard({ overlay, session, onShowSessions, onDismiss, onDr
               onCompositionStart={() => setCustomComposing(true)}
               onCompositionEnd={() => setCustomComposing(false)}
               onKeyDown={(e) => {
-                if (e.nativeEvent.isComposing || customComposing) return
-                if (e.key === 'Escape') {
+                if (isComposingKey(e.nativeEvent) || customComposing) return
+                if (e.key === 'Enter') {
+                  e.stopPropagation()
+                  const val = customText.trim()
+                  if (val) onAnswer(val)
+                } else if (e.key === 'Escape') {
                   setResponseState({ overlayId: overlay.id, selected, showCustom: false, customText: '' })
                   setNotchFocusable(false)
                 }
               }}
             />
-          </form>
+          </div>
         )}
 
         <div className="question-card__secondary-actions" aria-label={t('notch.questionMoreActions', { defaultValue: 'More question actions' })}>

@@ -20,6 +20,13 @@ pub fn detect_installed_tools() -> Vec<DetectedTool> {
         detect_tool("claude-code", "Claude Code", &["claude"], &[".claude"]),
         detect_tool("codex", "OpenAI Codex", &["codex"], &[".codex"]),
         detect_tool("gemini", "Google Gemini", &["gemini"], &[".gemini"]),
+        DetectedTool {
+            name: super::gemini_desktop::ID.to_string(),
+            display_name: "Gemini Desktop".to_string(),
+            status: super::programs::detected_status_for_agent_program(super::gemini_desktop::ID),
+            binary_path: None,
+            config_dir: None,
+        },
         detect_cursor(),
         detect_copilot(),
         detect_qoder_app("qoder-desktop", "Qoder Desktop"),
@@ -40,10 +47,19 @@ pub fn detect_installed_tools() -> Vec<DetectedTool> {
 }
 
 fn detect_qoder_cli() -> DetectedTool {
-    let mut tool = detect_tool("qoder-cli", "Qoder CLI", &["qodercli", "qoder"], &[]);
+    let binary = executable::find_qoder_cli_binary();
     let root = crate::skills::agent_paths::qoder_cli_home();
-    tool.config_dir = root.is_dir().then(|| root.display().to_string());
-    tool
+    DetectedTool {
+        name: "qoder-cli".into(),
+        display_name: "Qoder CLI".into(),
+        status: if binary.is_some() {
+            AdapterStatus::Available
+        } else {
+            AdapterStatus::Unavailable
+        },
+        binary_path: binary.map(|path| path.display().to_string()),
+        config_dir: root.is_dir().then(|| root.display().to_string()),
+    }
 }
 
 fn detect_qoder_app(agent_id: &str, display_name: &str) -> DetectedTool {

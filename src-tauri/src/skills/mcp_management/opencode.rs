@@ -105,6 +105,7 @@ fn server_entry(name: &str, value: &Value, path: &Path, native: bool) -> Option<
     };
     Some(McpServerEntry {
         draft: McpServerDraft {
+            resolved_env_headers: Vec::new(),
             name: name.into(),
             transport,
             command,

@@ -1,10 +1,11 @@
 /* ApprovalBar — AgentBro style: warning card + 4 colored buttons, plan approval bar */
-import { useEffect, useRef, useCallback, useState, type FocusEvent, type MouseEvent } from 'react'
+import { useEffect, useRef, useCallback, useState, type FocusEvent, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
 import { getPermissionReply, planKey, questionKey, useSessionStore } from '../../stores/sessionStore'
 import { restoreNotchWebviewFocus, setNotchFocusable } from '../../services/tauriApi'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
+import { isComposingKey } from '../../utils/keyboardShortcuts'
 import { isWindowsPlatform } from '../../utils/platform'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { composerHints, getComposerCapability, supportsPersistentPermissionActions, type ComposerLockReason } from '../../utils/sessionCapabilities'
@@ -133,6 +134,10 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
     })
   }, [sendDraft])
 
+  const handleDraftKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter' && !isComposingKey(event.nativeEvent)) sendDraft()
+  }
+
   // Plan approval uses the same waiting_approval phase as permissions, so it
   // must be checked first. Otherwise the detail composer labels it as a normal
   // deny/allow/always permission request.
@@ -147,11 +152,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
             placeholder={t('notch.planFeedback', { defaultValue: '\u544A\u8BC9 Claude \u9700\u8981\u4FEE\u6539\u4EC0\u4E48...' })}
             value={draft}
             onChange={(e) => setDraftState({ scope: draftScope, value: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                sendDraft()
-              }
-            }}
+            onKeyDown={handleDraftKeyDown}
           />
         </div>
         <div className="approval-bar__buttons">
@@ -338,11 +339,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
             placeholder={t('notch.typeReply')}
             value={draft}
             onChange={(e) => setDraftState({ scope: draftScope, value: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                sendDraft()
-              }
-            }}
+            onKeyDown={handleDraftKeyDown}
           />
         </div>
       </div>
@@ -372,11 +369,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
           placeholder={t('notch.typeMessage')}
           value={draft}
           onChange={(e) => setDraftState({ scope: draftScope, value: e.target.value })}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              sendDraft()
-            }
-          }}
+          onKeyDown={handleDraftKeyDown}
         />
         <button
           className="approval-bar__send"

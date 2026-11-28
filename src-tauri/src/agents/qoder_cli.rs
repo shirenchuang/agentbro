@@ -116,6 +116,17 @@ mod tests {
             );
 
             std::fs::write(&settings, r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"agentbro-bridge --source qoder-cli"},{"type":"command","command":"echo user-hook"}]}]}}"#).unwrap();
+            let (health, check) = crate::commands::hook_profile_doctor_check(
+                &profiles::qoder_cli_profile(),
+                "Qoder CLI",
+            )
+            .unwrap();
+            assert_eq!(health, profiles::HookInstallHealth::NeedsReinstall);
+            assert_eq!(check.status, "warn");
+            assert_eq!(
+                check.detail,
+                format!("needs_reinstall ({})", settings.display())
+            );
             let skill = skill_root.join("location-probe");
             std::fs::create_dir_all(&skill).unwrap();
             std::fs::write(

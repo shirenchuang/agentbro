@@ -1323,7 +1323,7 @@ function SourceTab({ detail, updateAllowed, onUpdated }: {
     { label: '中心类型', value: linkedCenter ? '软链中心目录' : null },
     { label: '导入 Agent', value: detail.source?.importedFromAgent },
     { label: '安装方式', value: detail.source?.installedVia },
-    { label: t('skills.sourceUpdates.installedCommit'), value: detail.source?.sourceRef },
+    { label: t(sourceType === 'archive' ? 'skills.sourceUpdates.recordedCommit' : 'skills.sourceUpdates.installedCommit'), value: detail.source?.sourceRef },
     { label: t('skills.sourceUpdates.installedAt'), value: detail.source?.createdAt ? new Date(detail.source.createdAt).toLocaleString() : null },
     { label: t('skills.sourceUpdates.updatedAt'), value: detail.source?.updatedAt ? new Date(detail.source.updatedAt).toLocaleString() : null },
   ].filter(hasSourceValue)

@@ -118,6 +118,10 @@ pub fn doubao_skill_dirs_for(home: &Path) -> Vec<PathBuf> {
     dedupe_paths(dirs)
 }
 
+pub fn antigravity_skills_dir_for(home: &Path) -> PathBuf {
+    home.join(".gemini/config/skills")
+}
+
 pub fn paths_for_agent(agent: &str) -> SkillPaths {
     let h = home();
     if let Some(edition) = WorkBuddyEdition::from_agent_id(agent) {
@@ -164,8 +168,14 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             mcp_config: Some(h.join(".cursor").join("mcp.json")),
             settings_file: Some(h.join(".cursor").join("mcp.json")),
         },
+        #[cfg(target_os = "macos")]
+        crate::agents::gemini_desktop::ID => SkillPaths {
+            skill_dirs: vec![antigravity_skills_dir_for(&h)],
+            mcp_config: None,
+            settings_file: None,
+        },
         "antigravity" => SkillPaths {
-            skill_dirs: vec![h.join(".gemini").join("config").join("skills")],
+            skill_dirs: vec![antigravity_skills_dir_for(&h)],
             mcp_config: Some(h.join(".gemini").join("config").join("mcp_config.json")),
             settings_file: Some(h.join(".gemini").join("config").join("hooks.json")),
         },
@@ -345,6 +355,7 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "codex",
         "gemini",
         "gemini-cli",
+        "gemini-desktop",
         "cursor",
         "cursor-cli",
         "hermes",

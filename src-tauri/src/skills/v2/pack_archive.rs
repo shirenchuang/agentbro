@@ -1,4 +1,4 @@
-use super::models::{ReviewedSkillPackArchive, SkillPackManifest};
+use super::models::{ReviewedSkillPackArchive, SkillPackGitHubSource, SkillPackManifest};
 use super::{pack_manifest, project_lock};
 use crate::skills::installer::TempInstallDir;
 use sha2::{Digest, Sha256};
@@ -13,6 +13,8 @@ const MANIFEST_NAME: &str = "agentbro-skill-pack.json";
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_CONTENT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ENTRIES: usize = 20_000;
+#[cfg(unix)]
+const EXECUTABLE_BITS: u32 = 0o111;
 
 pub(super) struct Archive {
     pub(super) review: ReviewedSkillPackArchive,
@@ -50,6 +52,8 @@ impl Archive {
             return Err("Skill Pack ZIP has too many files.".into());
         }
         let mut members: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
+        #[cfg(unix)]
+        let mut modes = BTreeMap::<String, BTreeMap<String, u32>>::new();
         let mut names = HashMap::new();
         let mut manifest_index = None;
         let mut content_size = 0;
@@ -82,6 +86,16 @@ impl Archive {
                 .filter(|(id, _)| project_lock::valid_skill_name(id))
                 .ok_or("Invalid Skill Pack ZIP entry path.")?;
             register_path(&mut names, name)?;
+            #[cfg(unix)]
+            {
+                let mode = entry.unix_mode().unwrap_or_default() & EXECUTABLE_BITS;
+                if mode != 0 {
+                    modes
+                        .entry(skill_id.to_string())
+                        .or_default()
+                        .insert(relative.to_string(), mode);
+                }
+            }
             members
                 .entry(skill_id.to_string())
                 .or_default()
@@ -107,8 +121,24 @@ impl Archive {
                 "Skill Pack ZIP must contain every listed Skill and its fingerprint.".into(),
             );
         }
+        #[cfg(unix)]
+        let executable_fingerprints = members
+            .keys()
+            .map(|id| {
+                (
+                    id.clone(),
+                    executable_fingerprint(modes.remove(id).unwrap_or_default()),
+                )
+            })
+            .collect();
+        #[cfg(not(unix))]
+        let executable_fingerprints = BTreeMap::new();
         Ok(Self {
-            review: ReviewedSkillPackArchive { manifest, revision },
+            review: ReviewedSkillPackArchive {
+                manifest,
+                revision,
+                executable_fingerprints,
+            },
             files,
             members,
         })
@@ -127,7 +157,7 @@ impl Archive {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let mode = 0o644 | (entry.unix_mode().unwrap_or(0) & 0o111);
+                let mode = 0o644 | (entry.unix_mode().unwrap_or(0) & EXECUTABLE_BITS);
                 file.set_permissions(fs::Permissions::from_mode(mode))
                     .map_err(archive_error)?;
             }
@@ -145,7 +175,7 @@ impl Archive {
 pub(super) fn write(
     path: &Path,
     mut manifest: SkillPackManifest,
-    source_directory: impl Fn(&str) -> Result<PathBuf, String>,
+    skill_source: impl Fn(&str) -> Result<(PathBuf, Option<SkillPackGitHubSource>), String>,
 ) -> Result<(), String> {
     validate_member_ids(&manifest)?;
     let parent = path
@@ -157,13 +187,12 @@ pub(super) fn write(
         .skill_ids
         .iter()
         .map(|id| {
-            let directory = source_directory(id)?
-                .canonicalize()
-                .map_err(archive_error)?;
+            let (directory, origin) = skill_source(id)?;
+            let directory = directory.canonicalize().map_err(archive_error)?;
             if parent.starts_with(&directory) {
                 return Err("Choose an export folder outside the Skills in this Pack.".into());
             }
-            Ok(directory)
+            Ok((directory, origin))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let staging = TempInstallDir::create_hidden_in(&parent)?;
@@ -173,7 +202,7 @@ pub(super) fn write(
     let mut names = HashMap::new();
     let mut content_size = 0;
     let mut file_count = 1;
-    for (id, source) in manifest.skill_ids.iter().zip(sources) {
+    for (id, (source, origin)) in manifest.skill_ids.iter().zip(sources) {
         let files = project_lock::portable_skill_files(&source, false)?;
         file_count += files.len();
         if file_count > MAX_ENTRIES {
@@ -200,7 +229,7 @@ pub(super) fn write(
             #[cfg(unix)]
             let options = {
                 use std::os::unix::fs::PermissionsExt;
-                options.unix_permissions(0o644 | (metadata.permissions().mode() & 0o111))
+                options.unix_permissions(0o644 | (metadata.permissions().mode() & EXECUTABLE_BITS))
             };
             zip.start_file(name, options).map_err(archive_error)?;
             io::copy(&mut File::open(saved).map_err(archive_error)?, &mut zip)
@@ -209,6 +238,10 @@ pub(super) fn write(
         manifest
             .skill_fingerprints
             .insert(id.clone(), fingerprint(member.path())?);
+        if let Some(origin) = origin {
+            manifest.skill_sources.insert(id.clone(), origin);
+            manifest.version = manifest.version.max(3);
+        }
     }
     let bytes = pack_manifest::encode(&manifest)?;
     check_content_size(content_size, bytes.len() as u64)?;
@@ -305,6 +338,38 @@ fn fingerprint(directory: &Path) -> Result<String, String> {
         &directory.canonicalize().map_err(archive_error)?,
         false,
     )
+}
+
+pub(super) fn directory_executable_fingerprint(directory: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let files = project_lock::portable_skill_files(directory, false).ok()?;
+        let mut modes = BTreeMap::new();
+        for (path, file) in files {
+            let mode = file.metadata().ok()?.permissions().mode() & EXECUTABLE_BITS;
+            if mode != 0 {
+                modes.insert(path, mode);
+            }
+        }
+        Some(executable_fingerprint(modes))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        None
+    }
+}
+
+#[cfg(unix)]
+fn executable_fingerprint(modes: BTreeMap<String, u32>) -> String {
+    let mut hash = Sha256::new();
+    for (path, mode) in modes {
+        hash.update(path.as_bytes());
+        hash.update([0, mode as u8]);
+    }
+    format!("{:x}", hash.finalize())
 }
 
 fn archive_error(error: impl std::fmt::Display) -> String {

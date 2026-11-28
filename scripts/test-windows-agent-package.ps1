@@ -58,7 +58,10 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
     [Windows.Automation.AutomationElement]$Settings,
     [string]$FixtureLauncher
 ) {
-    Set-Content -LiteralPath $FixtureLauncher -Value '@echo 2.0.0' -Encoding ascii
+    $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
+    Copy-Item -LiteralPath (Join-Path $fixtureStage 'claude.cmd.fixture') -Destination $FixtureLauncher
+    '{"name":"@anthropic-ai/claude-code","version":"2.0.0","bin":{"claude":"./cli.js"}}' |
+        Set-Content -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_MANIFEST -Encoding ascii
     Remove-Item -LiteralPath @(
         $env:AGENTBRO_PACKAGE_CONSOLE_RESULT,
         $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED,
@@ -98,7 +101,7 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
         }
         $reopened = Open-ManagedAgent $island.Element 'Claude Code'
         $null = Wait-IslandValue 'package output restored in the new Settings window' {
-            Find-PackControl $reopened '* $ npm install -g @anthropic-ai/claude-code@latest'
+            Find-PackControl $reopened '* $ npm install -g @anthropic-ai/claude-code@999.0.0'
         }
         $null = Wait-IslandValue 'the old version in the new Settings window before the update finishes' {
             Test-PackVisibleText $reopened '当前版本 2.0.0'
@@ -118,15 +121,31 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
     } finally {
         $null = New-Item -ItemType File -Path $env:AGENTBRO_PACKAGE_FIXTURE_RESUME -Force
     }
-    $null = Wait-IslandValue 'package stdout and stderr in the new Settings window' {
-        (Find-PackControl $reopened '> agentbro-package-fixture-stdout') -and
-            (Find-PackControl $reopened '! agentbro-package-fixture-stderr')
+    try {
+        $holderProcessId = Wait-IslandValue 'the detached package output helper to start' {
+            $holderPath = "$env:AGENTBRO_PACKAGE_OUTPUT_HOLDER.pid"
+            if (Test-Path -LiteralPath $holderPath -PathType Leaf) {
+                $processId = [int](Get-Content -LiteralPath $holderPath -Raw)
+                if ($processId -and (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { $processId }
+            }
+        }
+        Write-Output 'The detached package output helper started.'
+        $null = Wait-IslandValue 'package stdout and stderr in the new Settings window' {
+            (Find-PackControl $reopened '> agentbro-package-fixture-stdout') -and
+                (Find-PackControl $reopened '! agentbro-package-fixture-stderr')
+        }
+        $null = Wait-IslandValue 'the new installed version while the package output helper still runs' {
+            (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED -PathType Leaf) -and
+                (Find-PackControl $reopened '* Operation completed') -and
+                (Test-PackVisibleText $reopened '当前版本 999.0.0')
+        }
+        if (-not (Get-Process -Id $holderProcessId -ErrorAction SilentlyContinue)) {
+            throw 'The output helper must be running when the updated version appears.'
+        }
+        Write-Output 'The recreated Settings window refreshed the installed version while the output helper still held both pipes.'
+    } finally {
+        $null = New-Item -ItemType File -Path "$env:AGENTBRO_PACKAGE_OUTPUT_HOLDER.release" -Force
     }
-    $null = Wait-IslandValue 'the new installed version in the recreated Settings window without a manual refresh' {
-        (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED -PathType Leaf) -and
-            (Test-PackVisibleText $reopened '当前版本 999.0.0')
-    }
-    Write-Output 'The recreated Settings window refreshed the installed version when the package command finished.'
     Test-InstalledCustomAgentForm $reopened
 }
 
@@ -194,6 +213,79 @@ function Test-InstalledCustomAgentForm([Windows.Automation.AutomationElement]$Se
     Write-Output 'The installed app saved and displayed the Chinese-only custom Agent and created its Hook settings.'
 }
 
+function Test-ReviewedNpmLauncher([Windows.Automation.AutomationElement]$Settings, [string]$Stage) {
+    $reviewedPrefix = Join-Path $Stage 'bin'
+    $alternatePrefix = Join-Path $Stage 'alternate npm prefix'
+    $alias = Join-Path $Stage 'active npm prefix'
+    $packageManifest = 'node_modules\@anthropic-ai\claude-code\package.json'
+    $reviewedSettings = Join-Path $env:CLAUDE_CONFIG_DIR 'settings.json'
+    $unmanagedSkill = Join-Path $env:CLAUDE_CONFIG_DIR 'skills\uninstall-fixture\SKILL.md'
+    $paths = @($reviewedSettings, $unmanagedSkill)
+    foreach ($prefix in @($reviewedPrefix, $alternatePrefix)) {
+        $paths += @((Join-Path $prefix 'claude.cmd'), (Join-Path $prefix $packageManifest))
+    }
+    $before = @{}
+    foreach ($path in $paths) {
+        $before[$path] = [Convert]::ToBase64String([IO.File]::ReadAllBytes($path))
+    }
+    $switchPrefix = {
+        param([string]$Target)
+        [IO.Directory]::Delete($alias)
+        $null = New-Item -ItemType Junction -Path $alias -Target $Target
+    }
+    $changedMessage = 'The selected npm Agent launcher changed.'
+    $refresh = {
+        Invoke-PackControl (Wait-IslandValue 'the enabled Agent Management version refresh' {
+            $button = Find-PackControl $Settings '获取版本'
+            if ($button -and $button.Current.IsEnabled) { $button }
+        })
+        $null = Wait-IslandValue 'the reviewed Agent Management version' {
+            $button = Find-PackControl $Settings '获取版本'
+            $button -and $button.Current.IsEnabled -and
+                (Test-PackVisibleText $Settings '当前版本 2.0.0') -and
+                (Test-PackVisibleText $Settings '可更新到 999.0.0')
+        }
+    }
+
+    try {
+        & $switchPrefix $alternatePrefix
+        Invoke-ManagedAgentButton $Settings '更新此 Agent'
+        $null = Wait-IslandValue 'rejection of the switched npm update' {
+            Test-PackVisibleText $Settings $changedMessage
+        }
+        Write-Output 'Agent Management rejected the switched npm update on the original action.'
+    } finally {
+        & $switchPrefix $reviewedPrefix
+    }
+    & $refresh
+    Invoke-ManagedAgentButton $Settings '卸载 Agent'
+    $reviewedLauncher = Join-Path $reviewedPrefix 'claude.cmd'
+    $null = Wait-IslandValue 'the resolved launcher in the uninstall confirmation' {
+        (Find-PackControl $Settings '确认卸载') -and
+            (Test-PackVisibleText $Settings $reviewedLauncher)
+    }
+    try {
+        & $switchPrefix $alternatePrefix
+        Invoke-ManagedAgentButton $Settings '确认卸载'
+        $null = Wait-IslandValue 'rejection of the switched npm uninstall' {
+            (Test-PackVisibleText $Settings $changedMessage) -and
+                (Test-PackVisibleText $Settings 'AgentBro kept the Skills and Hooks.')
+        }
+    } finally {
+        & $switchPrefix $reviewedPrefix
+    }
+    if (Test-Path -LiteralPath "$env:AGENTBRO_PACKAGE_CONSOLE_RESULT.mutation") {
+        throw 'A stale npm operation started a package mutation'
+    }
+    foreach ($path in $paths) {
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) -cne $before[$path]) {
+            throw "A stale npm operation modified $path"
+        }
+    }
+    Write-Output 'Agent Management rejected update and uninstall after the same junction switched between equal-version npm copies. Both installs, Skills and Hooks were preserved.'
+    & $refresh
+}
+
 function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {
     $settings = Open-ManagedAgent $Island 'Claude Code'
     $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
@@ -224,9 +316,14 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         Find-PackControl $settings '概览' ([Windows.Automation.ControlType]::Button)
     }
 
+    $null = Wait-IslandValue 'the selected Agent overview tab' {
+        $tab = Find-PackControl $settings '概览' ([Windows.Automation.ControlType]::Button)
+        $tab -and ($tab.Current.ClassName -split '\s+') -contains 'sm2__subtab--active'
+    }
     $null = Wait-IslandValue 'the installed fixture version' {
         Test-PackVisibleText $settings '当前版本 2.0.0'
     }
+    Write-Output 'Agent Management reported the selected launcher version 2.0.0 with a separate npm default installation at 9.0.0.'
     if (Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }) {
         throw 'Agent Management offered an update while the registry tag was lower than the installed version'
     }
@@ -252,6 +349,27 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         }
     }
     Write-Output 'The sidebar grouped the detected Claude Code CLI under Installed Agents.'
+    Test-ReviewedNpmLauncher $settings $fixtureStage
+    $staleUpdate = Wait-IslandValue 'the enabled update before rolling back the registry tag' {
+        $button = Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Remove-Item -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_NEW_TAG
+    Invoke-PackControl $staleUpdate
+    $null = Wait-IslandValue 'the installed version after a stale update action' {
+        (Test-PackVisibleText $settings 'Update check complete. Claude Code is at 2.0.0.') -and
+            (Test-PackVisibleText $settings '当前版本 2.0.0')
+    }
+    $selectedVersion = (Get-Content -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_MANIFEST -Raw | ConvertFrom-Json).version
+    if ($selectedVersion -ne '2.0.0' -or (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT)) {
+        throw 'The stale update action ran npm install or changed the selected installation'
+    }
+    Write-Output 'The stale update action rechecked the older npm tag and kept 2.0.0 without running the installer.'
+    $null = New-Item -ItemType File -Path $env:AGENTBRO_PACKAGE_FIXTURE_NEW_TAG
+    Invoke-PackControl (Wait-IslandValue 'the enabled version refresh after a stale update' {
+        $button = Find-PackControl $settings '获取版本'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    })
     $update = Wait-IslandValue 'the Claude Code update action' {
         Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }
     }
@@ -326,6 +444,10 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
             (Find-PackControl $settings '999.0.0') -and (Find-PackControl $settings 'Agent 更新完成')
     }
     Write-Output 'Agent Management confirmed the retry after detecting version 999.0.0.'
+    $defaultManifest = Join-Path $env:npm_config_prefix 'node_modules\@anthropic-ai\claude-code\package.json'
+    if ((Get-Content -LiteralPath $defaultManifest -Raw | ConvertFrom-Json).version -ne '9.0.0') {
+        throw 'The npm update modified the separate default installation'
+    }
     $report = Get-Content -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT -Raw -Encoding utf8 | ConvertFrom-Json
     Write-Output "Installed package console probe: $($report | ConvertTo-Json -Compress)"
     $null = Wait-IslandValue 'stdout and stderr in Agent Management' {
@@ -395,11 +517,15 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
             (Test-PackVisibleText $settings 'Agent「Claude Code」已卸载')
     }
     $cleanedSettings = Get-Content -LiteralPath $fixtureSettings -Raw
+    if (-not (Test-Path -LiteralPath (Join-Path $env:npm_config_prefix 'claude.cmd') -PathType Leaf) -or
+        (Get-Content -LiteralPath $defaultManifest -Raw | ConvertFrom-Json).version -ne '9.0.0') {
+        throw 'The npm uninstall modified the separate default installation'
+    }
     if ((Test-Path -LiteralPath $fixtureSkills -PathType Leaf) -or
         $cleanedSettings -match 'agentbro-bridge' -or $cleanedSettings -notmatch 'echo user-hook') {
         throw 'The successful uninstall must remove the reviewed Skill and AgentBro Hook and keep the user Hook'
     }
-    Write-Output 'Agent Management removed the reviewed Skill and AgentBro Hook after verifying that the fixture launcher was removed.'
+    Write-Output 'Agent Management removed the selected npm launcher and its reviewed resources, and preserved the separate npm installation.'
     Test-InstalledAgentPackageAcrossSettingsWindows $settings $fixtureLauncher
 }
 

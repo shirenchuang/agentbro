@@ -69,7 +69,7 @@ describe('agentApi seedAgentPrograms', () => {
     try {
       selectEnvironment('other-host')
       await agentApi.uninstall('codex', LOCAL_RUNTIME_ENVIRONMENT_ID)
-      await agentApi.uninstall('codex', 'confirmed-host')
+      await agentApi.uninstall('codex', 'confirmed-host', '/home/team/node/bin/codex')
       await agentApi.uninstallHook('cursor', 'confirmed-host')
       await skillApiV2.deleteSkillTargetDistributions(['target'], 'confirmed-host')
       await skillApiV2.deleteUnmanagedAgentSkill('codex', 'unmanaged', 'confirmed-host')
@@ -77,7 +77,7 @@ describe('agentApi seedAgentPrograms', () => {
 
       expect(vi.mocked(invoke).mock.calls).toEqual([
         ['agent_uninstall', { agentId: 'codex' }],
-        ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'agent_uninstall', args: { agentId: 'codex' } }],
+        ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'agent_uninstall', args: { agentId: 'codex', expectedBinaryPath: '/home/team/node/bin/codex' } }],
         ['uninstall_remote_agent_hooks', { id: 'confirmed-host', agentId: 'cursor-cli' }],
         ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'delete_skill_target_distributions', args: { targetIds: ['target'] } }],
         ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'delete_unmanaged_agent_skill', args: { agentId: 'codex', unmanagedId: 'unmanaged' } }],
@@ -86,6 +86,17 @@ describe('agentApi seedAgentPrograms', () => {
     } finally {
       selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
     }
+  })
+
+  it('sends the reviewed desktop app to the local uninstall command', async () => {
+    const { agentApi } = await import('../services/agentApi')
+    const { LOCAL_RUNTIME_ENVIRONMENT_ID } = await import('../stores/runtimeEnvironmentStore')
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    const target = { path: '/Applications/Cursor.app', identity: 'reviewed-app' }
+
+    await agentApi.uninstall('cursor', LOCAL_RUNTIME_ENVIRONMENT_ID, undefined, target)
+
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('agent_uninstall', { agentId: 'cursor', expectedApp: target })
   })
 
   it('routes Agent Management program and custom Agent commands to the requested runtime', async () => {
@@ -98,14 +109,14 @@ describe('agentApi seedAgentPrograms', () => {
       selectEnvironment('different-host')
       await agentApi.refresh('original-host')
       await agentApi.install('codex', LOCAL_RUNTIME_ENVIRONMENT_ID)
-      await agentApi.update('codex', 'original-host')
+      await agentApi.update('codex', 'original-host', '/home/team/node/bin/codex')
       await agentApi.addCustom(config, 'original-host')
       await agentApi.removeCustom('custom-team', LOCAL_RUNTIME_ENVIRONMENT_ID)
 
       expect(vi.mocked(invoke).mock.calls).toEqual([
         ['remote_skill_manager_invoke', { id: 'original-host', command: 'agent_refresh', args: {} }],
         ['agent_install', { agentId: 'codex' }],
-        ['remote_skill_manager_invoke', { id: 'original-host', command: 'agent_update', args: { agentId: 'codex' } }],
+        ['remote_skill_manager_invoke', { id: 'original-host', command: 'agent_update', args: { agentId: 'codex', expectedBinaryPath: '/home/team/node/bin/codex' } }],
         ['remote_skill_manager_invoke', { id: 'original-host', command: 'add_custom_agent', args: { config } }],
         ['remove_custom_agent', { agentId: 'custom-team' }],
       ])

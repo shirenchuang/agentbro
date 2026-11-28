@@ -1,6 +1,10 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn command_exists(binary: &str) -> bool {
     find_binary(binary).is_some()
@@ -21,6 +25,46 @@ pub fn find_binary(binary: &str) -> Option<PathBuf> {
     find_binary_generic(binary)
 }
 
+pub(super) fn find_qoder_cli_binary() -> Option<PathBuf> {
+    let directories: Vec<_> = candidate_dirs()
+        .into_iter()
+        .filter(|dir| dir.is_absolute())
+        .collect();
+    #[cfg(target_os = "windows")]
+    {
+        find_windows_qoder_cli_binary(&directories, dirs::home_dir().as_deref())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        ["qodercli", "qoder"].into_iter().find_map(|binary| {
+            directories.iter().map(|dir| dir.join(binary)).find(|path| {
+                path.metadata()
+                    .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            })
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn find_windows_qoder_cli_binary(directories: &[PathBuf], home: Option<&Path>) -> Option<PathBuf> {
+    ["qodercli", "qoder"]
+        .into_iter()
+        .find_map(|binary| {
+            find_windows_binary_in_dirs(
+                directories.iter().cloned(),
+                binary,
+                &windows_binary_candidates(binary),
+            )
+            .filter(|path| path.extension().is_some())
+        })
+        .or_else(|| {
+            let launcher = home?.join(".qoder/bin/qodercli/qodercli.exe");
+            launcher.is_file().then_some(launcher)
+        })
+}
+
 pub fn find_codex_cli_binary() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -34,8 +78,7 @@ pub fn find_codex_cli_binary() -> Option<PathBuf> {
 
     #[cfg(target_os = "macos")]
     {
-        find_binary_generic("codex")
-            .or_else(|| find_chatgpt_bundled_codex(macos_application_dirs()).map(|(_, cli)| cli))
+        find_binary_generic("codex").or_else(|| macos_bundled_codex().next().map(|(_, cli)| cli))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -47,9 +90,7 @@ pub fn find_codex_cli_binary() -> Option<PathBuf> {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn is_desktop_bundled_codex_cli(binary: &Path) -> bool {
     #[cfg(target_os = "macos")]
-    let candidates = macos_application_dirs()
-        .filter_map(chatgpt_bundled_codex)
-        .map(|(_, cli)| cli);
+    let candidates = macos_bundled_codex().map(|(_, cli)| cli);
     #[cfg(target_os = "windows")]
     let candidates = windows_codex_bundled_cli_candidates();
 
@@ -76,11 +117,17 @@ fn matches_bundled_codex_cli(binary: &Path, candidates: impl IntoIterator<Item =
 
 #[cfg(target_os = "macos")]
 pub fn codex_desktop_app_candidates() -> Vec<PathBuf> {
-    find_chatgpt_bundled_codex(macos_application_dirs())
+    let mut candidates: Vec<_> = standard_chatgpt_bundled_codex()
+        .take(1)
         .map(|(app, _)| app)
-        .into_iter()
         .chain(macos_application_dirs().map(|dir| dir.join("Codex.app")))
-        .collect()
+        .collect();
+    for app in registered_codex_apps() {
+        if !candidates.contains(&app) {
+            candidates.push(app);
+        }
+    }
+    candidates
 }
 
 #[cfg(target_os = "macos")]
@@ -93,17 +140,46 @@ fn macos_application_dirs() -> impl Iterator<Item = PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn find_chatgpt_bundled_codex(
-    application_dirs: impl IntoIterator<Item = PathBuf>,
-) -> Option<(PathBuf, PathBuf)> {
-    application_dirs.into_iter().find_map(chatgpt_bundled_codex)
+fn standard_chatgpt_bundled_codex() -> impl Iterator<Item = (PathBuf, PathBuf)> {
+    macos_application_dirs()
+        .map(|dir| dir.join("ChatGPT.app"))
+        .filter_map(chatgpt_bundled_codex)
 }
 
 #[cfg(target_os = "macos")]
-fn chatgpt_bundled_codex(dir: PathBuf) -> Option<(PathBuf, PathBuf)> {
+fn registered_codex_apps() -> Vec<PathBuf> {
+    crate::platform::macos_applications::registered_app_paths("com.openai.codex")
+}
+
+#[cfg(target_os = "macos")]
+fn macos_bundled_codex() -> impl Iterator<Item = (PathBuf, PathBuf)> {
+    standard_chatgpt_bundled_codex().chain(
+        std::iter::once_with(registered_codex_apps)
+            .flatten()
+            .filter_map(chatgpt_bundled_codex)
+            .filter(|(_, cli)| is_openai_signed_codex(cli)),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn is_openai_signed_codex(cli: &Path) -> bool {
+    // Launch Services can register an app from an untrusted location before it is opened.
+    std::process::Command::new("/usr/bin/codesign")
+        .args([
+            "--verify",
+            "--strict",
+            "-R",
+            r#"=anchor apple generic and identifier "codex" and certificate leaf[subject.OU] = "2DC432GLL2""#,
+        ])
+        .arg(cli)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+#[cfg(target_os = "macos")]
+fn chatgpt_bundled_codex(app: PathBuf) -> Option<(PathBuf, PathBuf)> {
     use std::os::unix::fs::PermissionsExt;
 
-    let app = dir.join("ChatGPT.app");
     let cli = app.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
     let metadata = cli.metadata().ok()?;
     (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some((app, cli))
@@ -239,11 +315,15 @@ fn find_windows_binary_in_dirs(
     binary: &str,
     candidates: &[String],
 ) -> Option<PathBuf> {
+    let qoder_cli = binary.eq_ignore_ascii_case("qoder") || binary.eq_ignore_ascii_case("qodercli");
+    let is_launcher = |path: &Path| {
+        path.is_file() && (!qoder_cli || super::qoder::windows_qoder_app_source(path).is_none())
+    };
     if candidates.len() == 1 {
         return directories
             .into_iter()
             .map(|dir| dir.join(binary))
-            .find(|path| path.is_file());
+            .find(|path| is_launcher(path));
     }
 
     let mut extensionless = None;
@@ -252,14 +332,14 @@ fn find_windows_binary_in_dirs(
             .iter()
             .filter(|candidate| candidate.as_str() != binary)
             .map(|candidate| directory.join(candidate))
-            .find(|path| path.is_file())
+            .find(|path| is_launcher(path))
         {
             return Some(path);
         }
         // npm also installs extensionless shims for POSIX shells.
         if extensionless.is_none() {
             let path = directory.join(binary);
-            extensionless = path.is_file().then_some(path);
+            extensionless = is_launcher(&path).then_some(path);
         }
     }
     extensionless
@@ -417,28 +497,26 @@ fn is_fish(shell: &str) -> bool {
     shell.ends_with("/fish")
 }
 
-fn shell_var_fallback_cmd(var: &str) -> String {
+pub fn login_shell_var(var: &str) -> Option<String> {
     let shell = user_shell();
-    if is_fish(&shell) {
+    let query = if is_fish(&shell) {
         format!("printf '%s' \"${}\"", var)
     } else {
         format!("printf '%s' \"${{{}:-}}\"", var)
-    }
-}
-
-pub fn login_shell_var(var: &str) -> Option<String> {
-    shell_var(var, false)
+    };
+    let output = shell_query(&shell, "-lc", &query)?;
+    let value = String::from_utf8_lossy(&output).trim().to_string();
+    (!value.is_empty()).then_some(value)
 }
 
 pub fn interactive_login_shell_vars(vars: &[&str]) -> Vec<(String, String)> {
     if vars.is_empty() {
         return Vec::new();
     }
-    let output = match interactive_login_shell_output(user_shell()) {
-        Some(output) if output.status.success() => output,
-        _ => return Vec::new(),
+    let Some(output) = shell_query(&user_shell(), "-lic", "env") else {
+        return Vec::new();
     };
-    let output = String::from_utf8_lossy(&output.stdout);
+    let output = String::from_utf8_lossy(&output);
     vars.iter()
         .filter_map(|name| {
             output.lines().find_map(|line| {
@@ -450,11 +528,13 @@ pub fn interactive_login_shell_vars(vars: &[&str]) -> Vec<(String, String)> {
         .collect()
 }
 
-#[cfg(target_os = "macos")]
-fn interactive_login_shell_output(shell: String) -> Option<std::process::Output> {
-    use std::process::Stdio;
-    use std::time::Duration;
+fn shell_query(shell: &str, mode: &str, query: &str) -> Option<Vec<u8>> {
+    let mut command = crate::platform::process::background_tokio_command(shell);
+    command.args([mode, query]);
+    shell_probe_output(command)
+}
 
+fn shell_probe_output(command: tokio::process::Command) -> Option<Vec<u8>> {
     // Agent inventory can call this from inside the app's Tokio runtime.
     std::thread::Builder::new()
         .spawn(move || {
@@ -462,85 +542,99 @@ fn interactive_login_shell_output(shell: String) -> Option<std::process::Output>
                 .enable_all()
                 .build()
                 .ok()?
-                .block_on(async {
-                    let child = crate::platform::process::background_tokio_command(shell)
-                        .args(["-lic", "env"])
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::null())
-                        .process_group(0)
-                        .kill_on_drop(true)
-                        .spawn()
-                        .ok()?;
-                    let group = child.id()? as libc::pid_t;
-                    let output = child.wait_with_output();
-                    tokio::pin!(output);
-                    match tokio::time::timeout(Duration::from_secs(3), &mut output).await {
-                        Ok(result) => result.ok(),
-                        Err(_) => {
-                            unsafe { libc::killpg(group, libc::SIGKILL) };
-                            None
-                        }
-                    }
-                })
+                .block_on(capture_shell_output(command))
         })
         .ok()?
         .join()
         .ok()?
 }
 
-#[cfg(not(target_os = "macos"))]
-fn interactive_login_shell_output(shell: String) -> Option<std::process::Output> {
-    crate::platform::process::background_command(shell)
-        .args(["-lic", "env"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
+async fn capture_shell_output(mut command: tokio::process::Command) -> Option<Vec<u8>> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+
+    const MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
+
+    command
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(target_os = "windows")]
+    let stdout = {
+        let (reader, writer) = crate::platform::process::windows_output_pipe().await.ok()?;
+        command.stdout(writer);
+        reader
+    };
+    #[cfg(not(target_os = "windows"))]
+    command.stdout(Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    drop(command);
+    #[cfg(not(target_os = "windows"))]
+    let stdout = child.stdout.take()?;
+
+    let result = tokio::time::timeout(SHELL_PROBE_TIMEOUT, async {
+        let mut bytes = Vec::new();
+        stdout
+            .take(MAX_OUTPUT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .ok()?;
+        if bytes.len() as u64 > MAX_OUTPUT_BYTES {
+            return None;
+        }
+        // Keep the PID reserved until stdout closes, including inherited writers.
+        child.wait().await.ok()?.success().then_some(bytes)
+    })
+    .await;
+    if let Ok(Some(bytes)) = result {
+        return Some(bytes);
+    }
+    #[cfg(unix)]
+    if let Some(group) = child.id() {
+        unsafe { libc::killpg(group as libc::pid_t, libc::SIGKILL) };
+    }
+    #[cfg(not(unix))]
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_millis(200), child.wait()).await;
+    None
 }
 
-fn shell_var(var: &str, interactive: bool) -> Option<String> {
-    let shell = user_shell();
-    let cmd = shell_var_fallback_cmd(var);
-    let shell_mode = if interactive { "-lic" } else { "-lc" };
-    let output = crate::platform::process::background_command(&shell)
-        .args([shell_mode, &cmd])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if val.is_empty() {
-        None
-    } else {
-        Some(val)
-    }
+struct ShellPathCache {
+    shell: String,
+    expires_at: Instant,
+    paths: Option<Vec<PathBuf>>,
 }
 
 fn login_shell_path() -> Option<Vec<PathBuf>> {
+    static CACHE: Mutex<Option<ShellPathCache>> = Mutex::new(None);
+
     let shell = user_shell();
-    let cmd = if is_fish(&shell) {
+    let mut cache = CACHE.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(entry) = cache
+        .as_ref()
+        .filter(|entry| entry.shell == shell && Instant::now() < entry.expires_at)
+    {
+        return entry.paths.clone();
+    }
+    let query = if is_fish(&shell) {
         "printf '%s' (string join ':' $PATH)"
     } else {
         "printf '%s' \"$PATH\""
     };
-    let output = crate::platform::process::background_command(shell)
-        .args(["-lc", cmd])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path_str.is_empty() {
-        return None;
-    }
-    Some(std::env::split_paths(&path_str).collect())
+    let paths = shell_query(&shell, "-lc", query).and_then(|output| {
+        let value = String::from_utf8_lossy(&output);
+        let value = value.trim();
+        (!value.is_empty()).then(|| std::env::split_paths(value).collect())
+    });
+    let ttl = Duration::from_secs(if paths.is_some() { 5 } else { 15 });
+    *cache = Some(ShellPathCache {
+        shell,
+        expires_at: Instant::now() + ttl,
+        paths: paths.clone(),
+    });
+    paths
 }
 
 fn candidate_dirs() -> Vec<PathBuf> {
@@ -777,6 +871,104 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shell_probe_times_out_even_when_the_child_has_written_output() {
+        const MODE: &str = "AGENTBRO_TEST_SHELL_PROBE_MODE";
+        const TEST: &str =
+            "agents::executable::tests::shell_probe_times_out_even_when_the_child_has_written_output";
+        const MARKER: &str = "agentbro shell probe fixture";
+        if let Some(mode) = std::env::var_os(MODE) {
+            use std::io::Write;
+
+            println!("{MARKER}");
+            std::io::stdout().flush().unwrap();
+            if mode == "slow" {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+            return;
+        }
+
+        let executable = std::env::current_exe().unwrap();
+        let probe = |mode| {
+            let mut command = crate::platform::process::background_tokio_command(&executable);
+            command
+                .args(["--exact", TEST, "--nocapture"])
+                .env(MODE, mode);
+            super::shell_probe_output(command)
+        };
+        let output = probe("ready").unwrap();
+        assert!(String::from_utf8_lossy(&output).contains(MARKER));
+        let started = std::time::Instant::now();
+        assert_eq!(probe("slow"), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_path_probe_falls_back_and_reuses_its_result_across_agent_lookups() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const FIXTURE: &str = "AGENTBRO_TEST_SHELL_PATH_ROOT";
+        const MODE: &str = "AGENTBRO_TEST_SHELL_PATH_MODE";
+        const TEST: &str =
+            "agents::executable::tests::shell_path_probe_falls_back_and_reuses_its_result_across_agent_lookups";
+
+        if let Some(root) = std::env::var_os(FIXTURE).map(std::path::PathBuf::from) {
+            let slow = std::env::var_os(MODE).as_deref() == Some(std::ffi::OsStr::new("slow"));
+            let started = std::time::Instant::now();
+            for name in ["inherited-first", "inherited-second"] {
+                let inherited = root.join(name);
+                let dirs =
+                    super::candidate_dirs_with_path(Some(inherited.clone().into_os_string()));
+                assert_eq!(dirs.first(), Some(&inherited));
+                assert!(dirs.contains(&root.join(".local/bin")));
+                assert_eq!(dirs.contains(&root.join("shell-only")), !slow);
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(8));
+            assert_eq!(
+                std::fs::read_to_string(root.join("queries")).unwrap(),
+                "probe\n"
+            );
+            return;
+        }
+
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = fixture.path();
+        let shell = root.join("test-shell");
+        std::fs::write(
+            &shell,
+            r#"#!/bin/sh
+printf 'probe\n' >> "$AGENTBRO_TEST_SHELL_PATH_ROOT/queries"
+printf '%s' "$AGENTBRO_TEST_SHELL_PATH_ROOT/shell-only"
+if [ "$AGENTBRO_TEST_SHELL_PATH_MODE" = slow ]; then
+    /bin/sleep 10 &
+fi
+exit 0
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        for mode in ["ready", "slow"] {
+            std::fs::write(root.join("queries"), []).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(FIXTURE, root)
+                .env(MODE, mode)
+                .env("HOME", root)
+                .env("SHELL", &shell)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     #[cfg(any(unix, target_os = "windows"))]
     #[test]
     fn agent_package_shell_respects_inherited_path_precedence() {
@@ -823,30 +1015,34 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn finds_executable_codex_inside_chatgpt_app() {
+    fn finds_executable_codex_inside_relocated_chatgpt_app() {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
         let temp = std::env::temp_dir().join(format!("agentbro-chatgpt-{}", uuid::Uuid::new_v4()));
-        let system_apps = temp.join("Applications");
-        let user_apps = temp.join("home/Applications");
-        let app = user_apps.join("ChatGPT.app");
+        let empty = temp.join("Applications/ChatGPT.app");
+        let app = temp.join("Custom Apps/ChatGPT Renamed.app");
         let cli = app.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
-        fs::create_dir_all(system_apps.join("ChatGPT.app")).unwrap();
+        fs::create_dir_all(&empty).unwrap();
         fs::create_dir_all(cli.parent().unwrap()).unwrap();
         fs::write(&cli, "").unwrap();
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o644)).unwrap();
-        let app_dirs = [system_apps, user_apps];
-        let non_executable = super::find_chatgpt_bundled_codex(app_dirs.clone());
+        let apps = [empty, app.clone()];
+        let non_executable = apps
+            .clone()
+            .into_iter()
+            .find_map(super::chatgpt_bundled_codex);
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
-        let executable = super::find_chatgpt_bundled_codex(app_dirs.clone());
+        let executable = apps
+            .clone()
+            .into_iter()
+            .find_map(super::chatgpt_bundled_codex);
         let standalone = temp.join("codex");
         fs::write(&standalone, "").unwrap();
         let alias = temp.join("desktop alias");
         std::os::unix::fs::symlink(&cli, &alias).unwrap();
         let candidates = || {
-            app_dirs
-                .clone()
+            apps.clone()
                 .into_iter()
                 .filter_map(super::chatgpt_bundled_codex)
                 .map(|(_, cli)| cli)
@@ -858,6 +1054,14 @@ mod tests {
 
         assert_eq!(non_executable, None);
         assert_eq!(executable, Some((app, cli)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rejects_an_executable_without_the_openai_signature() {
+        assert!(!super::is_openai_signed_codex(std::path::Path::new(
+            "/usr/bin/true"
+        )));
     }
 
     #[cfg(target_os = "windows")]
@@ -898,6 +1102,68 @@ mod tests {
         assert_eq!(npm[0], "npm.cmd");
         assert_eq!(npx[0], "npx.cmd");
         assert_eq!(node[0], "node.exe");
+    }
+
+    #[test]
+    fn windows_qoder_cli_lookup_skips_desktop_editions_on_path() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let desktop = fixture.path().join("Qoder");
+        let ide = fixture.path().join("Legacy Qoder IDE");
+        let cli = fixture.path().join("User CLI");
+        std::fs::create_dir_all(desktop.join("resources")).unwrap();
+        std::fs::write(desktop.join("resources/app.asar"), []).unwrap();
+        std::fs::create_dir_all(ide.join("resources/app")).unwrap();
+        std::fs::write(ide.join("resources/app/product.json"), "{}").unwrap();
+        std::fs::create_dir(&cli).unwrap();
+        for directory in [&desktop, &ide] {
+            std::fs::write(directory.join("qoder.exe"), []).unwrap();
+        }
+
+        let candidates = ["qoder.exe", "qoder.cmd", "qoder"].map(String::from);
+        let find_cli = || {
+            super::find_windows_binary_in_dirs(
+                [desktop.clone(), ide.clone(), cli.clone()],
+                "qoder",
+                &candidates,
+            )
+        };
+        assert_eq!(find_cli(), None);
+
+        let shim = cli.join("qoder.cmd");
+        std::fs::write(&shim, "@echo Qoder CLI\r\n").unwrap();
+        assert_eq!(find_cli(), Some(shim));
+
+        let native = cli.join("qoder.exe");
+        std::fs::write(&native, []).unwrap();
+        assert_eq!(find_cli(), Some(native));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_qoder_cli_uses_the_user_native_launcher_after_path() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let home = fixture.path();
+        let desktop = home.join("Qoder Desktop");
+        let bin = home.join("PATH Bin");
+        std::fs::create_dir_all(desktop.join("resources")).unwrap();
+        std::fs::write(desktop.join("resources/app.asar"), "").unwrap();
+        std::fs::write(desktop.join("Qoder.exe"), "").unwrap();
+        std::fs::create_dir(&bin).unwrap();
+
+        let directories = [desktop, bin.clone()];
+        let find = || super::find_windows_qoder_cli_binary(&directories, Some(home));
+        assert_eq!(find(), None);
+
+        let native = home.join(".qoder/bin/qodercli/qodercli.exe");
+        std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+        std::fs::write(&native, "").unwrap();
+        assert_eq!(find(), Some(native));
+
+        let path_launcher = bin.join("qoder.cmd");
+        std::fs::write(&path_launcher, "").unwrap();
+        assert_eq!(find(), Some(path_launcher));
     }
 
     #[test]

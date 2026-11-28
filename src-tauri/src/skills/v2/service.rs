@@ -29,6 +29,7 @@ pub struct Service {
     pub db: Arc<Db>,
     pub home: PathBuf,
     center_import_lock: Mutex<()>,
+    pub(super) snapshot_write_lock: Mutex<()>,
 }
 
 struct PreparedCenterSkillImport {
@@ -96,6 +97,7 @@ impl Service {
             db,
             home,
             center_import_lock: Mutex::new(()),
+            snapshot_write_lock: Mutex::new(()),
         };
         service.recover_interrupted_pack_syncs()?;
         Ok(service)
@@ -229,7 +231,7 @@ impl Service {
         Ok(())
     }
 
-    fn refresh_snapshot_best_effort(&self) {
+    pub(super) fn refresh_snapshot_best_effort(&self) {
         if let Err(e) = crate::skills::v2::snapshot::export_to_file(self) {
             log::warn!("Skill Manager v2 snapshot refresh failed: {}", e);
         }
@@ -599,7 +601,7 @@ impl Service {
         self.db.with_conn(|c| {
             c.query_row(
                 "SELECT id, skill_id, target_path FROM skill_targets WHERE agent_id = ?1 AND target_path = ?2",
-                params![agent_id, path.display().to_string()],
+                params![agent_meta::skill_target_owner(agent_id), path.display().to_string()],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
@@ -768,10 +770,6 @@ impl Service {
             .into_iter()
             .filter(|agent| agent.installed && agent.enabled && agent.skills_dir.is_some())
             .collect::<Vec<_>>();
-        let mut applied_by_agent = agents
-            .iter()
-            .map(|agent| (agent.id.clone(), Vec::new()))
-            .collect::<HashMap<_, _>>();
         let applied = self.db.with_conn(|connection| {
             let mut statement = connection
                 .prepare(
@@ -793,11 +791,20 @@ impl Service {
             }
             Ok(values)
         })?;
+        let mut packs_by_owner = HashMap::<_, Vec<_>>::new();
         for (agent_id, pack_id) in applied {
-            if let Some(pack_ids) = applied_by_agent.get_mut(&agent_id) {
-                pack_ids.push(pack_id);
-            }
+            packs_by_owner.entry(agent_id).or_default().push(pack_id);
         }
+        let applied_by_agent = agents
+            .iter()
+            .map(|agent| {
+                let pack_ids = packs_by_owner
+                    .get(agent_meta::skill_target_owner(&agent.id))
+                    .cloned()
+                    .unwrap_or_default();
+                (agent.id.clone(), pack_ids)
+            })
+            .collect();
         Ok(SkillPackPickerData {
             agents,
             packs: self.list_skill_packs()?,
@@ -1294,7 +1301,7 @@ impl Service {
         self.db.with_conn(|c| {
             c.query_row(
                 "SELECT COUNT(*) FROM skill_targets WHERE agent_id = ?1",
-                params![agent_id],
+                params![agent_meta::skill_target_owner(agent_id)],
                 |r| r.get::<_, i64>(0),
             )
             .map(|n| n as usize)
@@ -2785,7 +2792,7 @@ impl Service {
     pub fn preview_distribute_skill(
         &self,
         skill_ids: Vec<String>,
-        target_agents: Vec<String>,
+        mut target_agents: Vec<String>,
         requested_mode: String,
     ) -> Result<DistributionPreview, String> {
         if target_agents
@@ -2797,6 +2804,7 @@ impl Service {
                     .to_string(),
             );
         }
+        deduplicate_skill_target_agents(&mut target_agents);
         let mut changes = Vec::new();
         let mut blockers = Vec::new();
         for skill_id in &skill_ids {
@@ -3182,6 +3190,7 @@ impl Service {
         actual_mode: &str,
         origin: ClaimOrigin,
     ) -> Result<(), String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let row = self
             .skill_row(skill_id)?
             .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
@@ -3381,6 +3390,7 @@ impl Service {
         agent_id: &str,
         origin: ClaimOrigin,
     ) -> Result<(), String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let (target_id, skill_id) = self
             .db
             .with_conn(|c| {
@@ -4058,6 +4068,7 @@ impl Service {
         install_mode: &str,
         actual_mode: &str,
     ) -> Result<(), String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let center_hash = self
             .skill_row(skill_id)?
             .map(|r| r.current_hash)
@@ -4725,6 +4736,7 @@ impl Service {
         agent_id: &str,
         revision: i64,
     ) -> Result<PackAgentSyncState, String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let row = self.db.with_conn(|c| {
             c.query_row(
                 "SELECT synced_revision, status, error FROM skill_pack_agent_syncs
@@ -4799,6 +4811,7 @@ impl Service {
         agent_id: Option<&str>,
         skill_id: Option<&str>,
     ) -> Result<Vec<AffectedTarget>, String> {
+        let agent_id = agent_id.map(agent_meta::skill_target_owner);
         let mut sql = String::from(
             "SELECT DISTINCT t.id, t.agent_id, t.target_path, t.actual_mode
              FROM skill_target_claims c
@@ -5161,10 +5174,10 @@ impl Service {
                 .center_import_lock
                 .lock()
                 .map_err(|error| error.to_string())?;
-            let current = self.read_skill_pack_fingerprints(skill_ids, include_sources)?;
+            let current = self.read_skill_pack_fingerprints(skill_ids, include_sources, false)?;
             if current.iter().any(|member| member.missing) {
                 self.scan_center_into_db()?;
-                self.read_skill_pack_fingerprints(skill_ids, include_sources)?
+                self.read_skill_pack_fingerprints(skill_ids, include_sources, false)?
             } else {
                 current
             }
@@ -5179,6 +5192,7 @@ impl Service {
         &self,
         skill_ids: &[String],
         include_sources: bool,
+        archive_review: bool,
     ) -> Result<Vec<SkillPackFingerprint>, String> {
         skill_ids
             .iter()
@@ -5188,15 +5202,24 @@ impl Service {
                         skill_id: id.clone(),
                         missing: true,
                         fingerprint: None,
+                        executable_fingerprint: None,
                         occupied_by: None,
                         source: None,
                     });
                 };
                 let path = Path::new(&row.center_path);
-                let fingerprint = path.canonicalize().ok().and_then(|directory| {
-                    super::project_lock::fingerprint_canonical_skill_directory(&directory, false)
+                let directory = path.canonicalize().ok();
+                let fingerprint = directory.as_deref().and_then(|directory| {
+                    super::project_lock::fingerprint_canonical_skill_directory(directory, false)
                         .ok()
                 });
+                let executable_fingerprint = if archive_review && fingerprint.is_some() {
+                    directory
+                        .as_deref()
+                        .and_then(super::pack_archive::directory_executable_fingerprint)
+                } else {
+                    None
+                };
                 let missing = fingerprint.is_none()
                     && path
                         .join("SKILL.md")
@@ -5211,12 +5234,7 @@ impl Service {
                     && fingerprint.is_some()
                     && super::project_lock::valid_skill_name(id)
                 {
-                    self.source_for_skill(id)?.and_then(|source| {
-                        SkillPackGitHubSource::from_recorded_uri(
-                            source.source_uri.as_deref()?,
-                            source.source_ref.as_deref()?,
-                        )
-                    })
+                    self.recorded_pack_skill_source(id)?
                 } else {
                     None
                 };
@@ -5224,11 +5242,24 @@ impl Service {
                     skill_id: id.clone(),
                     missing,
                     fingerprint,
+                    executable_fingerprint,
                     occupied_by: None,
                     source,
                 })
             })
             .collect()
+    }
+
+    fn recorded_pack_skill_source(
+        &self,
+        id: &str,
+    ) -> Result<Option<SkillPackGitHubSource>, String> {
+        Ok(self.source_for_skill(id)?.and_then(|source| {
+            SkillPackGitHubSource::from_recorded_uri(
+                source.source_uri.as_deref()?,
+                source.source_ref.as_deref()?,
+            )
+        }))
     }
 
     pub fn archive_skill_pack_fingerprints(
@@ -5246,13 +5277,13 @@ impl Service {
         &self,
         skill_ids: &[String],
     ) -> Result<Vec<SkillPackFingerprint>, String> {
-        let mut current = self.read_skill_pack_fingerprints(skill_ids, false)?;
+        let mut current = self.read_skill_pack_fingerprints(skill_ids, false, true)?;
         let mut live_ids = BTreeMap::new();
         if current.iter().any(|member| member.missing) {
             for id in self.scan_center_into_db()? {
                 live_ids.insert(id.to_lowercase(), id);
             }
-            current = self.read_skill_pack_fingerprints(skill_ids, false)?;
+            current = self.read_skill_pack_fingerprints(skill_ids, false, true)?;
         }
         let names = archive_destination_names(&self.center_path()?)?;
         for member in &mut current {
@@ -5266,6 +5297,7 @@ impl Service {
             if let Some(occupied) = occupied {
                 member.missing = false;
                 member.fingerprint = None;
+                member.executable_fingerprint = None;
                 member.occupied_by = Some(occupied.clone());
             }
         }
@@ -5278,6 +5310,7 @@ impl Service {
         reviewed: &[SkillPackFingerprint],
         accept_local_copies: bool,
         archive_review: bool,
+        archive_executable_fingerprints: Option<&BTreeMap<String, String>>,
     ) -> Result<SkillPackDetail, String> {
         super::pack_manifest::validate(&manifest)?;
         if manifest.version < 2 {
@@ -5290,9 +5323,15 @@ impl Service {
         let current = if archive_review {
             self.read_archive_skill_pack_fingerprints(&manifest.skill_ids)?
         } else {
-            self.read_skill_pack_fingerprints(&manifest.skill_ids, false)?
+            self.read_skill_pack_fingerprints(&manifest.skill_ids, false, false)?
         };
-        super::pack_manifest::validate_review(&manifest, reviewed, &current, accept_local_copies)?;
+        super::pack_manifest::validate_review(
+            &manifest,
+            reviewed,
+            &current,
+            accept_local_copies,
+            archive_executable_fingerprints,
+        )?;
         self.upsert_skill_pack_deferred(UpsertPackInput {
             id: String::new(),
             name: manifest.name,
@@ -5320,9 +5359,13 @@ impl Service {
             .lock()
             .map_err(|error| error.to_string())?;
         super::pack_archive::write(path, manifest, |id| {
-            self.skill_row(id)?
-                .map(|row| PathBuf::from(row.center_path))
-                .ok_or_else(|| format!("Skill '{id}' is missing from the center library."))
+            let row = self
+                .skill_row(id)?
+                .ok_or_else(|| format!("Skill '{id}' is missing from the center library."))?;
+            Ok((
+                PathBuf::from(row.center_path),
+                self.recorded_pack_skill_source(id)?,
+            ))
         })
     }
 
@@ -5377,7 +5420,7 @@ impl Service {
                     ));
                 }
                 if self
-                    .read_skill_pack_fingerprints(std::slice::from_ref(id), false)?
+                    .read_skill_pack_fingerprints(std::slice::from_ref(id), false, false)?
                     .iter()
                     .any(|item| !item.missing)
                 {
@@ -5386,10 +5429,11 @@ impl Service {
                 let staging = TempInstallDir::create_hidden_in(&center)?;
                 let staged = staging.path().join("skill");
                 archive.stage_member(&member.skill_id, &staged)?;
+                let source = archive.review.manifest.skill_sources.get(&member.skill_id);
                 let input = AddCenterSkillInput {
                     source_path: path.display().to_string(),
                     source_type: "archive".to_string(),
-                    source_uri: None,
+                    source_uri: source.map(SkillPackGitHubSource::source_uri).transpose()?,
                     imported_from_agent: None,
                     imported_from_path: None,
                     multi: Some(false),
@@ -5401,7 +5445,7 @@ impl Service {
                     &center.join(id),
                     &staged,
                     &input,
-                    None,
+                    source.map(|source| source.commit.as_str()),
                 )
             })();
             if let Err(error) = result {
@@ -5440,7 +5484,7 @@ impl Service {
             .lock()
             .map_err(|error| error.to_string())?;
         self.scan_center_into_db()?;
-        if !missing(&self.read_skill_pack_fingerprints(&skill_ids, false)?) {
+        if !missing(&self.read_skill_pack_fingerprints(&skill_ids, false, false)?) {
             return Err("The Skill already exists in the selected library.".to_string());
         }
         let center = self.center_path()?;
@@ -5625,11 +5669,12 @@ impl Service {
     ) -> Result<SkillPackSyncResult, String> {
         let pack_name = self.pack_name(pack_id)?;
         let revision = self.pack_revision(pack_id)?;
-        let agents = if target_agents.is_empty() {
+        let mut agents = if target_agents.is_empty() {
             self.pack_applied_agent_ids(pack_id)?
         } else {
             target_agents
         };
+        deduplicate_skill_target_agents(&mut agents);
         let mut results = Vec::new();
         for agent_id in agents {
             self.mark_pack_agent_status(pack_id, &agent_id, revision, "syncing", None)?;
@@ -5672,6 +5717,7 @@ impl Service {
     }
 
     fn sync_skill_pack_to_agent(&self, pack_id: &str, agent_id: &str) -> Result<(), String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let member_ids = self.pack_member_skill_ids(pack_id)?;
         let member_set: BTreeSet<String> = member_ids.iter().cloned().collect();
         let claimed_targets: Vec<(String, String, String, String)> = self.db.with_conn(|c| {
@@ -5785,6 +5831,7 @@ impl Service {
         status: &str,
         error: Option<&str>,
     ) -> Result<(), String> {
+        let agent_id = agent_meta::skill_target_owner(agent_id);
         let now = db::now_iso();
         self.db.with_conn(|c| {
             c.execute(
@@ -5885,12 +5932,23 @@ impl Service {
         if !preview.blockers.is_empty() && preview.blocker_decisions.is_empty() {
             return Ok(preview);
         }
-        let result =
-            self.execute_distribute_skill(preview, ClaimOrigin::Pack(pack_id.to_string()))?;
-        if pack_id != DEFAULT_SKILL_PACK_ID && result.blockers.is_empty() {
-            self.mark_pack_agents_synced(pack_id, &result.target_agents, revision)?;
-            self.update_pack_rollup_status(pack_id, self.pack_revision(pack_id)?)?;
-        }
+        let result = self.execute_distribute_skill_internal(
+            preview,
+            ClaimOrigin::Pack(pack_id.to_string()),
+            false,
+        )?;
+        self.scan_all_agents_into_db()?;
+        let sync = if pack_id != DEFAULT_SKILL_PACK_ID && result.blockers.is_empty() {
+            self.mark_pack_agents_synced(pack_id, &result.target_agents, revision)
+                .and_then(|()| {
+                    self.update_pack_rollup_status(pack_id, self.pack_revision(pack_id)?)
+                        .map(|_| ())
+                })
+        } else {
+            Ok(())
+        };
+        self.refresh_snapshot_best_effort();
+        sync?;
         Ok(result)
     }
 
@@ -5910,9 +5968,10 @@ impl Service {
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![pack_id, agent_id], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })
+                .query_map(
+                    params![pack_id, agent_meta::skill_target_owner(agent_id)],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
                 .map_err(|e| e.to_string())?;
             let mut v = Vec::new();
             for r in rows {
@@ -6153,7 +6212,7 @@ impl Service {
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([agent_id], |r| {
+                .query_map([agent_meta::skill_target_owner(agent_id)], |r| {
                     Ok(TargetRow {
                         id: r.get(0)?,
                         skill_id: r.get(1)?,
@@ -6267,7 +6326,9 @@ impl Service {
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([agent_id], |r| r.get::<_, String>(0))
+                .query_map([agent_meta::skill_target_owner(agent_id)], |r| {
+                    r.get::<_, String>(0)
+                })
                 .map_err(|e| e.to_string())?;
             let mut v = Vec::new();
             for r in rows {
@@ -6313,6 +6374,11 @@ impl Service {
 }
 
 // ── helper structs & free functions ──────────────────────────────
+
+fn deduplicate_skill_target_agents(agents: &mut Vec<String>) {
+    let mut owners = BTreeSet::new();
+    agents.retain(|agent| owners.insert(agent_meta::skill_target_owner(agent).to_owned()));
+}
 
 #[derive(Debug, Clone)]
 pub enum ClaimOrigin {

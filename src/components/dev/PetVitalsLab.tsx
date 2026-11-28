@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { usePetVitalsDebug } from '../../stores/petVitalsDebugStore'
 import { useConfigStore } from '../../stores/configStore'
-import { getConfig, updateConfig as updateBackendConfig } from '../../services/tauriApi'
+import { updateIslandPreferences } from '../../services/tauriApi'
 import './PetVitalsLab.css'
 
 const PHASE_OPTIONS = [
@@ -46,8 +46,7 @@ export function PetVitalsLab() {
     setEnabled(false)
     setPhaseOverride(null)
     updateLocalConfig('petVitalsDebugOpen', false)
-    getConfig()
-      .then((backendConfig) => updateBackendConfig({ ...backendConfig, petVitalsDebugOpen: false }))
+    updateIslandPreferences({ petVitalsDebugOpen: false })
       .catch((error) => console.error('Failed to close pet vitals debug panel:', error))
   }, [setEnabled, setPhaseOverride, updateLocalConfig])
 

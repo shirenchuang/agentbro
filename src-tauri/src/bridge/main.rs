@@ -211,29 +211,11 @@ fn permission_hook_output_gemini(decision: &str, reason: &str) -> serde_json::Va
     }
 }
 
-fn permission_hook_output_antigravity(decision: &str, reason: &str) -> serde_json::Value {
-    match decision {
-        "allow" | "auto" => serde_json::json!({ "decision": "allow" }),
-        "deny" => serde_json::json!({
-            "decision": "deny",
-            "reason": if reason.is_empty() {
-                "Denied by user via AgentBro"
-            } else {
-                reason
-            }
-        }),
-        _ => serde_json::json!({
-            "decision": "ask",
-            "reason": "AgentBro could not resolve this permission request"
-        }),
-    }
-}
-
 fn antigravity_hook_output(event: &str) -> serde_json::Value {
-    if event == "Stop" {
-        serde_json::json!({ "decision": "stop" })
-    } else {
-        serde_json::json!({})
+    match event {
+        "PreToolUse" => serde_json::json!({ "decision": "allow" }),
+        "Stop" => serde_json::json!({ "decision": "stop" }),
+        _ => serde_json::json!({}),
     }
 }
 
@@ -597,7 +579,7 @@ fn send_and_maybe_receive(
     stream
         .set_read_timeout(Some(Duration::from_secs(timeout)))
         .ok();
-    let payload = format!("{}\n", state);
+    let payload = hook_message_line(state, wait_response);
     if stream.write_all(payload.as_bytes()).is_err() {
         record_invocation(state, false);
         return None;
@@ -612,6 +594,15 @@ fn send_and_maybe_receive(
         }
     }
     None
+}
+
+fn hook_message_line(state: &serde_json::Value, wait_response: bool) -> String {
+    if !wait_response {
+        return format!("{state}\n");
+    }
+    let mut request = state.clone();
+    request[agentbro_lib::hook_endpoint::KEEP_WRITE_OPEN_FIELD] = true.into();
+    format!("{request}\n")
 }
 
 fn invocation_log_path() -> PathBuf {
@@ -859,6 +850,11 @@ fn main() {
         .or_else(|| string_field(&data, &["hook_event_name", "event", "hookType"]))
         .map(normalize_hook_event)
         .unwrap_or("");
+    if is_antigravity_source(&source) && hook_event == "PreToolUse" {
+        // Cached hooks may survive an upgrade. Allow delegates to Antigravity's policy.
+        println!("{}", antigravity_hook_output(hook_event));
+        return;
+    }
     let event_payload = cline_event_payload(&source, hook_event, &data);
     let cwd = string_field(&data, &["cwd"])
         .or_else(|| first_string_array_field(&data, "workspaceRoots"))
@@ -902,6 +898,24 @@ fn main() {
             return;
         }
     }
+    #[cfg(target_os = "macos")]
+    let (agent, pid, term_bundle_id) = if is_antigravity_source(&source) {
+        use agentbro_lib::agents::gemini_desktop;
+
+        if let Some(host) = pid.and_then(gemini_desktop::coding_host_pid) {
+            (
+                gemini_desktop::ID,
+                Some(host),
+                Some(gemini_desktop::BUNDLE_ID.to_string()),
+            )
+        } else {
+            (source.as_str(), pid, term_bundle_id)
+        }
+    } else {
+        (source.as_str(), pid, term_bundle_id)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let agent = source.as_str();
     let tty = wsl_distribution.is_none().then(get_tty).flatten();
     let engine_label =
         arg_value("--engine-label").or_else(|| std::env::var("AGENTBRO_ENGINE_LABEL").ok());
@@ -917,7 +931,7 @@ fn main() {
 
     // Build event state matching what the Python script produced
     let mut state = serde_json::json!({
-        "agent": source,
+        "agent": agent,
         "session_id": session_id,
         "cwd": cwd,
         "event": hook_event,
@@ -965,7 +979,7 @@ fn main() {
     {
         obj.insert("transcript_path".into(), transcript_path.clone());
     }
-    copy_optional_field(obj, &data, "model", &["model"]);
+    copy_optional_field(obj, &data, "model", &["model", "modelName"]);
     copy_optional_field(obj, &data, "turn_id", &["turn_id", "turnId"]);
     copy_optional_field(
         obj,
@@ -988,6 +1002,9 @@ fn main() {
     copy_optional_field(obj, &data, "fully_idle", &["fullyIdle"]);
     copy_optional_field(obj, &data, "error", &["error"]);
     if is_antigravity_source(&source) {
+        if hook_event == "PreInvocation" {
+            copy_optional_field(obj, &data, "prompt", &["lastUserInput"]);
+        }
         if let Some(step_idx) = data.get("stepIdx").and_then(|value| value.as_u64()) {
             obj.insert(
                 "tool_use_id".into(),
@@ -1076,10 +1093,7 @@ fn main() {
         "PreToolUse" => {
             // AskUserQuestion: intercept at PreToolUse to provide updatedInput with answers.
             // updatedInput is only supported in PreToolUse hooks (not PermissionRequest).
-            if tool_name == "AskUserQuestion"
-                && !is_codex_source(&source)
-                && !is_antigravity_source(&source)
-                && source != "qoder-cli"
+            if tool_name == "AskUserQuestion" && !is_codex_source(&source) && source != "qoder-cli"
             {
                 populate_ask_user_question_state(obj, &tool_input);
 
@@ -1116,24 +1130,6 @@ fn main() {
                     let output = permission_hook_output_gemini(decision, reason);
                     println!("{}", output);
                 }
-                return;
-            }
-
-            if is_antigravity_source(&source) {
-                obj.insert("status".into(), "waiting_for_approval".into());
-                if !tool_name.is_empty() {
-                    obj.insert("tool".into(), tool_name.into());
-                }
-                obj.insert("tool_input".into(), tool_input);
-                let output = if let Some(resp) = send_and_maybe_receive(&state, true) {
-                    permission_hook_output_antigravity(
-                        resp["decision"].as_str().unwrap_or("ask"),
-                        resp["reason"].as_str().unwrap_or(""),
-                    )
-                } else {
-                    permission_hook_output_antigravity("ask", "")
-                };
-                println!("{}", output);
                 return;
             }
 
@@ -1221,6 +1217,12 @@ fn main() {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
+            copy_optional_field(
+                obj,
+                &data,
+                "tool_use_id",
+                &["tool_use_id", "toolUseId", "tool_call_id"],
+            );
             if let Some(r) = data.get("reason").or_else(|| data.get("message")) {
                 obj.insert("denial_reason".into(), r.clone());
             }
@@ -1639,6 +1641,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hook_requests_waiting_for_replies_advertise_an_open_write_half() {
+        let state = serde_json::json!({"event": "AskQuestion", "session_id": "test"});
+        let event: serde_json::Value =
+            serde_json::from_str(&hook_message_line(&state, false)).unwrap();
+        assert_eq!(event, state);
+        let message = hook_message_line(&state, true);
+        assert!(message.ends_with('\n'));
+        let request: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(
+            request,
+            serde_json::json!({"event": "AskQuestion", "session_id": "test", "keep_write_open": true})
+        );
+    }
+
+    #[test]
     fn qoder_permission_responses_do_not_change_future_permissions() {
         let suggestions = serde_json::json!([{"type": "setMode", "mode": "bypassPermissions"}]);
         let allow = permission_hook_output("qoder-desktop", "allow", "", true, suggestions.clone())
@@ -1916,21 +1933,10 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_permission_output_uses_official_decisions() {
+    fn antigravity_legacy_pre_tool_hook_defers_to_client_policy() {
         assert_eq!(
-            permission_hook_output_antigravity("allow", ""),
+            antigravity_hook_output("PreToolUse"),
             serde_json::json!({ "decision": "allow" })
-        );
-        assert_eq!(
-            permission_hook_output_antigravity("deny", "Not approved"),
-            serde_json::json!({
-                "decision": "deny",
-                "reason": "Not approved"
-            })
-        );
-        assert_eq!(
-            permission_hook_output_antigravity("ask", "")["decision"],
-            "ask"
         );
     }
 

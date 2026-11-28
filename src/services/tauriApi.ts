@@ -379,6 +379,8 @@ export interface BackendConfig {
   shortcutSkipEnabled: boolean
 }
 
+export type BackendConfigSnapshot = BackendConfig & { revision: number }
+
 export interface BackendDisplayInfo {
   id: string
   name: string
@@ -590,9 +592,10 @@ export async function jumpToTerminal(sessionId: string): Promise<void> {
 
 // ── Config Commands ──────────────────────────────────────────────
 
-export async function getConfig(): Promise<BackendConfig> {
+export async function getConfig(): Promise<BackendConfigSnapshot> {
   if (!isTauri()) {
     return {
+      revision: 0,
       soundEnabled: true,
       soundVolume: 0.7,
       launchAtLogin: false,
@@ -642,15 +645,20 @@ export async function getConfig(): Promise<BackendConfig> {
       shortcutSkipEnabled: false,
     }
   }
-  return invoke<BackendConfig>('get_config')
+  return invoke<BackendConfigSnapshot>('get_config')
 }
 
-export async function updateConfig(config: BackendConfig): Promise<void> {
+export type IslandPreferencesPatch = Partial<Pick<BackendConfig,
+  'petVitalsDebugOpen' | 'usageQueryEnabled' | 'showTokenUsage'
+  | 'idleInteractionRoutingEnabled' | 'idleInteractionRoutingMinutes'
+>>
+
+export async function updateIslandPreferences(patch: IslandPreferencesPatch): Promise<void> {
   if (!isTauri()) {
-    console.log('[mock] updateConfig:', config)
+    console.log('[mock] updateIslandPreferences:', patch)
     return
   }
-  return invoke('update_config', { config })
+  return invoke('update_island_preferences', { patch })
 }
 
 export async function setLanguage(language: 'en' | 'zh' | 'ja' | 'ko' | 'tr'): Promise<void> {
@@ -1018,13 +1026,13 @@ export interface ChatHistorySlice {
 }
 
 /**
- * Load only the tail (most recent N messages) of a session's transcript.
+ * Load the recent transcript window, with optional older dialog messages.
  * `beforeId` is kept for backend compatibility, but the floating chat view
  * intentionally avoids loading older pages for performance.
  */
 export async function getChatHistoryTail(
   sessionId: string,
-  options: { limit?: number; beforeId?: string } = {},
+  options: { limit?: number; beforeId?: string; minConversationMessages?: number } = {},
 ): Promise<ChatHistorySlice> {
   if (!isTauri()) {
     return { messages: [], hasMore: false, firstMessageId: null, totalCount: 0, transcriptPath: null }
@@ -1033,6 +1041,7 @@ export async function getChatHistoryTail(
     sessionId,
     limit: options.limit ?? 50,
     beforeId: options.beforeId ?? null,
+    minConversationMessages: options.minConversationMessages ?? null,
   })
 }
 

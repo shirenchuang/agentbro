@@ -3817,6 +3817,41 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('button', { name: '安装此 Agent' })).toBeEnabled()
   })
 
+  it('keeps the installed version when the desktop npm tag moves backward before update', async () => {
+    const reviewed = makeProgram({ status: 'updateAvailable', installedVersion: '2.0.0', latestVersion: '3.0.0' })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([reviewed])
+      .mockResolvedValue([{ ...reviewed, status: 'installed', latestVersion: '1.0.0' }])
+    vi.spyOn(agentApi, 'update').mockResolvedValue('noNewerVersion')
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+    expect(await screen.findByText('更新检查完成，Claude Code 当前版本为 2.0.0。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '无需更新' })).toBeDisabled()
+    expect(screen.queryByText('Agent 更新完成')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('cannot verify a desktop npm update against a different detected installation', async () => {
+    const reviewed = makeProgram({ status: 'updateAvailable', installedVersion: '2.0.0', latestVersion: '3.0.0' })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([reviewed])
+      .mockResolvedValue([{ ...reviewed, status: 'installed', installedVersion: '3.0.0', binaryPath: '/other/bin/claude' }])
+    const update = vi.spyOn(agentApi, 'update').mockResolvedValue('completed')
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Claude Code')
+    expect(update).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, reviewed.binaryPath)
+    expect(screen.queryByText('Agent 更新完成')).not.toBeInTheDocument()
+  })
+
   it('reports an unchanged version and confirms a retry only after detecting the update', async () => {
     const outdated = makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })
     vi.spyOn(agentApi, 'refresh')
@@ -3903,6 +3938,31 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '检查并更新' }))
     expect(await screen.findByText('Agent 更新完成')).toBeInTheDocument()
     expect(screen.getByText('当前版本 2.1.90')).toBeInTheDocument()
+  })
+
+  it('checks for SSH npm updates against the reviewed launcher without a registry version', async () => {
+    const environmentId = 'remote-runtime'
+    const binaryPath = '/home/team/selected/bin/claude'
+    const program = makeProgram({ installedVersion: '1.0.0', latestVersion: null, binaryPath })
+    useRuntimeEnvironmentStore.getState().selectEnvironment(environmentId)
+    useSkillStoreV2.setState({ runtimeEnvironmentId: environmentId })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([program])
+      .mockResolvedValueOnce([program])
+      .mockResolvedValue([{ ...program, installedVersion: '2.0.0', binaryPath: '/home/team/other/bin/claude' }])
+    const update = vi.spyOn(agentApi, 'update').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '检查并更新' }))
+    expect(await screen.findByText('更新检查完成，Claude Code 当前版本为 1.0.0。')).toBeInTheDocument()
+    expect(update).toHaveBeenCalledExactlyOnceWith('claude-code', environmentId, binaryPath)
+
+    fireEvent.click(screen.getByRole('button', { name: '检查并更新' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Claude Code/)
+    expect(screen.queryByText('Agent 更新完成')).not.toBeInTheDocument()
   })
 
   it('keeps an update active across Agent Management navigation and keeps its verified version', async () => {
@@ -7475,6 +7535,40 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('button', { name: '清理残留' })).not.toBeInTheDocument()
   })
 
+  it.each([
+    ['gemini-desktop', 'Gemini Desktop'],
+    ['antigravity', 'Antigravity'],
+  ])('shows the shared Hook removal scope for %s', async (id, name) => {
+    const program = makeProgram({
+      id, displayName: name, kind: 'app', status: 'installed', hooksInstalled: true,
+      binaryPath: null, uninstallCommand: null,
+    })
+    useSkillStoreV2.setState({
+      selectedAgentId: id,
+      selectedAgentDetail: { ...agentDetail, id, displayName: name, skills: [] },
+      agents: [makeSidebarAgent(id, name)],
+      unmanaged: [],
+    })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([program])
+    vi.spyOn(agentApi, 'list').mockResolvedValue([program])
+    vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([{
+      toolId: id, name: id, displayName: name, installed: true, status: 'Available',
+    }])
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const uninstall = vi.spyOn(tauriApi, 'uninstallAgentHook')
+    const description = 'Gemini 编码模式与 Antigravity 共用这组 Hook。卸载后会停止监测两边的会话。'
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    expect(await screen.findByText(description)).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Hook' }))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining(description))
+    expect(uninstall).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: '清理残留' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(description)
+  })
+
   it('does not read the local Hook settings from Agent Management on an SSH host', async () => {
     const localStatus = vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([{
       toolId: 'claude-code',
@@ -7882,7 +7976,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<AgentManagementPage />)
 
     fireEvent.click(await screen.findByText('更新此 Agent'))
-    await waitFor(() => expect(update).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, '/usr/local/bin/claude'))
   })
 
   it('keeps the Agent uninstall confirmation open until the operation finishes', async () => {
@@ -7910,7 +8004,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('npm uninstall -g @anthropic-ai/claude-code')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
-    await waitFor(() => expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
+    await waitFor(() => expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, '/usr/local/bin/claude'))
     expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled()
     fireEvent.click(dialog.closest('.sm2__overlay')!)
     expect(dialog).toBeInTheDocument()
@@ -8057,7 +8151,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
     const alert = await screen.findByRole('alert')
-    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, '/usr/local/bin/claude')
     expect(removeManaged).not.toHaveBeenCalled()
     expect(removeUnmanaged).not.toHaveBeenCalled()
     expect(uninstallHook).not.toHaveBeenCalled()
@@ -8092,8 +8186,41 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(useSkillStoreV2.getState().selectedAgentId).toBe('claude-code')
   })
 
+  it('passes the reviewed desktop app to uninstall and preserves its resources if it changed', async () => {
+    const app = { path: '/Applications/Cursor.app', identity: 'original-app' }
+    const reviewed = makeProgram({
+      kind: 'app', packageManager: 'app', binaryPath: null, appPath: app.path,
+      appUninstall: app, uninstallCommand: 'Move application to Trash', hooksInstalled: true,
+    })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([reviewed])
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockRejectedValue('The desktop Agent application changed.')
+    const remove = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions')
+    const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill')
+    const uninstallHook = vi.spyOn(agentApi, 'uninstallHook')
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(app.path)
+    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The desktop Agent application changed.')
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, undefined, app)
+    expect(remove).not.toHaveBeenCalled()
+    expect(removeUnmanaged).not.toHaveBeenCalled()
+    expect(uninstallHook).not.toHaveBeenCalled()
+  })
+
   it.each([
     { issue: 'the command failed', commandError: 'Access denied', detected: [], message: 'Access denied' },
+    {
+      issue: 'the backend observes a switched npm launcher',
+      commandError: 'The selected npm Agent launcher changed.',
+      detected: [],
+      message: 'The selected npm Agent launcher changed.',
+    },
     { issue: 'the launcher remains', detected: [makeProgram()], message: '仍检测到 Claude Code' },
     { issue: 'detection failed', detected: null, message: '无法确认 Claude Code 是否已卸载' },
     { issue: 'the program record is missing', detected: [], message: '无法确认 Claude Code 是否已卸载' },
@@ -8128,6 +8255,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<AgentManagementPage />)
 
     fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(reviewed.binaryPath!)
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
     const alert = await screen.findByRole('alert')
@@ -8136,7 +8264,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(uninstallHook).not.toHaveBeenCalled()
     expect(alert).toHaveTextContent(message)
     expect(alert).toHaveTextContent('已保留 Skills 和 Hook')
-    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, reviewed.binaryPath)
     if (commandError) expect(verify).not.toHaveBeenCalled()
     else expect(verify).toHaveBeenCalledExactlyOnceWith(LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(loadDetail).toHaveBeenCalledWith('claude-code', true)
@@ -8172,7 +8300,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       finishProgramUninstall()
     })
 
-    expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID, '/usr/local/bin/claude')
     expect(verify).toHaveBeenCalledExactlyOnceWith(LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(deleteManaged).toHaveBeenCalledExactlyOnceWith(agentDetail.skills.map((skill) => skill.id), LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(deleteUnmanaged).toHaveBeenCalledExactlyOnceWith('claude-code', localSkill.id, LOCAL_RUNTIME_ENVIRONMENT_ID)
@@ -8183,19 +8311,28 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByText(/已卸载/)).not.toBeInTheDocument()
   })
 
-  it.each([true, false])('cleans reviewed SSH resources after confirming launcher absence, uninstall=%s', async (installed) => {
+  it.each([
+    { installed: true, remainingBinary: null },
+    { installed: false, remainingBinary: null },
+    { installed: true, remainingBinary: '/home/test/other/bin/claude' },
+  ])('cleans SSH resources according to the remaining launcher, uninstall=$installed remaining=$remainingBinary', async ({ installed, remainingBinary }) => {
     const environmentId = 'remote-runtime'
     useRuntimeEnvironmentStore.getState().selectEnvironment(environmentId)
     const unmanaged = makeSharedUnmanaged('remote-skill', { agentId: 'claude-code' })
     useSkillStoreV2.setState({ runtimeEnvironmentId: environmentId, unmanaged: [unmanaged] })
     const residual = makeProgram({
       status: 'installed',
-      binaryPath: null,
+      binaryPath: remainingBinary,
+      uninstallCommand: null,
       configDir: '/home/test/.claude',
       skillsDir: '/home/test/.claude/skills',
       hooksInstalled: true,
     })
-    const reviewed = installed ? { ...residual, binaryPath: '/home/test/bin/claude' } : residual
+    const reviewed = installed ? {
+      ...residual,
+      binaryPath: '/home/test/bin/claude',
+      uninstallCommand: 'npm uninstall -g @anthropic-ai/claude-code',
+    } : residual
     vi.spyOn(agentApi, 'refresh').mockResolvedValueOnce([reviewed]).mockResolvedValue([residual])
     const verify = vi.spyOn(agentApi, 'list').mockResolvedValue([residual])
     const uninstall = vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
@@ -8211,11 +8348,20 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(await screen.findByRole('button', { name: installed ? '卸载 Agent' : '清理残留' }))
     fireEvent.click(screen.getByRole('button', { name: installed ? '确认卸载' : '确认清理' }))
 
+    if (remainingBinary) {
+      expect(await screen.findByRole('alert')).toHaveTextContent('已保留 Skills 和 Hook')
+      expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', environmentId, reviewed.binaryPath)
+      expect(verify).toHaveBeenCalledExactlyOnceWith(environmentId)
+      expect(deleteManaged).not.toHaveBeenCalled()
+      expect(deleteUnmanaged).not.toHaveBeenCalled()
+      expect(uninstallHook).not.toHaveBeenCalled()
+      return
+    }
     await waitFor(() => expect(uninstallHook).toHaveBeenCalledExactlyOnceWith('claude-code', environmentId))
     expect(deleteManaged).toHaveBeenCalledExactlyOnceWith(agentDetail.skills.map((skill) => skill.id), environmentId)
     expect(deleteUnmanaged).toHaveBeenCalledExactlyOnceWith('claude-code', unmanaged.id, environmentId)
     if (installed) {
-      expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', environmentId)
+      expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', environmentId, reviewed.binaryPath)
       expect(verify).toHaveBeenCalledExactlyOnceWith(environmentId)
     } else {
       expect(uninstall).not.toHaveBeenCalled()
@@ -8665,9 +8811,11 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const localId = archivedId.toLowerCase()
     act(() => useSkillStoreV2.setState({ skills: [{ ...skill, id: localId }] }))
     const skillIds = [archivedId, 'local-checklist', 'local-report']
+    const source = { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'skills/审阅 模板/SKILL.md' }
     const manifest: SkillPackManifest = {
-      format: 'agentbro-skill-pack', version: 2, name: 'Offline review', description: '', tags: [],
+      format: 'agentbro-skill-pack', version: 3, name: 'Offline review', description: '', tags: [],
       skillIds, skillFingerprints: Object.fromEntries(skillIds.map((id) => [id, hash])),
+      skillSources: { [archivedId]: source },
     }
     const destinationId = `${archivedId}-restored`
     const restoredIds = [destinationId, ...skillIds.slice(1)]
@@ -8682,6 +8830,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       .mockResolvedValueOnce([conflict, ...reviewed.slice(1)])
       .mockResolvedValueOnce(reviewed)
     const restore = vi.spyOn(skillApiV2, 'restoreArchivedPackMembers').mockResolvedValue({})
+    const restoreFromGitHub = vi.spyOn(skillApiV2, 'restorePackMember')
     const create = vi.spyOn(skillApiV2, 'importReviewedArchivePack').mockResolvedValue({ ...pack, id: 'offline-pack', name: manifest.name })
 
     fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
@@ -8691,6 +8840,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(dialog.getByText(`ID 已被 ${localId} 占用`)).toBeInTheDocument()
     expect(dialog.queryByRole('button', { name: `恢复 ${archivedId}` })).not.toBeInTheDocument()
     expect(dialog.getAllByText('ZIP 中包含此技能')).toHaveLength(3)
+    expect(dialog.getByText('ZIP 记录的 GitHub 来源')).toBeInTheDocument()
+    expect(dialog.getByText(`example/workflows@${source.commit.slice(0, 12)} · ${source.skillPath}`)).toBeInTheDocument()
     const restoreMissing = dialog.getByRole('button', { name: '恢复 2 个缺失技能' })
     fireEvent.click(restoreMissing)
     await waitFor(() => expect(restoreMissing).not.toBeInTheDocument())
@@ -8701,13 +8852,58 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(dialog.getByRole('button', { name: '恢复副本' }))
     await waitFor(() => expect(confirm).toBeEnabled())
     expect(restore).toHaveBeenNthCalledWith(2, file, revision, [{ skillId: archivedId, destinationId }])
+    expect(restoreFromGitHub).not.toHaveBeenCalled()
+    expect(dialog.getByText('ZIP 记录的 GitHub 来源')).toBeInTheDocument()
     fireEvent.click(confirm)
     await waitFor(() => expect(create).toHaveBeenCalledWith({
       ...manifest,
       skillIds: restoredIds,
       skillFingerprints: Object.fromEntries(restoredIds.map((id) => [id, hash])),
-      skillSources: {},
-    }, reviewed, false))
+      skillSources: { [destinationId]: source },
+    }, reviewed, false, {}))
+  })
+
+  it('offers a runnable archive copy when only the executable permissions differ', async () => {
+    const { pack, skill } = await renderPackPage()
+    const hash = 'a'.repeat(64)
+    const archiveExecutable = 'b'.repeat(64)
+    const localExecutable = 'c'.repeat(64)
+    const destinationId = `${skill.id}-restored`
+    const archive = '/Team/review-pack.zip'
+    const revision = 'd'.repeat(64)
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack', version: 2, name: 'Review scripts', description: '', tags: [],
+      skillIds: [skill.id], skillFingerprints: { [skill.id]: hash },
+    }
+    const reviewed = [{ skillId: destinationId, fingerprint: hash, missing: false, executableFingerprint: archiveExecutable }]
+    vi.mocked(openDialog).mockResolvedValueOnce(archive)
+    vi.spyOn(skillApiV2, 'readPackArchive').mockResolvedValue({
+      manifest, revision, executableFingerprints: { [skill.id]: archiveExecutable },
+    })
+    vi.spyOn(skillApiV2, 'getArchivePackFingerprints')
+      .mockResolvedValueOnce([{ skillId: skill.id, fingerprint: hash, missing: false, executableFingerprint: localExecutable }])
+      .mockResolvedValueOnce(reviewed)
+    const restore = vi.spyOn(skillApiV2, 'restoreArchivedPackMembers').mockResolvedValue({})
+    const create = vi.spyOn(skillApiV2, 'importReviewedArchivePack').mockResolvedValue({ ...pack, id: 'review-pack' })
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    const confirm = dialog.getByRole('button', { name: '创建技能包' })
+    expect(dialog.getByText('执行权限不同')).toBeInTheDocument()
+    expect(confirm).toBeDisabled()
+    const keep = dialog.getByRole('checkbox', { name: '保留当前库中的技能及其执行权限' })
+    fireEvent.click(keep)
+    expect(confirm).toBeEnabled()
+    fireEvent.click(keep)
+
+    fireEvent.click(dialog.getByRole('button', { name: `将 ${skill.id} 恢复为副本` }))
+    fireEvent.click(dialog.getByRole('button', { name: '恢复副本' }))
+    await waitFor(() => expect(confirm).toBeEnabled())
+    expect(restore).toHaveBeenCalledWith(archive, revision, [{ skillId: skill.id, destinationId }])
+    fireEvent.click(confirm)
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      skillIds: [destinationId],
+    }), reviewed, false, { [destinationId]: archiveExecutable }))
   })
 
   it('exports the verified GitHub sources and keeps fingerprints for edited Skills', async () => {
@@ -10466,6 +10662,34 @@ describe('Diagnosis workbench', () => {
       busyAction: null,
       error: null,
     })
+  })
+
+  it('refreshes a stale target issue and reports that the repair was skipped', async () => {
+    const issue = {
+      id: 'target-missing-review',
+      issueType: 'target_missing',
+      severity: 'warning' as const,
+      fixKind: 'auto' as const,
+      title: 'Stale target record',
+      detail: "Codex target '/home/test/.codex/skills/review' no longer exists on disk.",
+      entityType: 'target' as const,
+      entityId: 'review',
+      actions: [{ id: 'fix:target_missing', label: 'Remove record', destructive: false }],
+    }
+    vi.spyOn(skillApiV2, 'listDiagnosisIssues').mockResolvedValue([issue])
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const executeFix = vi.spyOn(skillApiV2, 'executeFixIssue').mockResolvedValue(false)
+    const runDiagnosis = vi.spyOn(skillApiV2, 'runDiagnosis').mockResolvedValue([])
+
+    const { DiagnosisPage } = await import('../components/skills-v2/DiagnosisPage')
+    render(<DiagnosisPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '移除失效记录' }))
+
+    expect(await screen.findByText(i18n.t('skills.diagnosisRepairSkipped'))).toBeInTheDocument()
+    expect(executeFix).toHaveBeenCalledWith('target_missing', 'review')
+    expect(runDiagnosis).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: '移除失效记录' })).not.toBeInTheDocument()
+    expect(screen.queryByText('已处理 1 项问题。')).not.toBeInTheDocument()
   })
 
   it('summarizes diagnosis status with plain-language issue groups and safe-fix feedback', async () => {

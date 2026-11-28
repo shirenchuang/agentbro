@@ -46,6 +46,7 @@ function renderPermissionCard(agentType: SessionState['agentType']) {
 describe('PermissionCard actions', () => {
   it.each([
     ['deepseek-harness', false],
+    ['qoder-desktop', false],
     ['codex', false],
     ['claude-code', true],
   ] as const)('shows persistent actions for %s only when supported', (agentType, persistentActions) => {
@@ -57,14 +58,22 @@ describe('PermissionCard actions', () => {
     expect(Boolean(screen.queryByRole('button', { name: 'notch.autoApprove' }))).toBe(persistentActions)
   })
 
-  it('denies DeepSeek Harness requests on the first click', () => {
-    const onDeny = renderPermissionCard('deepseek-harness')
+  it.each(['deepseek-harness', 'qoder-desktop'] as const)('denies %s requests on the first click', (agentType) => {
+    const onDeny = renderPermissionCard(agentType)
     const deny = screen.getByRole('button', { name: 'notch.deny' })
     fireEvent.mouseDown(deny)
     fireEvent.click(deny, { detail: 1 })
 
     expect(onDeny).toHaveBeenCalledTimes(1)
     expect(onDeny).toHaveBeenCalledWith(undefined)
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
+  it('denies Qoder Desktop requests on keyboard activation', () => {
+    const onDeny = renderPermissionCard('qoder-desktop')
+    fireEvent.click(screen.getByRole('button', { name: 'notch.deny' }))
+
+    expect(onDeny).toHaveBeenCalledExactlyOnceWith(undefined)
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })
 })

@@ -378,6 +378,7 @@ pub(super) fn validate_review(
     reviewed: &[SkillPackFingerprint],
     current: &[SkillPackFingerprint],
     accept_local_copies: bool,
+    archive_executable_fingerprints: Option<&BTreeMap<String, String>>,
 ) -> Result<(), String> {
     if current != reviewed {
         return Err(
@@ -402,6 +403,16 @@ pub(super) fn validate_review(
             return Err(format!(
                 "Confirm the local copy of Skill '{id}' before importing."
             ));
+        }
+        if let Some(expected) = archive_executable_fingerprints.and_then(|modes| modes.get(id)) {
+            let executable = member.executable_fingerprint.as_ref().ok_or_else(|| {
+                format!("Could not verify the executable permissions for Skill '{id}'.")
+            })?;
+            if !accept_local_copies && executable != expected {
+                return Err(format!(
+                    "Confirm the local Skill '{id}' because its executable permissions differ."
+                ));
+            }
         }
     }
     Ok(())

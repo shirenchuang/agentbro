@@ -123,7 +123,7 @@ If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Doubao, Qoder, OpenCode
 - Over SSH, list and inspect stdio and HTTP MCP servers from the remote Codex TOML configuration. Reading the file requires Python 3.11 or later, or an existing `tomli` installation on older Python. Credentials are read and used on the SSH host.
 - Browse plugins for Codex, Claude Code, WorkBuddy, ZCode, Kimi, and other supported agents. Search, enable or disable supported plugins, inspect manifests and packaged capabilities, and preview files.
 - Edit supported JSON or text config files with validation. The Projects view imports repositories and checks project-level instructions, skills, MCP servers, and plugins.
-- Preview skills.sh project lock files and restore missing Skills from GitHub, HTTPS Git repositories such as GitLab, or installed npm dependencies. AgentBro verifies the v2 content hash and preserves existing entries in `.agents/skills`. [skills.sh lock format](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
+- Preview skills.sh project lock files and restore missing Skills from GitHub, HTTPS Git repositories such as GitLab, installed npm dependencies, or public HTTPS downloads of `SKILL.md`, ZIP, TAR, and TAR.GZ. AgentBro verifies the v2 content hash and preserves existing entries in `.agents/skills`. [skills.sh lock format](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
 
 <table>
   <tr>
@@ -162,7 +162,7 @@ AgentBro supports agents at two levels. Runtime hook adapters send session event
 
 | Scope | Agents |
 | --- | --- |
-| Island / hook integration | Claude Code, Codex, Gemini CLI, Cursor / Cursor CLI, GitHub Copilot, Cline, Qoder Desktop / Qoder IDE / Qoder CLI, CodeBuddy / CodeBuddy CN, Qwen, Kimi, DeepSeek, OpenCode, Factory Droid, StepFun, AntiGravity, WorkBuddy / WorkBuddy AI, Hermes, Pi, Kiro, ZCode |
+| Island / hook integration | Claude Code, Codex, Gemini CLI, Gemini Desktop's Antigravity coding mode (macOS), Cursor / Cursor CLI, GitHub Copilot, Cline, Qoder Desktop / Qoder IDE / Qoder CLI, CodeBuddy / CodeBuddy CN, Qwen, Kimi, DeepSeek, OpenCode, Factory Droid, StepFun, Antigravity, WorkBuddy / WorkBuddy AI, Hermes, Pi, Kiro, ZCode |
 | Agent Management scan | Everything above, plus Doubao, the `.agents` shared folder, Junie, Windsurf, Augment, KiloCode, OB1, Amp, Aider, OpenClaw / QClaw / EasyClaw / AutoClaw, and custom agents |
 | Project-level scan | Currently focused on common Claude Code and Codex project config: project-level skills, MCP servers, plugins, and instruction files |
 

@@ -418,14 +418,32 @@ pub(crate) fn checkout_skill_lock_ref(
 ) -> Result<(PathBuf, TempInstallDir), String> {
     let temporary = TempInstallDir::create_in(&std::env::temp_dir())?;
     let checkout = temporary.path().join("repo");
-    fs::create_dir(&checkout).map_err(|error| error.to_string())?;
-    let cancel = AtomicBool::new(false);
-    let network = GitNetwork::new(None, None);
+    fetch_skill_revision(
+        &checkout,
+        repository,
+        reference,
+        &GitNetwork::new(None, None),
+        &AtomicBool::new(false),
+        Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
+    )?;
+    Ok((checkout, temporary))
+}
+
+fn fetch_skill_revision(
+    checkout: &Path,
+    repository: &str,
+    reference: &str,
+    network: &GitNetwork,
+    cancel: &AtomicBool,
+    timeout: Duration,
+) -> Result<(), String> {
+    fs::create_dir(checkout).map_err(|error| error.to_string())?;
+    let mut init = vec!["init", "--quiet", "--template="];
+    if reference.len() == 64 && is_full_git_object_id(reference) {
+        init.push("--object-format=sha256");
+    }
     for (args, operation) in [
-        (
-            &["init", "--quiet", "--template="][..],
-            "preparing the Skill checkout",
-        ),
+        (init.as_slice(), "preparing the Skill checkout"),
         (
             &[
                 "fetch",
@@ -451,20 +469,16 @@ pub(crate) fn checkout_skill_lock_ref(
             "checking out the locked Skill revision",
         ),
     ] {
-        let output = run_git_with_cancel(
-            &checkout,
-            args,
-            Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
-            &cancel,
-            &network,
-            None,
-            operation,
-        )?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Installation cancelled".to_string());
+        }
+        let output =
+            run_git_with_cancel(checkout, args, timeout, cancel, network, None, operation)?;
         if !output.status.success() {
             return Err(format!("Git failed while {operation}"));
         }
     }
-    Ok((checkout, temporary))
+    Ok(())
 }
 
 impl GitSkillCheckout {
@@ -981,8 +995,24 @@ fn parse_github_url_ref(source: &str) -> Result<GithubCloneRef, String> {
     let repo = parts[1].trim_end_matches(".git");
     let repo_url = format!("https://github.com/{}/{}.git", parts[0], repo);
     let (branch, subpath) = if parts.len() >= 4 && parts[2] == "tree" {
-        let subpath = (parts.len() > 4).then(|| parts[4..].join("/"));
-        (Some(parts[3].to_string()), subpath)
+        let decode = |part| {
+            crate::percent_decode_path(part).map_err(|_| "Invalid escape in GitHub tree URL.")
+        };
+        let branch = decode(parts[3])?;
+        let subpath = parts[4..]
+            .iter()
+            .map(|part| {
+                let part = decode(part)?;
+                if matches!(part.as_str(), "." | "..") || part.contains(['/', '\\', ':', '\0']) {
+                    return Err("GitHub tree URL must contain a repository-relative Skill path.");
+                }
+                Ok(part)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        (
+            Some(branch),
+            (!subpath.is_empty()).then(|| subpath.join("/")),
+        )
     } else {
         (None, None)
     };
@@ -1125,6 +1155,8 @@ fn clone_repo_with_cancel(
     let clone_urls = github_clone_urls(repo_url, github_token);
     let network = GitNetwork::new(Some(repo_url), github_token);
     let single_attempt = clone_urls.len() == 1;
+    let pinned_commit = branch.filter(|revision| is_full_git_object_id(revision));
+    let never_cancel = AtomicBool::new(false);
     for (attempt_index, clone_url) in clone_urls.into_iter().enumerate() {
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             return Err("Installation cancelled".to_string());
@@ -1148,6 +1180,28 @@ fn clone_repo_with_cancel(
             attempt_index + 1,
             attempt_timeout.as_secs()
         );
+        if let Some(commit) = pinned_commit {
+            match fetch_skill_revision(
+                &repo_dir,
+                &clone_url,
+                commit,
+                &network,
+                cancel.unwrap_or(&never_cancel),
+                attempt_timeout,
+            ) {
+                Ok(())
+                    if read_checkout_commit(&repo_dir)
+                        .is_some_and(|actual| actual.eq_ignore_ascii_case(commit)) =>
+                {
+                    cloned = true;
+                    break;
+                }
+                Ok(()) => last_error = "Git did not return the requested Skill commit.".to_string(),
+                Err(error) => last_error = error,
+            }
+            let _ = fs::remove_dir_all(&repo_dir);
+            continue;
+        }
         let mut attempt = network.command();
         attempt
             .arg("clone")
@@ -1206,6 +1260,9 @@ fn clone_repo_skills_with_cancel(
     github_token: Option<&str>,
     cancel: &AtomicBool,
 ) -> Result<(PathBuf, Option<TempInstallDir>), String> {
+    if branch.is_some_and(is_full_git_object_id) {
+        return clone_repo_with_cancel(repo_url, branch, subpath, github_token, Some(cancel));
+    }
     let root = temp_install_dir()?;
     let repo_dir = root.path().join("repo");
     let started_at = Instant::now();
@@ -2625,6 +2682,106 @@ mod tests {
                 subpath: None,
             },
         );
+    }
+
+    #[test]
+    fn pinned_github_tree_url_recovers_the_original_skill_directory() {
+        let commit = "1".repeat(40);
+        let directory = "skills/迁移 Review";
+        let source = format!(
+            "https://github.com/owner/repo/tree/{commit}/{}",
+            url_path_encode(directory),
+        );
+        assert_eq!(
+            parse_github_url_ref(&source).unwrap(),
+            GithubCloneRef {
+                repo_url: "https://github.com/owner/repo.git".to_string(),
+                branch: Some(commit.clone()),
+                subpath: Some(directory.to_string()),
+            },
+        );
+        assert!(parse_github_url_ref(&format!(
+            "https://github.com/owner/repo/tree/{commit}/skills/encoded%2Fdirectory"
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn pinned_github_skill_checkout_uses_the_recorded_commit_for_individual_and_batch_imports() {
+        let _home = crate::skills::lock_shared_test_home();
+        let root = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let remote = root.path().join("repo");
+        let directory = "skills/迁移 Review";
+        let skill = remote.join(directory).join("SKILL.md");
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        let git = |args: &[&str]| {
+            let output = background_command(crate::agents::executable::command_path("git"))
+                .current_dir(&remote)
+                .args([
+                    "-c",
+                    "user.name=AgentBro Test",
+                    "-c",
+                    "user.email=test@example.com",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-b", "main"]);
+        fs::write(&skill, "recorded version").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "initial"]);
+        let revision = git(&["rev-parse", "HEAD"]);
+        git(&["tag", "v1", &revision]);
+        fs::write(&skill, "later version").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "later"]);
+        let repository = remote.to_str().unwrap();
+        let source = parse_github_url_ref(&format!(
+            "https://github.com/owner/repo/tree/{revision}/{}",
+            url_path_encode(directory),
+        ))
+        .unwrap();
+        let pin = source.branch.as_deref();
+        let subpath = source.subpath.as_deref();
+
+        for checkout in [
+            clone_repo(repository, pin, subpath, None),
+            clone_repo_skills_with_cancel(
+                repository,
+                pin,
+                subpath,
+                &["迁移 Review".to_string()],
+                None,
+                &AtomicBool::new(false),
+            ),
+        ] {
+            let (path, checkout) = checkout.unwrap();
+            let checkout = checkout.unwrap();
+            assert_eq!(
+                read_checkout_commit(&checkout.path().join("repo")).as_deref(),
+                Some(revision.as_str())
+            );
+            assert_eq!(
+                fs::read_to_string(path.join("SKILL.md")).unwrap(),
+                "recorded version"
+            );
+        }
+        for (reference, content) in [("main", "later version"), ("v1", "recorded version")] {
+            let (resolved, _checkout) =
+                clone_repo(repository, Some(reference), subpath, None).unwrap();
+            assert_eq!(
+                fs::read_to_string(resolved.join("SKILL.md")).unwrap(),
+                content
+            );
+        }
+        assert!(clone_repo(repository, Some(&"2".repeat(40)), subpath, None).is_err());
     }
 
     #[test]

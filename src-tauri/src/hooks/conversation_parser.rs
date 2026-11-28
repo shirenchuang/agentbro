@@ -390,6 +390,9 @@ impl ConversationParser {
         if msg_type == "response_item" {
             return self.parse_codex_response_item(json);
         }
+        if matches!(msg_type, "USER_INPUT" | "PLANNER_RESPONSE") {
+            return Self::parse_antigravity_message(msg_type, json);
+        }
 
         // Only parse user and assistant message lines
         if msg_type != "user" && msg_type != "assistant" {
@@ -433,6 +436,29 @@ impl ConversationParser {
             role,
             timestamp,
             blocks,
+        })
+    }
+
+    fn parse_antigravity_message(
+        msg_type: &str,
+        json: &serde_json::Value,
+    ) -> Option<ParsedMessage> {
+        let role = antigravity_message_role(msg_type, json)?;
+        let content = json.get("content")?.as_str()?;
+        if content.trim().is_empty() {
+            return None;
+        }
+        let step = json.get("step_index")?.as_u64()?;
+        Some(ParsedMessage {
+            id: format!("antigravity-step-{step}"),
+            role,
+            timestamp: json
+                .get("created_at")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned),
+            blocks: vec![MessageBlock::Text {
+                text: content.to_owned(),
+            }],
         })
     }
 
@@ -818,6 +844,76 @@ pub fn discover_session_file_in_dirs(
     }
 
     None
+}
+
+pub fn discover_antigravity_session_file(
+    home: &Path,
+    session_id: &str,
+    agent: &str,
+) -> Option<PathBuf> {
+    let session_id = uuid::Uuid::parse_str(session_id).ok()?.to_string();
+    let roots: &[&str] = match agent {
+        crate::agents::gemini_desktop::ID => &["antigravity"],
+        "antigravity" => &["antigravity", "antigravity-cli", "antigravity-ide"],
+        _ => return None,
+    };
+    roots.iter().find_map(|root| {
+        let path = home
+            .join(".gemini")
+            .join(root)
+            .join("brain")
+            .join(&session_id)
+            .join(".system_generated/logs/transcript.jsonl");
+        path.is_file().then_some(path)
+    })
+}
+
+fn antigravity_message_role(msg_type: &str, record: &serde_json::Value) -> Option<ChatRole> {
+    match (msg_type, record.get("source")?.as_str()?) {
+        ("USER_INPUT", "USER_EXPLICIT") => Some(ChatRole::User),
+        ("PLANNER_RESPONSE", "MODEL") => Some(ChatRole::Assistant),
+        _ => None,
+    }
+}
+
+pub fn extract_antigravity_invocation_reply(path: &Path, first_step: u64) -> Option<String> {
+    let mut latest = None;
+    let reader = BufReader::new(File::open(path).ok()?);
+    for line in reader.lines().map_while(Result::ok) {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if record
+            .get("step_index")
+            .and_then(|step| step.as_u64())
+            .is_none_or(|step| step < first_step)
+        {
+            continue;
+        }
+        let msg_type = record
+            .get("type")
+            .and_then(|kind| kind.as_str())
+            .unwrap_or("");
+        match antigravity_message_role(msg_type, &record) {
+            // An explicit user step after PreInvocation belongs to a later turn.
+            Some(ChatRole::User) => return None,
+            Some(ChatRole::Assistant) => {
+                let complete = record
+                    .get("status")
+                    .and_then(|status| status.as_str())
+                    .is_none_or(|status| status == "DONE");
+                let text = record
+                    .get("content")
+                    .and_then(|text| text.as_str())
+                    .map(str::trim);
+                if let Some(text) = text.filter(|text| complete && !text.is_empty()) {
+                    latest = Some(text.to_string());
+                }
+            }
+            None => {}
+        }
+    }
+    latest
 }
 
 /// Discover a Codex JSONL rollout file for a session id.
@@ -2273,6 +2369,77 @@ mod tests {
         ));
         std::fs::write(&path, content).expect("write temp jsonl");
         path
+    }
+
+    #[test]
+    fn antigravity_history_reads_existing_conversation_text_in_order() {
+        let home = std::env::temp_dir().join(format!("agentbro-history-{}", uuid::Uuid::new_v4()));
+        let id = "0e86b19b-bda4-4249-a774-77fa3988b93c";
+        let path = home.join(format!(
+            ".gemini/antigravity/brain/{id}/.system_generated/logs/transcript.jsonl"
+        ));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut records = vec![
+            serde_json::json!({"type":"SYSTEM_MESSAGE", "content":"Internal message"}),
+            serde_json::json!({"type":"USER_INPUT", "source":"HOOK", "step_index":0, "content":"Injected input"}),
+            serde_json::json!({"type":"PLANNER_RESPONSE", "source":"MODEL", "step_index":0, "thinking":"Internal thinking", "tool_calls":[{}]}),
+        ];
+        for step in 1..=12 {
+            let (kind, source) = if step % 2 == 1 {
+                ("USER_INPUT", "USER_EXPLICIT")
+            } else {
+                ("PLANNER_RESPONSE", "MODEL")
+            };
+            records.push(serde_json::json!({
+                "type": kind,
+                "source": source,
+                "step_index": step,
+                "created_at": "2026-11-28T08:00:00Z",
+                "content": format!("Message {step}"),
+            }));
+        }
+        let content = records
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, format!("{content}\n{{")).unwrap();
+
+        let transcript = discover_antigravity_session_file(&home, id, "gemini-desktop").unwrap();
+        let messages = ConversationParser::new(transcript).parse_full().unwrap();
+        assert_eq!(messages.len(), 12);
+        assert_eq!(messages[2].id, "antigravity-step-3");
+        assert_eq!(messages[2].role, ChatRole::User);
+        assert_eq!(messages[11].role, ChatRole::Assistant);
+        assert_eq!(
+            messages[11].timestamp.as_deref(),
+            Some("2026-11-28T08:00:00Z")
+        );
+        assert!(
+            matches!(messages[11].blocks.as_slice(), [MessageBlock::Text { text }] if text == "Message 12")
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn antigravity_history_keeps_desktop_and_cli_transcripts_separate() {
+        let home = std::env::temp_dir().join(format!("agentbro-history-{}", uuid::Uuid::new_v4()));
+        let id = "1cb18a23-2918-429e-8893-79f3362994d9";
+        let path = home.join(format!(
+            ".gemini/antigravity-cli/brain/{id}/.system_generated/logs/transcript.jsonl"
+        ));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+
+        assert_eq!(
+            discover_antigravity_session_file(&home, id, "antigravity"),
+            Some(path)
+        );
+        assert!(discover_antigravity_session_file(&home, id, "gemini-desktop").is_none());
+        assert!(
+            discover_antigravity_session_file(&home, &format!("../{id}"), "antigravity").is_none()
+        );
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

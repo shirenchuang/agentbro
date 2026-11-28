@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::agents::profiles::{self, InstallationKind};
 use crate::agents::AgentAdapter;
-use crate::config::ConfigStore;
+use crate::config::{hook_intent_enabled, ConfigStore};
 
 const MAX_RESTORES_PER_MINUTE: u32 = 3;
 const SELF_WRITE_SUPPRESSION_WINDOW: Duration = Duration::from_secs(6);
@@ -41,7 +41,7 @@ fn adapter_needs_restore(adapter: &dyn AgentAdapter, enabled_agents: &[String]) 
         return false;
     }
 
-    let is_enabled = enabled_agents.iter().any(|a| a == adapter.name());
+    let is_enabled = hook_intent_enabled(enabled_agents, adapter.name());
 
     adapter.hook_config_paths().iter().any(|p| {
         match crate::agents::profiles::install_health(&profile, p) {
@@ -298,6 +298,10 @@ pub fn start_hook_recovery(
                         );
                         continue;
                     }
+                    if !adapter_needs_restore(adapter.as_ref(), &config_store.get().enabled_agents)
+                    {
+                        continue;
+                    }
                     if let Err(e) = adapter.install_hooks() {
                         log::warn!("Hook recovery failed for {}: {}", adapter.display_name(), e);
                     } else {
@@ -352,12 +356,13 @@ mod tests {
     /// Minimal adapter whose `claude-code` profile resolves through the real
     /// `profiles` registry but whose settings file we control on disk.
     struct StubAdapter {
+        id: &'static str,
         path: PathBuf,
     }
 
     impl AgentAdapter for StubAdapter {
         fn name(&self) -> &str {
-            "claude-code"
+            self.id
         }
         fn display_name(&self) -> &str {
             "Claude Code"
@@ -400,7 +405,10 @@ mod tests {
     fn wiped_hook_restores_only_when_agent_is_enabled() {
         let path = unique_temp_path("wiped");
         std::fs::write(&path, r#"{"hooks":{}}"#).expect("write settings");
-        let adapter = StubAdapter { path: path.clone() };
+        let adapter = StubAdapter {
+            id: "claude-code",
+            path: path.clone(),
+        };
 
         assert!(
             !adapter_needs_restore(&adapter, &[]),
@@ -419,12 +427,38 @@ mod tests {
     fn missing_settings_restores_only_when_agent_is_enabled() {
         let path = unique_temp_path("missing");
         let _ = std::fs::remove_file(&path);
-        let adapter = StubAdapter { path };
+        let adapter = StubAdapter {
+            id: "claude-code",
+            path,
+        };
 
         assert!(!adapter_needs_restore(&adapter, &[]));
         assert!(adapter_needs_restore(
             &adapter,
             &["claude-code".to_string()]
         ));
+    }
+
+    #[test]
+    fn shared_antigravity_hook_recovers_legacy_intent_from_gemini_desktop() {
+        let fixture =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("hooks.json");
+        std::fs::write(&path, "{}").unwrap();
+        let adapter = StubAdapter {
+            id: "antigravity",
+            path,
+        };
+        assert!(adapter_needs_restore(&adapter, &["gemini-desktop".into()]));
+        assert!(!adapter_needs_restore(&adapter, &["gemini".into()]));
+        #[cfg(target_os = "macos")]
+        {
+            let desktop = StubAdapter {
+                id: "gemini-desktop",
+                path: adapter.path.clone(),
+            };
+            assert!(adapter_needs_restore(&desktop, &["antigravity".into()]));
+            assert!(!adapter_needs_restore(&desktop, &["gemini".into()]));
+        }
     }
 }

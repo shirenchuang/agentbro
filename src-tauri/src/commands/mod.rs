@@ -9,9 +9,9 @@ use crate::config::{AppConfig, ConfigStore};
 use crate::energy::{self, EnergyMode};
 use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
-    all_projects_dirs, discover_codex_session_file, discover_session_file_in_dirs,
-    extract_subagents_from_transcript, ChatRole, MessageBlock, ParsedMessage,
-    TranscriptSubagentInfo,
+    all_projects_dirs, discover_antigravity_session_file, discover_codex_session_file,
+    discover_session_file_in_dirs, extract_subagents_from_transcript, ChatRole, MessageBlock,
+    ParsedMessage, TranscriptSubagentInfo,
 };
 use crate::hooks::diagnostics::DiagnosticRingBuffer;
 use crate::hooks::file_watcher::ConversationWatcher;
@@ -65,8 +65,6 @@ pub struct AppState {
     pub network_monitor: Arc<NetworkMonitor>,
     pub switch_db: Arc<SwitchDatabase>,
     pub telemetry: Arc<TelemetryService>,
-    #[allow(dead_code)]
-    pub tray_icon: tauri::tray::TrayIcon,
 }
 
 #[derive(Clone)]
@@ -2565,7 +2563,7 @@ pub async fn send_message(
     message: String,
     activate_before_send: Option<bool>,
 ) -> Result<(), String> {
-    log::info!("Send message: session={}, msg={}", session_id, message);
+    log::info!("Sending message to session {session_id}");
     release_notch_keyboard_focus(&app);
 
     let session = state
@@ -2644,6 +2642,9 @@ pub async fn send_message(
     }
     if session.agent_type == "qoder-desktop" {
         return Err("Open Qoder Desktop to continue the conversation.".to_string());
+    }
+    if session.agent_type == crate::agents::gemini_desktop::ID {
+        return Err("Open Gemini Desktop to continue the conversation.".to_string());
     }
 
     if let Some(err) = app_host_message_unsupported_error(&session) {
@@ -4214,7 +4215,10 @@ pub async fn jump_to_terminal(
     if let Some(distribution) = &session.wsl_distribution {
         return crate::platform::wsl::open_workspace(distribution, &session.cwd);
     }
-    if session.agent_type == "qoder-desktop" {
+    if matches!(
+        session.agent_type.as_str(),
+        "qoder-desktop" | crate::agents::gemini_desktop::ID
+    ) {
         return crate::agents::programs::open_agent_app(&session.agent_type);
     }
     #[cfg(target_os = "windows")]
@@ -4931,21 +4935,9 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         },
     });
 
-    let bridge_invocations = recent_bridge_invocations(50);
-    checks.push(HookDoctorCheck {
-        id: "bridge-invocations".to_string(),
-        label: "Bridge invocation trace".to_string(),
-        status: if bridge_invocations.is_empty() {
-            "info"
-        } else {
-            "ok"
-        }
-        .to_string(),
-        detail: bridge_invocations
-            .last()
-            .cloned()
-            .unwrap_or_else(|| "No bridge invocations recorded yet".to_string()),
-    });
+    checks.push(bridge_invocation_doctor_check(
+        recent_bridge_invocations(1).map(|mut entries| entries.pop()),
+    ));
 
     let mut present_profiles = 0usize;
     let mut unhealthy_profiles = Vec::new();
@@ -4953,21 +4945,12 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         let Some(profile) = crate::agents::profiles::profile_for_agent(adapter.name()) else {
             continue;
         };
-        let health = crate::agents::profiles::install_health_for_profile(&profile);
-        if !health.is_present() {
+        let Some((health, check)) = hook_profile_doctor_check(&profile, adapter.display_name())
+        else {
             continue;
-        }
+        };
         present_profiles += 1;
-        checks.push(HookDoctorCheck {
-            id: format!("hook-profile-{}", profile.id),
-            label: format!("{} hook profile", adapter.display_name()),
-            status: doctor_status_for_hook_health(health).to_string(),
-            detail: format!(
-                "{} ({})",
-                health.as_status_str(),
-                profile.configuration_path
-            ),
-        });
+        checks.push(check);
         if health != crate::agents::profiles::HookInstallHealth::Installed {
             unhealthy_profiles.push(format!("{}={}", profile.id, health.as_status_str()));
         }
@@ -5158,6 +5141,83 @@ fn append_codex_doctor_checks(checks: &mut Vec<HookDoctorCheck>) {
     }
 }
 
+fn bridge_invocation_doctor_check(latest: std::io::Result<Option<String>>) -> HookDoctorCheck {
+    #[derive(serde::Deserialize)]
+    struct Invocation {
+        source: String,
+        event: String,
+        forwarded: bool,
+        ts: Option<i64>,
+    }
+
+    let no_trace = ("info", "No bridge invocations recorded yet".to_string());
+    let (status, detail) = match latest {
+        Ok(Some(line)) => match serde_json::from_str::<Invocation>(&line) {
+            Ok(invocation) => {
+                let timestamp = invocation
+                    .ts
+                    .and_then(chrono::DateTime::from_timestamp_millis)
+                    .map(|at| {
+                        format!(
+                            " at {}",
+                            at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                        )
+                    })
+                    .unwrap_or_default();
+                let (status, delivery) = if invocation.forwarded {
+                    ("ok", "sent to the local Hook service")
+                } else {
+                    ("warn", "could not be sent to the local Hook service")
+                };
+                (
+                    status,
+                    format!(
+                        "{} / {} {delivery}{timestamp}",
+                        invocation.source, invocation.event
+                    ),
+                )
+            }
+            Err(_) => (
+                "warn",
+                "Could not interpret the latest bridge invocation".to_string(),
+            ),
+        },
+        Ok(None) => no_trace,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => no_trace,
+        Err(_) => (
+            "warn",
+            "Could not read the bridge invocation trace".to_string(),
+        ),
+    };
+    HookDoctorCheck {
+        id: "bridge-invocations".to_string(),
+        label: "Bridge invocation trace".to_string(),
+        status: status.to_string(),
+        detail,
+    }
+}
+
+pub(crate) fn hook_profile_doctor_check(
+    profile: &crate::agents::profiles::AgentIntegrationProfile,
+    display_name: &str,
+) -> Option<(crate::agents::profiles::HookInstallHealth, HookDoctorCheck)> {
+    use crate::agents::profiles::{configuration_url, install_health};
+
+    let path = configuration_url(profile);
+    let health = install_health(profile, &path);
+    health.is_present().then(|| {
+        (
+            health,
+            HookDoctorCheck {
+                id: format!("hook-profile-{}", profile.id),
+                label: format!("{display_name} hook profile"),
+                status: doctor_status_for_hook_health(health).to_string(),
+                detail: format!("{} ({})", health.as_status_str(), path.display()),
+            },
+        )
+    })
+}
+
 fn doctor_status_for_hook_health(
     health: crate::agents::profiles::HookInstallHealth,
 ) -> &'static str {
@@ -5173,20 +5233,20 @@ fn doctor_status_for_hook_health(
 // ── Config Commands ───────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
-    let mut config = state.config_store.get();
-    config.launch_at_login = get_launch_at_login_state();
-    Ok(config)
+pub(crate) async fn get_config(
+    state: State<'_, AppState>,
+) -> Result<crate::config::ConfigSnapshot, String> {
+    let mut snapshot = state.config_store.snapshot();
+    snapshot.config.launch_at_login = get_launch_at_login_state();
+    Ok(snapshot)
 }
 
 #[tauri::command]
-pub async fn update_config(state: State<'_, AppState>, config: AppConfig) -> Result<(), String> {
-    let previous = state.config_store.get();
-    state.config_store.update(config.clone())?;
-    if previous.analytics_enabled != config.analytics_enabled {
-        state.telemetry.handle_consent_changed(&config).await;
-    }
-    Ok(())
+pub(crate) async fn update_island_preferences(
+    state: State<'_, AppState>,
+    patch: crate::config::IslandPreferencesPatch,
+) -> Result<(), String> {
+    state.config_store.update_island_preferences(patch)
 }
 
 #[tauri::command]
@@ -5627,15 +5687,10 @@ pub async fn get_chat_history(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<ParsedMessage>, String> {
-    parse_session_messages_for_command(&state, &session_id).map(|either| match either {
-        SessionMessagesResult::Local(messages) => messages,
-        SessionMessagesResult::Remote(messages) => messages,
-    })
+    parse_session_messages_for_command(&state, &session_id, false).map(|history| history.messages)
 }
 
-/// Paginated slice of a session's chat history. Used by the frontend to load
-/// only the tail of a transcript on first open (typical 50 messages instead
-/// of the full file, which can be 100MB+ for long Codex sessions).
+/// Paginated slice of a session's chat history.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatHistorySlice {
@@ -5648,6 +5703,7 @@ pub struct ChatHistorySlice {
 
 const DEFAULT_TAIL_LIMIT: usize = 50;
 const MAX_TAIL_LIMIT: usize = 500;
+const MAX_CONVERSATION_MINIMUM: usize = 10;
 
 #[tauri::command]
 pub async fn get_chat_history_tail(
@@ -5655,42 +5711,83 @@ pub async fn get_chat_history_tail(
     session_id: String,
     limit: Option<usize>,
     before_id: Option<String>,
+    min_conversation_messages: Option<usize>,
 ) -> Result<ChatHistorySlice, String> {
     let limit = limit.unwrap_or(DEFAULT_TAIL_LIMIT).clamp(1, MAX_TAIL_LIMIT);
-    let (messages, transcript_path) = match parse_session_messages_for_command(&state, &session_id)?
-    {
-        SessionMessagesResult::Local(messages) => {
-            let path = resolve_transcript_path_for_session(&state, &session_id);
-            (messages, path)
-        }
-        SessionMessagesResult::Remote(messages) => (messages, None),
-    };
-
+    let minimum = min_conversation_messages
+        .unwrap_or(0)
+        .min(MAX_CONVERSATION_MINIMUM);
+    let history = parse_session_messages_for_command(&state, &session_id, minimum > 0)?;
+    let messages = &history.messages;
     let total_count = messages.len();
     let end = match before_id.as_deref() {
         Some(id) => messages
             .iter()
-            .position(|m| m.id == id)
+            .position(|message| message.id == id)
             .unwrap_or(total_count),
         None => total_count,
     };
-    let start = end.saturating_sub(limit);
-
-    let slice = messages[start..end].to_vec();
-    let first_message_id = slice.first().map(|m| m.id.clone());
+    let (first_index, slice) = select_chat_history_tail(&messages[..end], limit, minimum);
+    let first_message_id = slice.first().map(|message| message.id.clone());
 
     Ok(ChatHistorySlice {
         messages: slice,
-        has_more: start > 0,
+        has_more: first_index > 0,
         first_message_id,
         total_count,
-        transcript_path: transcript_path.map(|p| p.to_string_lossy().into_owned()),
+        transcript_path: history
+            .transcript_path
+            .map(|path| path.to_string_lossy().into_owned()),
     })
 }
 
-enum SessionMessagesResult {
-    Local(Vec<ParsedMessage>),
-    Remote(Vec<ParsedMessage>),
+fn select_chat_history_tail(
+    messages: &[ParsedMessage],
+    limit: usize,
+    minimum: usize,
+) -> (usize, Vec<ParsedMessage>) {
+    let start = messages.len().saturating_sub(limit);
+    let mut earlier = Vec::new();
+    if minimum > 0 && start > 0 {
+        let mut count = 0;
+        let mut newer_role = None;
+        for (index, message) in messages.iter().enumerate().rev() {
+            if count >= minimum {
+                break;
+            }
+            let has_dialog = message.blocks.iter().any(|block| match block {
+                MessageBlock::Text { text } => !text.trim().is_empty(),
+                MessageBlock::Image { source } => !source.is_empty(),
+                _ => false,
+            });
+            if !has_dialog {
+                continue;
+            }
+            // The Island folds consecutive assistant records into one bubble.
+            let starts_bubble = message.role == ChatRole::User || newer_role != Some(&message.role);
+            newer_role = Some(&message.role);
+            if starts_bubble {
+                count += 1;
+                if index < start {
+                    earlier.push((index, message));
+                }
+            }
+        }
+    }
+    let first_index = earlier.last().map_or(start, |(index, _)| *index);
+    let slice = earlier
+        .into_iter()
+        .rev()
+        .map(|(_, message)| message)
+        .chain(&messages[start..])
+        .cloned()
+        .collect();
+    (first_index, slice)
+}
+
+struct SessionMessagesResult {
+    messages: Vec<ParsedMessage>,
+    transcript_path: Option<PathBuf>,
 }
 
 fn resolve_transcript_path_for_session(
@@ -5700,6 +5797,19 @@ fn resolve_transcript_path_for_session(
     let session = state.session_store.get_session(session_id)?;
     if session.wsl_distribution.is_some() {
         return None;
+    }
+    if matches!(
+        session.agent_type.as_str(),
+        "antigravity" | crate::agents::gemini_desktop::ID
+    ) {
+        if session.remote_host_id.is_some() || session.remote_host_name.is_some() {
+            return None;
+        }
+        return discover_antigravity_session_file(
+            &dirs::home_dir()?,
+            session_id,
+            &session.agent_type,
+        );
     }
     let cwd = session.cwd.clone();
     let mut projects_dirs = all_projects_dirs();
@@ -5715,6 +5825,7 @@ fn resolve_transcript_path_for_session(
     }
     if session.engine_label.as_deref() == Some("Claude Desktop") {
         crate::hooks::claude_desktop_watcher::find_audit_file_for_cli_session(session_id)
+            .or_else(|| discover_session_file_in_dirs(session_id, &cwd, &projects_dirs))
     } else if session.agent_type == "codex" {
         discover_codex_session_file(session_id)
             .or_else(|| discover_session_file_in_dirs(session_id, &cwd, &projects_dirs))
@@ -5726,38 +5837,33 @@ fn resolve_transcript_path_for_session(
 fn parse_session_messages_for_command(
     state: &State<'_, AppState>,
     session_id: &str,
+    include_all_history: bool,
 ) -> Result<SessionMessagesResult, String> {
     let session = state.session_store.get_session(session_id);
     let file_path = resolve_transcript_path_for_session(state, session_id);
 
     let Some(file_path) = file_path else {
-        // No JSONL file — build chat history from raw hook events.
-        // This covers agents like OpenCode that don't write transcript files.
         let raw_events = state.hook_server.raw_events_for_session(session_id);
-        if !raw_events.is_empty() {
-            let fallback_session = session.unwrap_or_else(|| {
-                crate::hooks::session_store::SessionState::new(
-                    session_id.to_string(),
-                    "unknown".to_string(),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                )
-            });
-            return Ok(SessionMessagesResult::Remote(remote_session_chat_history(
-                &fallback_session,
-                raw_events,
-            )));
+        if raw_events.is_empty()
+            && !session.as_ref().is_some_and(|session| {
+                session.remote_host_id.is_some() || session.remote_host_name.is_some()
+            })
+        {
+            return Err(format!("No JSONL file found for session {}", session_id));
         }
-        if let Some(ref session) = session {
-            if session.remote_host_id.is_some() || session.remote_host_name.is_some() {
-                return Ok(SessionMessagesResult::Remote(remote_session_chat_history(
-                    session,
-                    state.hook_server.raw_events_for_session(session_id),
-                )));
-            }
-        }
-        return Err(format!("No JSONL file found for session {}", session_id));
+        let fallback_session = session.unwrap_or_else(|| {
+            SessionState::new(
+                session_id.to_string(),
+                "unknown".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+            )
+        });
+        return Ok(SessionMessagesResult {
+            messages: remote_session_chat_history(&fallback_session, raw_events),
+            transcript_path: None,
+        });
     };
 
     hydrate_subagents_from_file(&state.session_store, session_id, &file_path);
@@ -5765,15 +5871,26 @@ fn parse_session_messages_for_command(
     if let Ok(watcher_guard) = state.conversation_watcher.lock() {
         if let Some(ref watcher) = *watcher_guard {
             if let Some(result) = watcher.parse_session_full(session_id, file_path.clone()) {
-                return Ok(SessionMessagesResult::Local(result.all_messages));
+                // The reset puts the whole transcript in new_messages; all_messages is capped.
+                return Ok(SessionMessagesResult {
+                    messages: if include_all_history {
+                        result.new_messages
+                    } else {
+                        result.all_messages
+                    },
+                    transcript_path: Some(file_path),
+                });
             }
         }
     }
 
-    let mut parser = crate::hooks::conversation_parser::ConversationParser::new(file_path);
+    let mut parser = crate::hooks::conversation_parser::ConversationParser::new(file_path.clone());
     parser
         .parse_full()
-        .map(SessionMessagesResult::Local)
+        .map(|messages| SessionMessagesResult {
+            messages,
+            transcript_path: Some(file_path),
+        })
         .map_err(|e| format!("Failed to parse conversation: {}", e))
 }
 
@@ -6500,35 +6617,123 @@ fn collect_hooks_sections(adapters: &[Arc<dyn AgentAdapter>]) -> Vec<String> {
     sections
 }
 
-/// Read recent log files from tauri-plugin-log's log directory.
-fn collect_log_files() -> Vec<(String, Vec<u8>)> {
-    let log_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("agentbro")
-        .join("logs");
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&log_dir) {
-        let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-        entries.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
-        for entry in entries.into_iter().rev().take(3) {
-            let path = entry.path();
-            if path.is_file() {
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                match std::fs::read(&path) {
-                    Ok(data) => {
-                        let redacted = redact_paths(&String::from_utf8_lossy(&data));
-                        files.push((format!("logs/{}", name), redacted.into_bytes()));
-                    }
-                    Err(_) => continue,
-                }
+fn collect_startup_logs(log_dir: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = fs::read_dir(log_dir) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let is_agentbro_log = name == "agentbro.log"
+                || name
+                    .strip_prefix("agentbro_")
+                    .and_then(|suffix| suffix.strip_suffix(".log"))
+                    .is_some_and(|date| {
+                        chrono::NaiveDateTime::parse_from_str(date, "%Y-%m-%d_%H-%M-%S").is_ok()
+                    });
+            is_agentbro_log && entry.file_type().is_ok_and(|kind| kind.is_file())
+        })
+        .collect();
+    entries.sort_by_key(|entry| entry.metadata().ok().and_then(|info| info.modified().ok()));
+    entries
+        .into_iter()
+        .rev()
+        .take(3)
+        .filter_map(|entry| {
+            let bytes = fs::read(entry.path()).ok()?;
+            let lines: Vec<_> = String::from_utf8_lossy(&bytes)
+                .lines()
+                .filter_map(diagnostic_startup_line)
+                .collect();
+            if lines.is_empty() {
+                return None;
             }
-        }
+            let name = format!("logs/{}", entry.file_name().to_string_lossy());
+            Some((name, lines.join("\n") + "\n"))
+        })
+        .collect()
+}
+
+fn diagnostic_startup_line(line: &str) -> Option<String> {
+    let (header, message) = line.split_once("] ")?;
+    let mut fields = header.strip_prefix('[')?.split("][");
+    let (date, time, target, level) = (
+        fields.next()?,
+        fields.next()?,
+        fields.next()?,
+        fields.next()?,
+    );
+    if fields.next().is_some() || !matches!(level, "INFO" | "WARN" | "ERROR") {
+        return None;
     }
-    files
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    chrono::NaiveTime::parse_from_str(time, "%H:%M:%S").ok()?;
+
+    let message = match (target, message) {
+        (
+            "agentbro_lib",
+            "Startup: creating configured windows"
+            | "Startup: configured windows created"
+            | "Startup: restoring active sessions"
+            | "Startup: initializing agent adapters"
+            | "Startup: scheduling Hook server"
+            | "AgentBro started",
+        ) => message,
+        ("agentbro_lib", data) if data.starts_with("Startup: WebView2 runtime ") => {
+            let version = data.strip_prefix("Startup: WebView2 runtime ")?;
+            if version.split('.').count() != 4
+                || !version.split('.').all(|part| {
+                    part.bytes().all(|byte| byte.is_ascii_digit()) && part.parse::<u32>().is_ok()
+                })
+            {
+                return None;
+            }
+            data
+        }
+        ("agentbro_lib::platform::windows_startup", data)
+            if data.starts_with("Startup: could not locate the WebView2 runtime:") =>
+        {
+            "Startup: could not locate the WebView2 runtime"
+        }
+        ("agentbro_lib::platform::windows_startup", data)
+            if data.starts_with("Startup: could not create Windows window '") =>
+        {
+            "Startup: could not create a Windows application window"
+        }
+        ("agentbro_lib::platform::windows_startup", data)
+            if data.starts_with("Startup: could not open the Hook listener on port ") =>
+        {
+            "Startup: could not open the Windows Hook listener"
+        }
+        ("agentbro_lib::platform::windows_startup", data)
+            if data
+                .starts_with("Startup: Windows desktop windows are still being created after ") =>
+        {
+            "Startup: Windows application windows are taking longer to open"
+        }
+        (
+            "agentbro_lib::platform::windows_startup",
+            "Startup: closing AgentBro at the user's request",
+        ) => message,
+        ("agentbro_lib", data) if data.starts_with("Failed to start HookServer: ") => {
+            "Failed to start the Hook server"
+        }
+        ("agentbro_lib::hooks::server", data) if data.starts_with("Listening on Unix socket: ") => {
+            "Hook server is listening on a local Unix socket"
+        }
+        ("agentbro_lib::hooks::server", data) if data.starts_with("Listening on TCP: ") => {
+            let addr: std::net::SocketAddr =
+                data.strip_prefix("Listening on TCP: ")?.parse().ok()?;
+            if !addr.ip().is_loopback() {
+                return None;
+            }
+            data
+        }
+        _ => return None,
+    };
+    Some(format!("{header}] {message}"))
 }
 
 fn bridge_invocations_path() -> PathBuf {
@@ -6548,11 +6753,8 @@ fn bridge_invocations_path() -> PathBuf {
     new_path
 }
 
-fn recent_bridge_invocations(limit: usize) -> Vec<String> {
-    let path = bridge_invocations_path();
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
+fn recent_bridge_invocations(limit: usize) -> std::io::Result<Vec<String>> {
+    let content = std::fs::read_to_string(bridge_invocations_path())?;
     let mut lines = content
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -6561,7 +6763,7 @@ fn recent_bridge_invocations(limit: usize) -> Vec<String> {
     if lines.len() > limit {
         lines.drain(0..lines.len() - limit);
     }
-    lines
+    Ok(lines)
 }
 
 /// Collect crash reports matching AgentBro from the system DiagnosticReports dir.
@@ -6590,6 +6792,7 @@ fn collect_crash_reports() -> Vec<(String, Vec<u8>)> {
 
 #[tauri::command]
 pub async fn export_diagnostics(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     target_path: String,
 ) -> Result<(), String> {
@@ -6597,7 +6800,7 @@ pub async fn export_diagnostics(
     let sessions = state.session_store.get_all_sessions();
     let diagnostic_events = state.diagnostic_buffer.all();
     let raw_event_summaries = state.hook_server.recent_raw_event_summaries(500);
-    let bridge_invocations = recent_bridge_invocations(500);
+    let bridge_invocations = recent_bridge_invocations(500).unwrap_or_default();
     let install_id = get_or_create_install_id();
     let now = chrono::Local::now();
     let timestamp = now.format("%Y-%m-%d %H:%M:%S %Z").to_string();
@@ -6763,7 +6966,7 @@ pub async fn export_diagnostics(
     md.push_str(
         "| `bridge-invocations.jsonl` | Recent hook bridge invocations without prompt or payload content |\n",
     );
-    md.push_str("| `logs/` | Recent application logs |\n");
+    md.push_str("| `logs/` | Recent startup and Hook listener records |\n");
     md.push_str("| `crashes/` | System crash reports (if any) |\n");
 
     // ── Sanitized config as standalone JSON ──
@@ -6800,10 +7003,10 @@ pub async fn export_diagnostics(
         &redact_paths(&bridge_invocations.join("\n")),
     )?;
 
-    // Logs
-    for (name, data) in collect_log_files() {
-        zip.start_file(&name, options).map_err(|e| e.to_string())?;
-        zip.write_all(&data).map_err(|e| e.to_string())?;
+    if let Ok(log_dir) = app.path().app_log_dir() {
+        for (name, text) in collect_startup_logs(&log_dir) {
+            write_text(&mut zip, &name, &text)?;
+        }
     }
 
     // Crash reports
@@ -6933,6 +7136,106 @@ mod tests {
     use crate::remote::installer::RemoteCodexThreadSnapshot;
     use crate::remote::RemoteHost;
     use std::{collections::HashMap, fs};
+
+    #[test]
+    fn diagnostic_export_reads_active_and_rotated_startup_logs_without_session_content() {
+        let directory =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let header = "[2026-11-25][13:04:30]";
+        let current = format!(
+            "{header}[agentbro_lib][INFO] Startup: creating configured windows\n\
+             {header}[agentbro_lib][INFO] Startup: WebView2 runtime 157.0.4341.46\n\
+             {header}[agentbro_lib::hooks::server][INFO] Listening on TCP: 127.0.0.1:17894\n\
+             {header}[agentbro_lib::commands][INFO] Send message: session=test, msg=PRIVATE_FIXTURE\n\
+             PRIVATE_MULTILINE_FIXTURE\n\
+             {header}[agentbro_lib][INFO] Startup: WebView2 runtime PRIVATE_FIXTURE"
+        );
+        let previous = format!(
+            "{header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not locate the WebView2 runtime: PRIVATE_ERROR\n\
+             {header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not open the Hook listener on port 17894: PRIVATE_ERROR"
+        );
+        let active_name = "agentbro.log";
+        let rotated_name = "agentbro_2026-11-25_13-04-30.log";
+        fs::write(directory.path().join(active_name), current).unwrap();
+        fs::write(directory.path().join(rotated_name), previous).unwrap();
+        fs::write(
+            directory.path().join("unrelated.log"),
+            format!("{header}[agentbro_lib][INFO] Startup: restoring active sessions"),
+        )
+        .unwrap();
+
+        let logs: std::collections::BTreeMap<_, _> = super::collect_startup_logs(directory.path())
+            .into_iter()
+            .collect();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(
+            logs["logs/agentbro.log"],
+            format!(
+                "{header}[agentbro_lib][INFO] Startup: creating configured windows\n\
+                 {header}[agentbro_lib][INFO] Startup: WebView2 runtime 157.0.4341.46\n\
+                 {header}[agentbro_lib::hooks::server][INFO] Listening on TCP: 127.0.0.1:17894\n"
+            )
+        );
+        assert_eq!(
+            logs["logs/agentbro_2026-11-25_13-04-30.log"],
+            format!(
+                "{header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not locate the WebView2 runtime\n\
+                 {header}[agentbro_lib::platform::windows_startup][ERROR] Startup: could not open the Windows Hook listener\n"
+            )
+        );
+    }
+
+    #[test]
+    fn hook_doctor_reports_latest_bridge_delivery_result() {
+        for (forwarded, status, delivery) in [
+            (true, "ok", "sent to"),
+            (false, "warn", "could not be sent to"),
+        ] {
+            let record = serde_json::json!({
+                "source": "qoder-cli",
+                "event": "PermissionRequest",
+                "session_id": "private-session",
+                "ts": 1_000,
+                "forwarded": forwarded,
+            });
+            let check = super::bridge_invocation_doctor_check(Ok(Some(record.to_string())));
+            assert_eq!(check.status, status);
+            assert_eq!(
+                check.detail,
+                format!(
+                    "qoder-cli / PermissionRequest {delivery} the local Hook service at 1970-01-01T00:00:01Z"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn hook_doctor_distinguishes_missing_and_unreadable_bridge_traces() {
+        use std::io::ErrorKind;
+
+        for (trace, status, detail) in [
+            (Ok(None), "info", "No bridge invocations recorded yet"),
+            (
+                Err(ErrorKind::NotFound.into()),
+                "info",
+                "No bridge invocations recorded yet",
+            ),
+            (
+                Err(ErrorKind::InvalidData.into()),
+                "warn",
+                "Could not read the bridge invocation trace",
+            ),
+            (
+                Ok(Some("{".to_string())),
+                "warn",
+                "Could not interpret the latest bridge invocation",
+            ),
+        ] {
+            let check = super::bridge_invocation_doctor_check(trace);
+            assert_eq!(check.status, status);
+            assert_eq!(check.detail, detail);
+        }
+    }
 
     fn session(agent_type: &str, terminal: &str, tty: Option<&str>) -> SessionState {
         let mut session = SessionState::new(
@@ -7242,6 +7545,70 @@ mod tests {
         );
         assert_eq!(response["scope"], "session");
         assert!(response["permissions"].get("network").is_some());
+    }
+
+    #[test]
+    fn island_history_keeps_ten_dialog_bubbles_under_heavy_tool_activity() {
+        use super::{parsed_text_message, select_chat_history_tail, ParsedMessage};
+
+        let mut history = Vec::new();
+        for turn in 0..6 {
+            history.push(parsed_text_message(
+                format!("user-{turn}"),
+                ChatRole::User,
+                None,
+                "Question",
+            ));
+            history.push(parsed_text_message(
+                format!("progress-{turn}"),
+                ChatRole::Assistant,
+                None,
+                "Working",
+            ));
+            history.push(parsed_text_message(
+                format!("assistant-{turn}"),
+                ChatRole::Assistant,
+                None,
+                "Answer",
+            ));
+        }
+        history.extend((0..600).map(|step| ParsedMessage {
+            id: format!("tool-{step}"),
+            role: ChatRole::Assistant,
+            timestamp: None,
+            blocks: vec![MessageBlock::ToolUse {
+                id: format!("call-{step}"),
+                name: "shell".to_string(),
+                input: HashMap::new(),
+            }],
+        }));
+        let (first, messages) = select_chat_history_tail(&history, 50, 10);
+        assert_eq!(first, 3);
+        assert_eq!(messages.len(), 60);
+        assert_eq!(
+            messages
+                .iter()
+                .take(10)
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "user-1",
+                "assistant-1",
+                "user-2",
+                "assistant-2",
+                "user-3",
+                "assistant-3",
+                "user-4",
+                "assistant-4",
+                "user-5",
+                "assistant-5"
+            ]
+        );
+        assert_eq!(messages[10].id, "tool-550");
+        assert_eq!(messages.last().unwrap().id, "tool-599");
+        let (first, ordinary) = select_chat_history_tail(&history, 50, 0);
+        assert_eq!(first, history.len() - 50);
+        assert_eq!(ordinary.len(), 50);
     }
 
     #[test]

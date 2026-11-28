@@ -15,6 +15,7 @@ pub mod detection;
 pub mod droid;
 pub mod executable;
 pub mod gemini;
+pub mod gemini_desktop;
 pub mod hermes;
 pub mod hook_manager;
 pub mod kimi;
@@ -244,6 +245,8 @@ pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
         Box::new(droid::DroidAdapter::new()),
         Box::new(stepfun::StepFunAdapter::new()),
         Box::new(antigravity::AntiGravityAdapter::new()),
+        #[cfg(target_os = "macos")]
+        Box::new(antigravity::AntiGravityAdapter::gemini_desktop()),
         Box::new(workbuddy::WorkBuddyAdapter::new()),
         Box::new(workbuddy::WorkBuddyAdapter::for_edition(
             workbuddy::WorkBuddyEdition::Global,

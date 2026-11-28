@@ -13,10 +13,14 @@ param(
     [string]$PinnedPackImportPath,
     [string]$PinnedPackExportPath,
     [string]$PackManifestLink,
+    [string]$DiagnosticsExportPath,
     [switch]$TracePermissionUi,
+    [switch]$VerifyQuestionReconnect,
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
+    [switch]$VerifyDisplayChange,
     [switch]$CloseStartupSettings,
+    [switch]$VerifyStartupReopen,
     [switch]$AutomationFocusPermission,
     [switch]$VerifyGlobalShortcuts,
     [switch]$VerifyAgentPackageConsole,
@@ -111,6 +115,9 @@ public static class AgentBroSmokeInput {
 
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr window);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
@@ -362,6 +369,63 @@ function Close-StartupSettings {
     Write-Output 'Closed the first-run Settings window before exercising the Island.'
 }
 
+function Find-ReopenedSettings {
+    foreach ($window in Get-IslandWindows) {
+        $handle = [IntPtr]$window.Current.NativeWindowHandle
+        if ($window.Current.Name -ne 'AgentBro' -or -not [AgentBroSmokeInput]::IsWindowVisible($handle) -or
+            [AgentBroSmokeInput]::IsIconic($handle)) { continue }
+        $scale = [AgentBroSmokeInput]::GetDpiForWindow($handle) / 96.0
+        if ($scale -gt 0 -and $window.Current.BoundingRectangle.Width -ge 900 * $scale) {
+            return $window
+        }
+    }
+}
+
+function Invoke-SettingsRelaunch([string]$Executable) {
+    $duplicate = Start-Process -FilePath $Executable -WorkingDirectory (Split-Path $Executable) -PassThru
+    try {
+        if (-not $duplicate.WaitForExit(10000) -or $duplicate.ExitCode -ne 0) {
+            throw 'The repeated launch did not exit successfully after sending the reopen request.'
+        }
+    } finally {
+        if (-not $duplicate.HasExited) {
+            Stop-Process -Id $duplicate.Id -ErrorAction SilentlyContinue
+            $null = $duplicate.WaitForExit(3000)
+        }
+        $duplicate.Dispose()
+    }
+}
+
+function Test-InstalledSettingsRelaunch {
+    $process = Get-Process -Id $AppProcessId
+    try { $executable = $process.Path } finally { $process.Dispose() }
+    if (-not $executable) { throw 'Could not locate the running AgentBro executable.' }
+    $previous = Find-ReopenedSettings
+    if ($previous) {
+        $previous.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
+        $null = Wait-IslandValue 'the existing Settings window to close' { -not (Find-ReopenedSettings) }
+    }
+
+    Invoke-SettingsRelaunch $executable
+    $settings = Wait-IslandValue 'the repeated launch to open Settings in the primary process' { Find-ReopenedSettings }
+    Write-Output 'The repeated launch opened Settings in the primary AgentBro process.'
+    $handle = [IntPtr]$settings.Current.NativeWindowHandle
+    $pattern = $settings.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern)
+    $pattern.SetWindowVisualState([Windows.Automation.WindowVisualState]::Minimized)
+    $null = Wait-IslandValue 'the Settings window to minimize' { [AgentBroSmokeInput]::IsIconic($handle) }
+
+    Invoke-SettingsRelaunch $executable
+    $restored = Wait-IslandValue 'the repeated launch to restore the same Settings window' {
+        $window = Find-ReopenedSettings
+        if ($window -and [IntPtr]$window.Current.NativeWindowHandle -eq $handle) { return $window }
+    }
+    Write-Output 'The repeated launch restored the same minimized Settings window.'
+    $restored.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
+    $null = Wait-IslandValue 'the reopened Settings window to close before testing the Island' {
+        -not (Find-ReopenedSettings)
+    }
+}
+
 function Write-IslandAccessibilityBounds {
     param([IntPtr]$WindowHandle, [string]$FixtureProject = '')
 
@@ -395,39 +459,48 @@ function Click-IslandElement(
     [switch]$CenterAfterLayout,
     [scriptblock]$FindElement
 ) {
-    $point = if ($CenterAfterLayout) {
-        $rect = Wait-IslandValue "stable bounds for $Description" {
-            $before = $Element.Current.BoundingRectangle
-            Start-Sleep -Milliseconds 200
-            $after = $Element.Current.BoundingRectangle
-            if (-not $after.IsEmpty -and $before.Equals($after)) { $after }
-        }
-        Write-Host "$Description bounds: $($rect.ToString([Globalization.CultureInfo]::InvariantCulture))."
-        [Windows.Point]::new($rect.Left + $rect.Width / 2, $rect.Top + $rect.Height / 2)
-    } else {
-        Wait-IslandValue "a clickable point on $Description" {
-            try {
-                $current = if ($FindElement) { & $FindElement } else { $Element }
-                $candidate = [Windows.Point]::new(0, 0)
-                if ($current -and $current.TryGetClickablePoint([ref]$candidate)) { $candidate }
-            } catch {
-                if (-not $FindElement -or ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
-                    $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException])) { throw }
+    $clickLabel = $Description
+    $null = Wait-IslandValue "a verified native click on $clickLabel" {
+        try {
+            $current = if ($FindElement) { & $FindElement } else { $Element }
+            if (-not $current -or -not $current.Current.IsEnabled) { return }
+            $point = [Windows.Point]::new(0, 0)
+            if ($CenterAfterLayout) {
+                $bounds = $current.Current.BoundingRectangle
+                if ($bounds.IsEmpty) { return }
+                $point = [Windows.Point]::new($bounds.Left + $bounds.Width / 2, $bounds.Top + $bounds.Height / 2)
+            } elseif (-not $current.TryGetClickablePoint([ref]$point)) {
+                return
             }
+
+            $point = [Windows.Point]::new([int]$point.X, [int]$point.Y)
+            if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
+                throw "Could not move the Windows cursor onto $clickLabel"
+            }
+            Start-Sleep -Milliseconds 250
+            $target = if ($FindElement) { & $FindElement } else { $Element }
+            if (-not $target -or -not $target.Current.IsEnabled -or
+                ($CenterAfterLayout -and -not $bounds.Equals($target.Current.BoundingRectangle))) { return }
+            $cursor = [AgentBroSmokeInput+Point]::new()
+            if (-not [AgentBroSmokeInput]::GetCursorPos([ref]$cursor) -or
+                $cursor.X -ne $point.X -or $cursor.Y -ne $point.Y -or
+                $AppProcessId -ne [AgentBroSmokeInput]::ProcessAtCursor()) { return }
+
+            $hit = [Windows.Automation.AutomationElement]::FromPoint($point)
+            $hitName = $hit.Current.Name
+            $walker = [Windows.Automation.TreeWalker]::RawViewWalker
+            for ($ancestor = $hit; $ancestor; $ancestor = $walker.GetParent($ancestor)) {
+                if (-not $target.Equals($ancestor)) { continue }
+                [AgentBroSmokeInput]::Click()
+                Write-Host "$clickLabel at $($point.X), $($point.Y). Hit: $hitName. Native owner: AgentBro ($AppProcessId)."
+                return $true
+            }
+            Write-Host "Waiting for $clickLabel at $($point.X), $($point.Y). Current hit: $hitName."
+        } catch {
+            if ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
+                $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]) { throw }
         }
     }
-    if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
-        throw "Could not move the Windows cursor onto $Description"
-    }
-    Start-Sleep -Milliseconds 250
-    $underCursor = [Windows.Automation.AutomationElement]::FromPoint($point)
-    $nativeOwner = [AgentBroSmokeInput]::ProcessAtCursor()
-    $owner = Get-Process -Id $nativeOwner -ErrorAction SilentlyContinue
-    Write-Output "$Description at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $($owner.ProcessName) ($nativeOwner)."
-    if ($nativeOwner -ne $AppProcessId) {
-        throw "A different window owns the click point: $($owner.ProcessName) / $($owner.MainWindowTitle)"
-    }
-    [AgentBroSmokeInput]::Click()
 }
 
 function Test-KeyboardPermissionDenial(
@@ -600,7 +673,7 @@ function Test-KeyboardPermissionDenial(
     }
 }
 
-function Open-GlobalHookFixture([hashtable]$Event) {
+function Open-HookFixture([hashtable]$Event) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
@@ -617,7 +690,7 @@ function Open-GlobalHookFixture([hashtable]$Event) {
 
 function Open-GlobalPermissionFixture([string]$Label, [string]$TargetSession) {
     $command = "echo AgentBro global shortcut $Label"
-    $fixture = Open-GlobalHookFixture @{
+    $fixture = Open-HookFixture @{
         agent = 'claude-code'
         event = 'PermissionRequest'
         session_id = $TargetSession
@@ -714,12 +787,13 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
     $event = @{
         agent = 'claude-code'
         event = 'AskQuestion'
+        keep_write_open = $true
         session_id = $SessionId
         cwd = $Workspace
         question = 'Pick a single answer for the global shortcut'
         options = @('Suggested answer', 'Alternative answer')
     }
-    $simple = Open-GlobalHookFixture $event
+    $simple = Open-HookFixture $event
     try {
         $null = Wait-IslandValue 'the single-choice question' {
             $island = Find-VisibleIsland
@@ -741,7 +815,7 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
         @{ question = 'Pick a region?'; options = @(@{ label = 'Preview region' }, @{ label = 'Production region' }) },
         @{ question = 'Pick an output?'; options = @(@{ label = 'Summary output' }, @{ label = 'Detailed output' }) }
     )
-    $multipart = Open-GlobalHookFixture $event
+    $multipart = Open-HookFixture $event
     try {
         $null = Wait-IslandValue 'both parts of the multipart question' {
             $island = Find-VisibleIsland
@@ -820,8 +894,33 @@ function Test-InstalledGlobalQuestionShortcut([IntPtr]$WindowHandle) {
     }
 }
 
-function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Island) {
+function Send-BackgroundToolFixture([string]$ToolUseId) {
+    foreach ($event in @('PreToolUse', 'PostToolUse')) {
+        $fixture = Open-HookFixture @{
+            agent = 'claude-code'
+            event = $event
+            session_id = $SessionId
+            cwd = $Workspace
+            tool_use_id = $ToolUseId
+            tool_name = 'Read'
+            tool_input = @{ file_path = 'smoke.txt' }
+        }
+        try {
+            if (-not $fixture.Reply.Wait(5000)) { throw "The $event Hook did not finish" }
+            $null = $fixture.Reply.GetAwaiter().GetResult()
+        } finally {
+            $fixture.Connection.Dispose()
+        }
+    }
+}
+
+function Test-InstalledQuestionReply(
+    [Windows.Automation.AutomationElement]$Island,
+    [switch]$Disconnect,
+    [switch]$VerifyFooterHandoff
+) {
     $connection = [System.Net.Sockets.TcpClient]::new()
+    $reply = $null
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
         $stream = $connection.GetStream()
@@ -829,6 +928,7 @@ function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Isla
         $event = @{
             agent = 'claude-code'
             event = 'AskQuestion'
+            keep_write_open = $true
             session_id = $SessionId
             cwd = $Workspace
             question = 'Can the Windows Island return this answer?'
@@ -840,32 +940,79 @@ function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Isla
         $reader = [System.IO.StreamReader]::new($stream)
         $reply = $reader.ReadLineAsync()
 
-        $showSessions = Wait-IslandValue 'the question card session list button' {
-            Find-IslandButton $Island {
-                param($Name)
-                $Name -eq 'Make agents easier to use' -or $Name -match '^Show all \d+ sessions$'
-            }
-        }
-        Click-IslandElement $showSessions 'Question card session list button' -CenterAfterLayout
-        $option = Wait-IslandValue 'the inline answer in the waiting session' {
+        $findOption = {
             $group = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($ProjectName) }
             if ($group) { Find-IslandButton $group { param($Name) $Name.EndsWith($answer) } }
         }
-        Click-IslandElement $option 'Inline question answer' -CenterAfterLayout
-        if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive an answer from the Windows Island' }
-        $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
-        if ($response.answer -ne $answer) { throw "Unexpected Hook question answer: $($response.answer)" }
-        $null = Wait-IslandValue 'the answered question to disappear from the session list' {
+        $view = Wait-IslandValue 'the question card or inline answer' {
+            $option = & $findOption
+            if ($option -and -not $VerifyFooterHandoff) { return @{ Option = $option } }
+            $showSessions = Find-IslandButton $Island {
+                param($Name)
+                $Name -eq 'Make agents easier to use' -or $Name -match '^Show all \d+ sessions$'
+            }
+            if ($showSessions) { return @{ ShowSessions = $showSessions } }
+        }
+        if ($view.ShowSessions) {
+            if ($VerifyFooterHandoff) {
+                Start-Sleep -Milliseconds 1250
+            }
+            Click-IslandElement $view.ShowSessions 'Question card session list button' -CenterAfterLayout
+        }
+        if ($VerifyFooterHandoff) {
+            $footerPoint = [AgentBroSmokeInput+Point]::new()
+            if (-not [AgentBroSmokeInput]::GetCursorPos([ref]$footerPoint)) {
+                throw 'Could not read the cursor position after clicking the question footer'
+            }
+            Start-Sleep -Milliseconds 450
+            $cursor = [AgentBroSmokeInput+Point]::new()
+            if (-not [AgentBroSmokeInput]::GetCursorPos([ref]$cursor) -or
+                $cursor.X -ne $footerPoint.X -or $cursor.Y -ne $footerPoint.Y) {
+                throw 'The cursor moved during the question footer handoff'
+            }
+            if (-not (& $findOption)) {
+                throw 'The inline answer disappeared while the cursor stayed at the old question footer'
+            }
+            Write-Output 'Windows Island kept the inline answer available while the cursor stayed at the old question footer.'
+        }
+        $null = Wait-IslandValue 'the inline answer in the waiting session' $findOption
+        if ($Disconnect) {
+            $connection.Dispose()
+        } else {
+            Send-BackgroundToolFixture 'question-background-read'
+            Click-IslandElement -Description 'Inline question answer after background tool activity' -CenterAfterLayout -FindElement $findOption
+            if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive an answer from the Windows Island' }
+            $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
+            if ($response.answer -ne $answer) { throw "Unexpected Hook question answer: $($response.answer)" }
+        }
+        $null = Wait-IslandValue 'the closed question to disappear from the session list' {
             $group = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($ProjectName) }
             $group -and -not (Find-IslandButton $group { param($Name) $Name.EndsWith($answer) })
         }
-        Write-Output 'Windows Island sent the inline question answer to the original Hook socket.'
+        if ($Disconnect) {
+            Write-Output 'Windows Island removed the AskQuestion card after its Hook disconnected.'
+        } else {
+            Write-Output 'Windows Island sent the inline question answer to the original Hook socket.'
+        }
+    } catch {
+        Write-Host "Question state before cleanup: disconnect=$Disconnect, pendingRead=$($reply -and -not $reply.IsCompleted)."
+        try {
+            Save-FailedRunnerDesktop
+            $current = Find-VisibleIsland
+            if ($current) { Write-IslandAccessibilityBounds $current.Handle $ProjectName }
+        } catch {
+            Write-Host "Could not capture the pending question desktop: $_"
+        }
+        throw
     } finally {
         $connection.Dispose()
     }
 }
 
-function Test-InstalledPlanReview([Windows.Automation.AutomationElement]$Island) {
+function Test-InstalledPlanReview(
+    [Windows.Automation.AutomationElement]$Island,
+    [switch]$Disconnect
+) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
@@ -873,6 +1020,7 @@ function Test-InstalledPlanReview([Windows.Automation.AutomationElement]$Island)
         $event = @{
             agent = 'claude-code'
             event = 'PlanApproval'
+            keep_write_open = $true
             session_id = $SessionId
             cwd = $Workspace
             plan_title = 'Windows Island plan review'
@@ -884,17 +1032,27 @@ function Test-InstalledPlanReview([Windows.Automation.AutomationElement]$Island)
         $reader = [System.IO.StreamReader]::new($stream)
         $reply = $reader.ReadLineAsync()
 
-        $manual = Wait-IslandValue 'the plan manual review button' {
+        $findManualReview = {
             Find-IslandButton $Island { param($Name) $Name -eq 'Manual Review' }
         }
-        Click-IslandElement $manual 'Plan manual review' -CenterAfterLayout
-        if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive the review decision from the Windows Island' }
-        $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
-        if ($response.mode -ne 'manual') { throw "Unexpected Hook plan decision: $($response.mode)" }
-        $null = Wait-IslandValue 'the answered plan to disappear' {
+        $null = Wait-IslandValue 'the plan manual review button' $findManualReview
+        if ($Disconnect) {
+            $connection.Dispose()
+        } else {
+            Send-BackgroundToolFixture 'plan-background-read'
+            Click-IslandElement -Description 'Plan manual review after background tool activity' -CenterAfterLayout -FindElement $findManualReview
+            if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive the review decision from the Windows Island' }
+            $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
+            if ($response.mode -ne 'manual') { throw "Unexpected Hook plan decision: $($response.mode)" }
+        }
+        $null = Wait-IslandValue 'the closed plan to disappear' {
             -not (Find-IslandButton $Island { param($Name) $Name -eq 'Manual Review' })
         }
-        Write-Output 'Windows Island sent the manual review decision to the original Hook socket.'
+        if ($Disconnect) {
+            Write-Output 'Windows Island removed the PlanApproval card after its Hook disconnected.'
+        } else {
+            Write-Output 'Windows Island sent the manual review decision to the original Hook socket.'
+        }
     } finally {
         $connection.Dispose()
     }
@@ -1098,8 +1256,17 @@ $cursorSaved = [AgentBroSmokeInput]::GetCursorPos([ref]$originalCursor)
 $island = $null
 $islandWindow = $null
 try {
-    if ($CloseStartupSettings) { Close-StartupSettings }
+    if ($VerifyStartupReopen) {
+        Test-InstalledSettingsRelaunch
+    } elseif ($CloseStartupSettings) {
+        Close-StartupSettings
+    }
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
+    if ($VerifyDisplayChange) {
+        . "$PSScriptRoot/test-windows-display-change.ps1"
+        Test-InstalledIslandDisplayChange $islandWindow.Handle
+        $islandWindow = Wait-IslandValue 'the visible native Island region after the display mode change' { Find-VisibleIsland }
+    }
     $island = $islandWindow.Element
     Move-ToIslandHoverPoint $islandWindow.Handle $island
     if ($VerifyQwenWork) {
@@ -1154,9 +1321,15 @@ try {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
     }
-    Test-InstalledQuestionReply $island
+    $questionAttempts = if ($VerifyQuestionReconnect) { 8 } else { 1 }
+    for ($attempt = 1; $attempt -le $questionAttempts; $attempt++) {
+        Write-Output "Windows question reconnect attempt $attempt of $questionAttempts."
+        Test-InstalledQuestionReply $island -Disconnect
+        Test-InstalledQuestionReply $island -VerifyFooterHandoff:($VerifyQuestionReconnect -and $attempt -eq 1)
+    }
+    Test-InstalledPlanReview $island -Disconnect
     Test-InstalledPlanReview $island
-    if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {
+    if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $DiagnosticsExportPath -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyGlobalShortcuts) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }
     if ($PackExportPath) {
@@ -1170,6 +1343,10 @@ try {
     }
     if ($PackManifestLink) {
         Test-InstalledPackManifestLink $island $PackManifestLink
+    }
+    if ($DiagnosticsExportPath) {
+        . (Join-Path $PSScriptRoot 'test-windows-diagnostics-export.ps1')
+        Test-InstalledDiagnosticsExport $island $DiagnosticsExportPath
     }
     if ($VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
         . (Join-Path $PSScriptRoot 'test-windows-agent-package.ps1')
@@ -1202,7 +1379,7 @@ try {
                     Write-Host "$($_.Name) ($($_.ProcessId)) parent: $($parent.ProcessName) ($($_.ParentProcessId))."
                 }
         }
-        if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
+        if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $DiagnosticsExportPath -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
             foreach ($window in Get-IslandWindows) {
                 Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"
                 $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |

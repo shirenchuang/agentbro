@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { isTauri as isTauriRuntime } from './tauriApi'
+import { isWindowsPlatform } from '../utils/platform'
 import {
   LOCAL_RUNTIME_ENVIRONMENT_ID,
   useRuntimeEnvironmentStore,
@@ -14,6 +15,10 @@ const remoteHookCommands = new Map([
 
 export function isAgentPackageOperationBusy(error: unknown) {
   return (error instanceof Error ? error.message : error) === 'agent_package_operation_in_progress'
+}
+
+export function usesSharedAntigravityHook(agentId: string) {
+  return !isWindowsPlatform() && (agentId === 'gemini-desktop' || agentId === 'antigravity')
 }
 
 export interface AgentPackageOutput {
@@ -50,7 +55,13 @@ async function invoke<T = void>(
 
 export type AgentProgramKind = 'cli' | 'app'
 export type AgentProgramStatus = 'installed' | 'notInstalled' | 'updateAvailable' | 'unavailable'
+export type AgentUpdateOutcome = 'completed' | 'noNewerVersion' | null
 export type RemoteAgentHookStatus = 'unsupported' | 'notInstalled' | 'installed' | 'needsReinstall' | 'settingsCorrupted'
+
+export interface AppUninstallTarget {
+  path: string
+  identity: string
+}
 
 export interface AgentProgramInfo {
   id: string
@@ -65,6 +76,7 @@ export interface AgentProgramInfo {
   binaryPath: string | null
   configDir: string | null
   appPath: string | null
+  appUninstall?: AppUninstallTarget | null
   downloadUrl: string | null
   installCommand: string | null
   updateCommand: string | null
@@ -184,6 +196,27 @@ const baseAgentPrograms: AgentProgramInfo[] = [
     isCustom: false,
   },
   {
+    id: 'gemini-desktop',
+    displayName: 'Gemini Desktop',
+    icon: 'gemini',
+    kind: 'app',
+    status: 'notInstalled',
+    packageManager: 'app',
+    packageName: null,
+    installedVersion: null,
+    latestVersion: null,
+    binaryPath: null,
+    configDir: macAppPath('~/.gemini/config'),
+    appPath: macAppPath('/Applications/Gemini.app'),
+    downloadUrl: 'https://gemini.google/desktop/',
+    installCommand: null,
+    updateCommand: null,
+    uninstallCommand: null,
+    hooksInstalled: false,
+    skillsDir: macAppPath('~/.gemini/config/skills'),
+    isCustom: false,
+  },
+  {
     id: 'cursor',
     displayName: 'Cursor',
     icon: 'cursor',
@@ -278,12 +311,16 @@ export const agentApi = {
     ? invoke('agent_install', { agentId }, environmentId)
     : Promise.resolve(),
 
-  update: (agentId: string, environmentId?: string) => isTauriRuntime()
-    ? invoke('agent_update', { agentId }, environmentId)
+  update: (agentId: string, environmentId?: string, expectedBinaryPath?: string) => isTauriRuntime()
+    ? invoke<AgentUpdateOutcome | void>('agent_update', expectedBinaryPath ? { agentId, expectedBinaryPath } : { agentId }, environmentId)
     : Promise.resolve(),
 
-  uninstall: (agentId: string, environmentId?: string) => isTauriRuntime()
-    ? invoke('agent_uninstall', { agentId }, environmentId)
+  uninstall: (agentId: string, environmentId?: string, expectedBinaryPath?: string, expectedApp?: AppUninstallTarget) => isTauriRuntime()
+    ? invoke('agent_uninstall', {
+        agentId,
+        ...(expectedBinaryPath ? { expectedBinaryPath } : {}),
+        ...(expectedApp ? { expectedApp } : {}),
+      }, environmentId)
     : Promise.resolve(),
 
   openDownload: (agentId: string) => isTauriRuntime()

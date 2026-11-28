@@ -8,6 +8,30 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter};
 
+fn hook_intent_id(agent: &str) -> &str {
+    match agent {
+        crate::agents::gemini_desktop::ID => "antigravity",
+        _ => agent,
+    }
+}
+
+pub(crate) fn hook_intent_enabled(enabled_agents: &[String], agent: &str) -> bool {
+    let id = hook_intent_id(agent);
+    enabled_agents
+        .iter()
+        .any(|saved| hook_intent_id(saved) == id)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct IslandPreferencesPatch {
+    pet_vitals_debug_open: Option<bool>,
+    usage_query_enabled: Option<bool>,
+    show_token_usage: Option<bool>,
+    idle_interaction_routing_enabled: Option<bool>,
+    idle_interaction_routing_minutes: Option<u32>,
+}
+
 /// A custom Claude Code engine instance at a non-default path
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -452,10 +476,17 @@ impl Default for BuddyDeviceConfig {
     }
 }
 
+#[derive(Clone, Default, Serialize)]
+pub(crate) struct ConfigSnapshot {
+    pub(crate) revision: u64,
+    #[serde(flatten)]
+    pub(crate) config: AppConfig,
+}
+
 /// Persistent configuration store
 #[derive(Clone)]
 pub struct ConfigStore {
-    config: Arc<RwLock<AppConfig>>,
+    config: Arc<RwLock<ConfigSnapshot>>,
     config_path: PathBuf,
     app_handle: Option<AppHandle>,
 }
@@ -465,9 +496,15 @@ impl ConfigStore {
     pub fn new() -> Self {
         let config_path = Self::config_file_path();
         let config = Self::load_from_disk(&config_path).unwrap_or_default();
+        Self::from_config(config_path, config)
+    }
 
+    fn from_config(config_path: PathBuf, config: AppConfig) -> Self {
         Self {
-            config: Arc::new(RwLock::new(config)),
+            config: Arc::new(RwLock::new(ConfigSnapshot {
+                revision: 0,
+                config,
+            })),
             config_path,
             app_handle: None,
         }
@@ -541,12 +578,54 @@ impl ConfigStore {
 
     /// Get the current config
     pub fn get(&self) -> AppConfig {
-        self.config.read().map(|c| c.clone()).unwrap_or_default()
+        self.snapshot().config
     }
 
-    /// Update the config, save to disk, and emit event
-    pub fn update(&self, new_config: AppConfig) -> Result<(), String> {
-        self.commit(|_| Some(new_config)).map(|_| ())
+    pub(crate) fn snapshot(&self) -> ConfigSnapshot {
+        self.config
+            .read()
+            .map(|snapshot| snapshot.clone())
+            .unwrap_or_default()
+    }
+
+    /// Save a snapshot without replacing Hook intent or patched Island preferences.
+    pub fn update(&self, mut new_config: AppConfig) -> Result<(), String> {
+        self.commit(|current| {
+            new_config
+                .enabled_agents
+                .clone_from(&current.enabled_agents);
+            new_config.pet_vitals_debug_open = current.pet_vitals_debug_open;
+            new_config.usage_query_enabled = current.usage_query_enabled;
+            new_config.show_token_usage = current.show_token_usage;
+            new_config.idle_interaction_routing_enabled = current.idle_interaction_routing_enabled;
+            new_config.idle_interaction_routing_minutes = current.idle_interaction_routing_minutes;
+            Some(new_config)
+        })
+        .map(|_| ())
+    }
+
+    pub(crate) fn update_island_preferences(
+        &self,
+        patch: IslandPreferencesPatch,
+    ) -> Result<(), String> {
+        self.commit(|current| {
+            let mut next = current.clone();
+            next.pet_vitals_debug_open = patch
+                .pet_vitals_debug_open
+                .unwrap_or(current.pet_vitals_debug_open);
+            next.usage_query_enabled = patch
+                .usage_query_enabled
+                .unwrap_or(current.usage_query_enabled);
+            next.show_token_usage = patch.show_token_usage.unwrap_or(current.show_token_usage);
+            next.idle_interaction_routing_enabled = patch
+                .idle_interaction_routing_enabled
+                .unwrap_or(current.idle_interaction_routing_enabled);
+            next.idle_interaction_routing_minutes = patch
+                .idle_interaction_routing_minutes
+                .unwrap_or(current.idle_interaction_routing_minutes);
+            Some(next)
+        })
+        .map(|_| ())
     }
 
     pub(crate) fn complete_first_run(
@@ -579,51 +658,61 @@ impl ConfigStore {
             .config
             .write()
             .map_err(|e| format!("Lock error: {e}"))?;
-        let Some(new_config) = change(&config) else {
+        let Some(new_config) = change(&config.config) else {
             return Ok(None);
         };
         if let Err(e) = self.save_to_disk(&new_config) {
             log::error!("Failed to save config: {}", e);
             return Err(format!("Failed to save config: {}", e));
         }
-        let previous = std::mem::replace(&mut *config, new_config.clone());
+        let previous = std::mem::replace(&mut config.config, new_config.clone());
+        config.revision += 1;
+        let committed = ConfigSnapshot {
+            revision: config.revision,
+            config: new_config,
+        };
         drop(config);
 
         // Emit config change event to frontend
         if let Some(ref handle) = self.app_handle {
-            if let Err(e) = handle.emit("config-changed", &new_config) {
+            if let Err(e) = handle.emit("config-changed", &committed) {
                 log::error!("Failed to emit config-changed: {}", e);
             }
         }
 
         log::info!("Config updated and saved");
-        Ok(Some((previous, new_config)))
+        Ok(Some((previous, committed.config)))
     }
 
     /// Record that the user has enabled AgentBro hooks for `agent`. Returns
     /// `Ok(true)` when the intent set changed (and was persisted). No-op when the
     /// agent is already present, to avoid needless writes / config-changed churn.
     pub fn mark_agent_enabled(&self, agent: &str) -> Result<bool, String> {
-        let mut config = self.get();
-        if config.enabled_agents.iter().any(|a| a == agent) {
-            return Ok(false);
-        }
-        config.enabled_agents.push(agent.to_string());
-        self.update(config)?;
-        Ok(true)
+        self.commit(|current| {
+            if hook_intent_enabled(&current.enabled_agents, agent) {
+                return None;
+            }
+            let mut next = current.clone();
+            next.enabled_agents.push(hook_intent_id(agent).to_string());
+            Some(next)
+        })
+        .map(|change| change.is_some())
     }
 
     /// Drop `agent` from the enabled-hooks intent set. Returns `Ok(true)` when the
     /// set changed.
     pub fn mark_agent_disabled(&self, agent: &str) -> Result<bool, String> {
-        let mut config = self.get();
-        let before = config.enabled_agents.len();
-        config.enabled_agents.retain(|a| a != agent);
-        if config.enabled_agents.len() == before {
-            return Ok(false);
-        }
-        self.update(config)?;
-        Ok(true)
+        self.commit(|current| {
+            if !hook_intent_enabled(&current.enabled_agents, agent) {
+                return None;
+            }
+            let id = hook_intent_id(agent);
+            let mut next = current.clone();
+            next.enabled_agents
+                .retain(|saved| hook_intent_id(saved) != id);
+            Some(next)
+        })
+        .map(|change| change.is_some())
     }
 }
 
@@ -652,11 +741,7 @@ mod tests {
             }),
             ..AppConfig::default()
         };
-        let store = ConfigStore {
-            config: Arc::new(RwLock::new(initial.clone())),
-            config_path: path.clone(),
-            app_handle: None,
-        };
+        let store = ConfigStore::from_config(path.clone(), initial.clone());
         store.update(initial).unwrap();
         let (_, committed) = store.complete_first_run("pet".into()).unwrap().unwrap();
         let saved = ConfigStore::load_from_disk(&path).unwrap();
@@ -675,15 +760,12 @@ mod tests {
     }
 
     #[test]
-    fn first_run_setup_leaves_previous_config_on_save_error() {
+    fn config_snapshot_survives_failed_first_run_save() {
         let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
         let path = fixture.path().join("config.json");
-        let store = ConfigStore {
-            config: Arc::new(RwLock::new(AppConfig::default())),
-            config_path: path.clone(),
-            app_handle: None,
-        };
+        let store = ConfigStore::from_config(path.clone(), AppConfig::default());
         store.update(store.get()).unwrap();
+        let revision = store.snapshot().revision;
         let bytes = fs::read(&path).unwrap();
         let permissions = fs::metadata(&path).unwrap().permissions();
         let mut read_only = permissions.clone();
@@ -695,8 +777,37 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(store.get().island_surface_mode, "island");
         assert!(!store.get().analytics_consent_prompt_completed);
+        assert_eq!(store.snapshot().revision, revision);
         assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
         assert!(store.complete_first_run("pet".into()).unwrap().is_some());
+        assert_eq!(store.snapshot().revision, revision + 1);
+    }
+
+    #[test]
+    fn config_snapshot_revisions_follow_persisted_changes() {
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("config.json");
+        let store = ConfigStore::from_config(path.clone(), AppConfig::default());
+        let reader = store.clone();
+        assert_eq!(reader.snapshot().revision, 0);
+
+        assert!(store.mark_agent_enabled("codex").unwrap());
+        let first = reader.snapshot();
+        assert_eq!(first.revision, 1);
+        assert_eq!(first.config.enabled_agents, ["codex"]);
+        assert!(!store.mark_agent_enabled("codex").unwrap());
+        assert_eq!(reader.snapshot().revision, first.revision);
+
+        assert!(store.mark_agent_disabled("codex").unwrap());
+        let current = reader.snapshot();
+        assert_eq!(current.revision, 2);
+        assert!(current.config.enabled_agents.is_empty());
+        let message = serde_json::to_value(&current).unwrap();
+        assert_eq!(message["revision"], 2);
+        assert_eq!(message["enabledAgents"], serde_json::json!([]));
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert!(persisted.get("revision").is_none());
     }
 
     #[test]
@@ -745,6 +856,126 @@ mod tests {
 
         let restored: AppConfig = serde_json::from_value(value).expect("deserialize config");
         assert_eq!(restored.enabled_agents, vec!["claude-code", "codex"]);
+    }
+
+    #[test]
+    fn shared_antigravity_hook_intent_is_removed_from_either_entry() {
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("config.json");
+        let store = ConfigStore::from_config(path.clone(), AppConfig::default());
+        for (enable, disable) in [
+            ("gemini-desktop", "antigravity"),
+            ("antigravity", "gemini-desktop"),
+        ] {
+            assert!(store.mark_agent_enabled(enable).unwrap());
+            assert!(store.mark_agent_disabled(disable).unwrap());
+            assert!(ConfigStore::load_from_disk(&path)
+                .unwrap()
+                .enabled_agents
+                .is_empty());
+        }
+
+        let legacy = AppConfig {
+            enabled_agents: ["gemini-desktop", "gemini", "antigravity", "codex"]
+                .map(str::to_string)
+                .to_vec(),
+            ..AppConfig::default()
+        };
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let store =
+            ConfigStore::from_config(path.clone(), ConfigStore::load_from_disk(&path).unwrap());
+        assert!(!store.mark_agent_enabled("gemini-desktop").unwrap());
+        assert!(store.mark_agent_disabled("antigravity").unwrap());
+        assert_eq!(
+            ConfigStore::load_from_disk(&path).unwrap().enabled_agents,
+            ["gemini", "codex"]
+        );
+    }
+
+    #[test]
+    fn island_preferences_stale_snapshot_cannot_restore_removed_hook() {
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("config.json");
+        let store = ConfigStore::from_config(path.clone(), AppConfig::default());
+        assert!(store.mark_agent_enabled("gemini-desktop").unwrap());
+        let mut snapshot = store.get();
+        assert!(store.mark_agent_disabled("antigravity").unwrap());
+        assert!(store.mark_agent_enabled("gemini").unwrap());
+        let patch =
+            serde_json::from_value(serde_json::json!({"petVitalsDebugOpen": true})).unwrap();
+        store.update_island_preferences(patch).unwrap();
+        snapshot.sound_enabled = false;
+        store.update(snapshot).unwrap();
+
+        let saved = ConfigStore::load_from_disk(&path).unwrap();
+        assert_eq!(saved.enabled_agents, ["gemini"]);
+        assert!(saved.pet_vitals_debug_open);
+        assert!(!saved.sound_enabled);
+        assert!(!hook_intent_enabled(&saved.enabled_agents, "antigravity"));
+    }
+
+    #[test]
+    fn island_preferences_merge_independent_edits_and_hook_updates() {
+        let fixture = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let path = fixture.path().join("config.json");
+        let store = ConfigStore::from_config(
+            path.clone(),
+            AppConfig {
+                language: "zh".into(),
+                launch_at_login: true,
+                pet_vitals_debug_open: true,
+                engine_instances: vec![EngineInstance {
+                    id: "work".into(),
+                    label: "Work".into(),
+                    config_root: "work-profile".into(),
+                    enabled: true,
+                }],
+                custom_hook_installs: vec![CustomHookInstall {
+                    id: "custom".into(),
+                    profile_id: "codex".into(),
+                    display_name: "Custom Codex".into(),
+                    install_directory: "codex-profile".into(),
+                }],
+                ..AppConfig::default()
+            },
+        );
+        store.mark_agent_enabled("gemini-desktop").unwrap();
+        let edits = [
+            serde_json::json!({"usageQueryEnabled": false, "showTokenUsage": false}),
+            serde_json::json!({"idleInteractionRoutingEnabled": true}),
+            serde_json::json!({"idleInteractionRoutingMinutes": 15}),
+            serde_json::json!({"petVitalsDebugOpen": false}),
+        ];
+        std::thread::scope(|scope| {
+            for edit in edits {
+                let patch = serde_json::from_value(edit).unwrap();
+                let store = &store;
+                scope.spawn(move || store.update_island_preferences(patch).unwrap());
+            }
+            scope.spawn(|| store.mark_agent_disabled("antigravity").unwrap());
+            scope.spawn(|| store.mark_agent_enabled("gemini").unwrap());
+        });
+
+        let saved = ConfigStore::load_from_disk(&path).unwrap();
+        assert_eq!(saved.language, "zh");
+        assert!(saved.launch_at_login);
+        assert!(!saved.usage_query_enabled);
+        assert!(!saved.show_token_usage);
+        assert!(saved.idle_interaction_routing_enabled);
+        assert_eq!(saved.idle_interaction_routing_minutes, 15);
+        assert!(!saved.pet_vitals_debug_open);
+        assert_eq!(saved.enabled_agents, ["gemini"]);
+        assert_eq!(saved.engine_instances[0].config_root, "work-profile");
+        assert_eq!(
+            saved.custom_hook_installs[0].install_directory,
+            "codex-profile"
+        );
+        assert!(
+            serde_json::from_value::<IslandPreferencesPatch>(serde_json::json!({
+                "usageQueryEnabled": true, "enabledAgents": ["antigravity"]
+            }))
+            .is_err()
+        );
     }
 
     #[test]

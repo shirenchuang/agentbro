@@ -2,6 +2,7 @@ import type { SessionPhase, SessionState } from '../types/agent'
 
 const APP_BUNDLE_LABELS: Array<[string, string]> = [
   ['com.bot.pc.doubao', 'Doubao'],
+  ['com.google.geminimacos', 'Gemini Desktop'],
   ['dev.zcode.app', 'ZCode'],
   ['openai.codex', 'Codex App'],
   ['codex', 'Codex App'],
@@ -72,6 +73,7 @@ export function getAgentDisplayName(session: SessionState): string {
   switch (session.agentType) {
     case 'claude-code': return 'Claude'
     case 'gemini-cli': return 'Gemini'
+    case 'gemini-desktop': return 'Gemini Desktop'
     case 'deepseek-harness': return 'DeepSeek Harness'
     case 'qoder-desktop': return 'Qoder Desktop'
     case 'qwenwork-cn': return '千问办公'

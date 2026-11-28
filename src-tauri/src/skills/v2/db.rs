@@ -360,10 +360,8 @@ pub fn now_iso() -> String {
 // ── Snapshot export (raw rows) ────────────────────────────────────
 
 pub fn export_snapshot(conn: &Connection, center_path: &str) -> Result<Snapshot, String> {
-    let table_rows = |table: &str| -> Result<Vec<serde_json::Value>, String> {
-        let mut stmt = conn
-            .prepare(&format!("SELECT * FROM {table}"))
-            .map_err(|e| e.to_string())?;
+    let table_rows = |select: &str| -> Result<Vec<serde_json::Value>, String> {
+        let mut stmt = conn.prepare(select).map_err(|e| e.to_string())?;
         let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let rows = stmt
             .query_map([], |r| {
@@ -397,13 +395,22 @@ pub fn export_snapshot(conn: &Connection, center_path: &str) -> Result<Snapshot,
         schema_version: SCHEMA_VERSION,
         exported_at: now_iso(),
         center_path: center_path.to_string(),
-        skills: table_rows("skills")?,
-        sources: table_rows("skill_sources")?,
-        agents: table_rows("agents")?,
-        targets: table_rows("skill_targets")?,
-        claims: table_rows("skill_target_claims")?,
-        packs: table_rows("skill_packs")?,
-        projects: table_rows("projects")?,
+        skills: table_rows("SELECT * FROM skills")?,
+        sources: table_rows("SELECT * FROM skill_sources")?,
+        agents: table_rows("SELECT * FROM agents")?,
+        targets: table_rows("SELECT * FROM skill_targets")?,
+        claims: table_rows("SELECT * FROM skill_target_claims")?,
+        packs: table_rows("SELECT * FROM skill_packs")?,
+        pack_members: table_rows(
+            "SELECT * FROM skill_pack_members ORDER BY pack_id, sort_order, skill_id",
+        )?,
+        pack_agent_syncs: table_rows(
+            "SELECT * FROM skill_pack_agent_syncs ORDER BY pack_id, agent_id",
+        )?,
+        settings: Some(
+            serde_json::from_value(load_settings_json(conn)).map_err(|e| e.to_string())?,
+        ),
+        projects: table_rows("SELECT * FROM projects")?,
         diagnosis_summary: serde_json::json!({}),
     })
 }

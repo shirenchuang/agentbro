@@ -41,6 +41,7 @@ const MASCOT_ASSETS: Record<string, MascotAsset> = {
   'claude': { src: claudeIcon, inset: 3 },
   'codex': { src: codexIcon, inset: 3 },
   'gemini-cli': { src: geminiIcon, inset: 3 },
+  'gemini-desktop': { src: geminiIcon, inset: 3 },
   'gemini': { src: geminiIcon, inset: 3 },
   'cursor': { src: cursorIcon, inset: 3 },
   'cursor-cli': { src: cursorIcon, inset: 3 },

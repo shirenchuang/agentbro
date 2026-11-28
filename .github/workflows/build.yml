@@ -7,6 +7,13 @@ on:
     branches: [main, master]
   workflow_dispatch:
     inputs:
+      macos_verify_display_change:
+        description: Change and restore the native display mode while the macOS Island is running
+        type: boolean
+        default: false
+      macos_display_artifact_run:
+        description: Reuse an Apple Silicon executable from an earlier Build run for the display smoke test
+        type: string
       windows_artifact_run:
         description: Existing Build run ID for an installer-only smoke test
         type: string
@@ -42,6 +49,10 @@ on:
         description: Observe the Windows console used by a package update from installed Agent Management
         type: boolean
         default: false
+      windows_verify_diagnostics_export:
+        description: Verify the startup records in a ZIP exported by the installed app
+        type: boolean
+        default: false
       windows_verify_registered_agent_app:
         description: Detect a desktop Agent registered with Windows App Paths
         type: boolean
@@ -50,8 +61,16 @@ on:
         description: Repeat approval and record Hook timing, screenshots and accessibility state
         type: boolean
         default: false
+      windows_verify_question_reconnect:
+        description: Repeat the installed Island question disconnect and reply sequence
+        type: boolean
+        default: false
       windows_verify_drag:
         description: Move the installed Island with native pointer input and verify that it stops on release
+        type: boolean
+        default: false
+      windows_verify_display_change:
+        description: Change and restore the native display mode while the Island is running
         type: boolean
         default: false
       windows_close_startup_settings:
@@ -74,6 +93,10 @@ on:
         description: Verify duplicate launches against an existing Windows installer
         type: boolean
         default: false
+      windows_verify_startup_failure:
+        description: Verify the native startup error when a specified WebView2 runtime is unavailable
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -83,6 +106,9 @@ jobs:
     if: ${{ !inputs.windows_artifact_run }}
     name: Build macOS (${{ matrix.arch }})
     runs-on: macos-15
+    permissions:
+      actions: read
+      contents: read
     strategy:
       matrix:
         include:
@@ -111,11 +137,13 @@ jobs:
         run: pnpm release:check
 
       - name: Install Rust toolchain
+        if: ${{ !inputs.macos_display_artifact_run }}
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-target }}
 
       - name: Rust cache
+        if: ${{ !inputs.macos_display_artifact_run }}
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -127,6 +155,7 @@ jobs:
         run: pnpm build
 
       - name: Build Tauri app
+        if: ${{ !inputs.macos_display_artifact_run }}
         run: |
           mkdir -p target/agentbro-bridge-resource
           touch target/agentbro-bridge-resource/agentbro-bridge
@@ -134,14 +163,58 @@ jobs:
         working-directory: src-tauri
 
       - name: Upload artifact
+        if: ${{ !inputs.macos_display_artifact_run }}
         uses: actions/upload-artifact@v4
         with:
           name: agentbro-${{ matrix.arch }}
           path: src-tauri/target/${{ matrix.rust-target }}/release/agentbro
           if-no-files-found: error
 
+      - name: Download previous macOS executable
+        if: inputs.macos_display_artifact_run && matrix.arch == 'arm64'
+        uses: actions/download-artifact@v4
+        with:
+          name: agentbro-arm64
+          path: src-tauri/target/${{ matrix.rust-target }}/release
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.macos_display_artifact_run }}
+
+      - name: Verify macOS Island position after a display change
+        if: (inputs.macos_verify_display_change || inputs.macos_display_artifact_run) && matrix.arch == 'arm64'
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          fixture=$(mktemp -d "$RUNNER_TEMP/ab-display.XXXXXX")
+          cp -R dist "$fixture/web"
+          cat > "$fixture/web/display-fixture.js" <<'EOF'
+          localStorage.setItem('agentbro-config', JSON.stringify({
+            state: { displayMonitor: 'primary', allowHorizontalDrag: true, panelHorizontalOffset: 36 },
+            version: 0,
+          }))
+          EOF
+          sed -i '' 's|<head>|<head><script src="/display-fixture.js"></script>|' "$fixture/web/index.html"
+          config_dir="$HOME/Library/Application Support/agentbro"
+          [[ ! -e "$config_dir/config.json" ]]
+          mkdir -p "$config_dir"
+          echo '{"analyticsConsentPromptCompleted":true,"analyticsEnabled":false,"displayId":"primary"}' > "$config_dir/config.json"
+          python3 -m http.server 1423 --bind 127.0.0.1 --directory "$fixture/web" > "$fixture/server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" ${app_pid:-} 2>/dev/null || true' EXIT
+          curl --fail --retry 12 --retry-connrefused --retry-delay 1 --silent --show-error -o /dev/null http://localhost:1423/display-fixture.js
+          kill -0 "$server_pid"
+
+          chmod +x "src-tauri/target/${{ matrix.rust-target }}/release/agentbro"
+          AGENTBRO_HOOK_SOCKET="$fixture/hook.sock" AGENTBRO_HOOK_PORT=53194 \
+            "src-tauri/target/${{ matrix.rust-target }}/release/agentbro" > "$fixture/agentbro.log" 2>&1 &
+          app_pid=$!
+          if ! swift scripts/test-macos-display-change.swift "$app_pid" 36; then
+            tail -60 "$fixture/agentbro.log"
+            exit 1
+          fi
+
   build-windows:
-    if: ${{ !inputs.windows_artifact_run }}
+    if: ${{ !inputs.windows_artifact_run && !inputs.macos_display_artifact_run }}
     name: Build Windows installers
     runs-on: windows-latest
     env:
@@ -273,6 +346,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable hooks::server::tests::plan_responses_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact hooks::server::tests::hook_reply_disconnect_and_legacy_half_close_use_the_original_socket
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable terminal::jump::windows_terminal::tests
@@ -408,14 +484,20 @@ jobs:
           VERIFY_PINNED_PACK_MANIFEST: ${{ inputs.windows_verify_pinned_pack_manifest }}
           PACK_MANIFEST_LINK: ${{ inputs.windows_verify_pack_manifest_link && format('https://github.com/{0}/blob/{1}/scripts/fixtures/github-skill-pack.agentbro-pack.json', github.repository, github.sha) || '' }}
           VERIFY_AGENT_PACKAGE_CONSOLE: ${{ inputs.windows_verify_agent_package_console }}
+          VERIFY_DIAGNOSTICS_EXPORT: ${{ inputs.windows_verify_diagnostics_export }}
           VERIFY_REGISTERED_AGENT_APP: ${{ inputs.windows_verify_registered_agent_app }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
+          VERIFY_QUESTION_RECONNECT: ${{ inputs.windows_verify_question_reconnect }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
+          VERIFY_DISPLAY_CHANGE: ${{ inputs.windows_verify_display_change }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
           AUTOMATION_FOCUS_PERMISSION: ${{ inputs.windows_automation_focus_permission }}
           VERIFY_GLOBAL_SHORTCUTS: ${{ inputs.windows_verify_global_shortcuts }}
           VERIFY_STARTUP_STACKS: ${{ inputs.windows_verify_startup_stacks }}
           VERIFY_STARTUP_LOCK: ${{ !inputs.windows_artifact_run || inputs.windows_verify_startup_lock }}
+          VERIFY_STARTUP_FAILURE: ${{ !inputs.windows_artifact_run || inputs.windows_verify_startup_failure }}
+          VERIFY_STARTUP_ORDER: ${{ !inputs.windows_artifact_run }}
+          VERIFY_STARTUP_REOPEN: ${{ !inputs.windows_artifact_run }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           if (-not $installer) {
@@ -432,14 +514,20 @@ jobs:
                   -VerifyPinnedPackManifest:($env:VERIFY_PINNED_PACK_MANIFEST -eq 'true') `
                   -PackManifestLink $env:PACK_MANIFEST_LINK `
                   -VerifyAgentPackageConsole:($env:VERIFY_AGENT_PACKAGE_CONSOLE -eq 'true') `
+                  -VerifyDiagnosticsExport:($env:VERIFY_DIAGNOSTICS_EXPORT -eq 'true') `
                   -VerifyRegisteredAgentApp:($env:VERIFY_REGISTERED_AGENT_APP -eq 'true') `
                   -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
+                  -VerifyQuestionReconnect:($env:VERIFY_QUESTION_RECONNECT -eq 'true') `
                   -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
+                  -VerifyDisplayChange:($env:VERIFY_DISPLAY_CHANGE -eq 'true') `
                   -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
                   -AutomationFocusPermission:($env:AUTOMATION_FOCUS_PERMISSION -eq 'true') `
                   -VerifyGlobalShortcuts:($env:VERIFY_GLOBAL_SHORTCUTS -eq 'true') `
                   -VerifyStartupStackSampler:($env:VERIFY_STARTUP_STACKS -eq 'true') `
                   -VerifyStartupLock:($env:VERIFY_STARTUP_LOCK -eq 'true') `
+                  -VerifyStartupFailure:($env:VERIFY_STARTUP_FAILURE -eq 'true') `
+                  -VerifyStartupOrder:($env:VERIFY_STARTUP_ORDER -eq 'true') `
+                  -VerifyStartupReopen:($env:VERIFY_STARTUP_REOPEN -eq 'true') `
                   -SymbolsDirectory (Join-Path $PWD 'windows-installers')
           } finally {
               if ($wslPromptWatcher) {

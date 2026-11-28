@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { Profiler } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NotchPanel } from '../components/notch/NotchPanel'
 import { OverlayCard } from '../components/overlay/OverlayCard'
@@ -25,7 +26,7 @@ const tauriMocks = vi.hoisted(() => ({
     void ignore
     return Promise.resolve()
   }),
-  isCursorOverNotch: vi.fn(() => Promise.resolve(false)),
+  isCursorOverNotch: vi.fn<typeof import('../services/tauriApi').isCursorOverNotch>(() => Promise.resolve(false)),
   isTauri: vi.fn(() => false),
   resizeNotch: vi.fn<typeof import('../services/tauriApi').resizeNotch>(() => Promise.resolve({ anchorOffsetX: 0 })),
   startNotchDrag: vi.fn<typeof import('../services/tauriApi').startNotchDrag>(() => Promise.resolve(0)),
@@ -34,6 +35,11 @@ const tauriMocks = vi.hoisted(() => ({
 
 function primaryModifierKeyEvent() {
   return isApplePlatform() ? { metaKey: true } : { ctrlKey: true }
+}
+
+function mockIslandTimeouts() {
+  // Restoring faked intervals can strand jsdom's pending animation frames.
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
 }
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -282,7 +288,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('opens the collapsed island immediately on pointer down even when hover is delayed', async () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       useConfigStore.setState({ hoverExpandDelay: 1000 })
       const currentSession = session({ phase: 'idle' })
@@ -348,8 +354,33 @@ describe('NotchPanel island shell', () => {
     }
   })
 
+  it.each(['Win32', 'MacIntel'])('reapplies the fixed Island frame on %s when the display changes during a resize', async (nativePlatform) => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue(nativePlatform)
+    try {
+      const originalResize = deferred<{ anchorOffsetX: number }>()
+      tauriMocks.isTauri.mockReturnValue(true)
+      tauriMocks.resizeNotch.mockImplementationOnce(() => originalResize.promise)
+      useConfigStore.setState({ displayMonitor: 'primary', allowHorizontalDrag: true, panelHorizontalOffset: 36 })
+      mountIsland()
+      await waitFor(() => expect(tauriMocks.listen).toHaveBeenCalledWith('display-changed', expect.any(Function)))
+      const onDisplayChange = tauriMocks.listen.mock.calls.find(([event]) => event === 'display-changed')![1]
+      const frame = tauriMocks.resizeNotch.mock.calls[0]
+      expect(frame?.slice(2)).toEqual([36, 'primary'])
+
+      await act(async () => {
+        onDisplayChange({ event: 'display-changed', id: 1, payload: null })
+      })
+      expect(tauriMocks.resizeNotch.mock.calls).toEqual([frame, frame])
+
+      await act(async () => { originalResize.resolve({ anchorOffsetX: 0 }) })
+      expect(tauriMocks.resizeNotch.mock.calls).toEqual([frame, frame, frame])
+    } finally {
+      platform.mockRestore()
+    }
+  })
+
   it('keeps a stable native host canvas while collapsed, then sizes to hitbox on hover', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
       const currentSession = session({ phase: 'idle' })
@@ -390,7 +421,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('keeps a stable native host canvas while returning to micro', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
       useConfigStore.setState({ autoCollapse: true, collapseDelay: 1 })
@@ -481,6 +512,50 @@ describe('NotchPanel island shell', () => {
     expect(list).toBeInTheDocument()
     expect(list).toHaveAttribute('inert')
     expect(list).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it.each(['into the list', 'away from both'])('keeps the Windows question list available until the pointer moves %s', async (movement) => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      tauriMocks.isTauri.mockReturnValue(true)
+      let cursorY = 0
+      tauriMocks.isCursorOverNotch.mockImplementation((_width, height) => Promise.resolve(cursorY <= (height ?? 0)))
+      useConfigStore.setState({ autoCollapse: true, collapseDelay: 50, islandAnimationScale: 0.1 })
+      const question = { toolUseId: 'question-footer', question: 'Can the Island return this answer?', options: ['Return answer'] }
+      mountIsland({
+        id: 'question-footer', sessionId: 's1', type: 'question', data: question, createdAt: now,
+      }, { phase: 'waiting_input', pendingQuestion: question })
+
+      const panel = screen.getByRole('region', { name: 'AgentBro' })
+      const container = panel.closest<HTMLElement>('.notch-container')!
+      const hitboxHeight = () => parseFloat(container.style.getPropertyValue('--notch-hitbox-height'))
+      const footerY = hitboxHeight() - 24
+      cursorY = footerY
+      await waitFor(() => expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(expect.any(Number), hitboxHeight(), 0))
+      clock.mockReturnValue(now + 1201)
+      fireEvent.mouseDown(screen.getByRole('button', { name: 'notch.showAllSessions' }))
+
+      await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenLastCalledWith(true))
+      expect(hitboxHeight()).toBeLessThan(footerY)
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)) })
+      expect(useSessionStore.getState().panelState).toBe('hover')
+      await waitFor(() => expect(screen.getByRole('button', { name: /Return answer/ })).toBeVisible())
+
+      if (movement === 'into the list') {
+        cursorY = 10
+        await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenLastCalledWith(false))
+        cursorY = footerY
+      } else {
+        cursorY = Number.POSITIVE_INFINITY
+      }
+      await waitFor(() => expect(useSessionStore.getState().panelState).toBe('collapsed'))
+      expect(useSessionStore.getState().sessions.s1.pendingQuestion).toEqual(question)
+    } finally {
+      platform.mockRestore()
+      clock.mockRestore()
+    }
   })
 
   it('keeps the Windows viewport steady when opening and resolving a permission', async () => {
@@ -1222,7 +1297,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('keeps the feedback countdown running while hovered and collapses as soon as hover leaves after expiry', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       useConfigStore.setState({ autoCollapse: true, taskCompleteDwellSeconds: 3 })
       const activeOverlay: OverlayItem = {
@@ -1384,6 +1459,34 @@ describe('NotchPanel island shell', () => {
     })
   })
 
+  it.each(['Enter', 'Escape'])('leaves composing %s with the input method while writing denial feedback', async (key) => {
+    const permission = { toolUseId: 'permission-ime', toolName: 'Bash', toolInput: 'pnpm test' }
+    mountIsland({
+      id: 'permission-s1-ime',
+      sessionId: 's1',
+      type: 'permission',
+      data: permission,
+      createdAt: Date.now(),
+    }, { phase: 'waiting_approval', pendingPermission: permission })
+
+    fireEvent.click(screen.getByRole('button', { name: 'notch.deny' }))
+    const input = screen.getByPlaceholderText('Tell Claude why (optional)...')
+    fireEvent.change(input, { target: { value: '先确认改动' } })
+    const panelState = useSessionStore.getState().panelState
+
+    expect(fireEvent.keyDown(input, { key, isComposing: true })).toBe(true)
+    expect(fireEvent.keyDown(input, { key, keyCode: 229 })).toBe(true)
+    expect(screen.getByPlaceholderText('Tell Claude why (optional)...')).toHaveValue('先确认改动')
+    expect(useSessionStore.getState().activeOverlay?.id).toBe('permission-s1-ime')
+    expect(useSessionStore.getState().panelState).toBe(panelState)
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toEqual(permission)
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(tauriMocks.respondPermission).toHaveBeenCalledExactlyOnceWith('s1', false, undefined, 'permission-ime')
+    await waitFor(() => expect(tauriMocks.sendMessage).toHaveBeenCalledExactlyOnceWith('s1', '先确认改动'))
+  })
+
   it('retains denial feedback on delivery failure and sends it after the retry is confirmed', async () => {
     const failure = deferred()
     const retry = deferred()
@@ -1417,6 +1520,29 @@ describe('NotchPanel island shell', () => {
     await act(async () => retry.resolve())
     expect(tauriMocks.sendMessage).toHaveBeenCalledExactlyOnceWith('s1', 'Use the targeted test instead')
     expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
+  })
+
+  it('retries the same Qoder Desktop denial if the Hook reply fails', async () => {
+    tauriMocks.respondPermission.mockRejectedValueOnce(new Error('Hook disconnected'))
+    const permission = { toolUseId: 'qoder-permission', toolName: 'Bash', toolInput: '{"command":"pwd"}' }
+    mountIsland({
+      id: 'qoder-permission-overlay',
+      sessionId: 's1',
+      type: 'permission',
+      data: permission,
+      createdAt: Date.now(),
+    }, { agentType: 'qoder-desktop', phase: 'waiting_approval', pendingPermission: permission })
+
+    fireEvent.click(screen.getByRole('button', { name: 'notch.deny' }))
+    expect(tauriMocks.respondPermission).toHaveBeenCalledExactlyOnceWith('s1', false, undefined, 'qoder-permission')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Hook disconnected')
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toEqual(permission)
+
+    fireEvent.click(screen.getByRole('button', { name: 'notch.deny' }))
+    expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(2)
+    expect(tauriMocks.respondPermission).toHaveBeenLastCalledWith('s1', false, undefined, 'qoder-permission')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined())
+    expect(tauriMocks.sendMessage).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -1891,6 +2017,85 @@ describe('NotchPanel island shell', () => {
     })
   })
 
+  it('keeps the next question visible when the previous collapse timer expires during its render', async () => {
+    try {
+      const first = session({
+        phase: 'waiting_input',
+        pendingQuestion: { toolUseId: 'first-question', question: 'Use the current workspace?', options: ['Yes'] },
+      })
+      const second = {
+        ...first,
+        pendingQuestion: { toolUseId: 'second-question', question: 'Continue with the review?', options: ['Continue'] },
+      }
+      const store = useSessionStore.getState()
+      useSessionStore.setState({ panelState: 'hover', sessions: {}, sessionList: [], activeOverlay: null, overlayQueue: [] })
+      store.replaceAllSessions([first])
+
+      let expireOnCommit = false
+      let panelAfterExpiry: typeof store.panelState | undefined
+      render(
+        <Profiler id="question" onRender={() => {
+          if (!expireOnCommit) return
+          expireOnCommit = false
+          vi.advanceTimersByTime(800)
+          panelAfterExpiry = useSessionStore.getState().panelState
+        }}>
+          <NotchPanel />
+        </Profiler>,
+      )
+      await waitFor(() => expect(screen.getByText('Use the current workspace?')).toBeVisible())
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      await act(async () => { store.replaceAllSessions([session()]) })
+      // Poll the real animation frames without advancing the pending collapse.
+      await vi.waitFor(async () => {
+        await act(() => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())))
+        expect(screen.getByTestId('notch-hover-content')).toBeVisible()
+      }, { interval: 0 })
+      expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+      expireOnCommit = true
+      await act(async () => { store.replaceAllSessions([second]) })
+      expect(panelAfterExpiry).toBe('hover')
+      expect(useSessionStore.getState().panelState).toBe('hover')
+
+      vi.useRealTimers()
+      await waitFor(() => expect(screen.getByText('Continue with the review?')).toBeVisible())
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels pointer-leave collapse when a new question arrives after duplicate leave events', async () => {
+    mockIslandTimeouts()
+    try {
+      useConfigStore.setState({ autoCollapse: true, collapseDelay: 600 })
+      const firstQuestion = { toolUseId: 'first', question: 'First question?', options: ['Yes'] }
+      mountIsland({
+        id: 'question-first', sessionId: 's1', type: 'question', data: firstQuestion, createdAt: Date.now(),
+      }, { phase: 'waiting_input', pendingQuestion: firstQuestion })
+      const hitbox = screen.getByRole('region', { name: 'AgentBro' }).parentElement!
+
+      await act(async () => { vi.advanceTimersByTime(1201) })
+      fireEvent.pointerLeave(hitbox)
+      await act(async () => { vi.advanceTimersByTime(100) })
+      fireEvent.pointerLeave(hitbox)
+      await act(async () => {
+        useSessionStore.getState().replaceAllSessions([session({
+          phase: 'waiting_input',
+          pendingQuestion: { ...firstQuestion, toolUseId: 'second', question: 'Second question?' },
+        })])
+      })
+
+      await act(async () => { vi.advanceTimersByTime(600) })
+      expect(useSessionStore.getState().panelState).toBe('hover')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps suppressed blocking overlays queued without auto-expanding the island', async () => {
     const activeOverlay: OverlayItem = {
       id: 'permission-s1-suppressed',
@@ -2052,7 +2257,7 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('opens and submits a custom question response from the keyboard', async () => {
+  it('keeps the custom question response open until an ordinary Enter submits it', async () => {
     const prompt = { toolUseId: 'keyboard-custom', question: 'What is your plan?', options: [] }
     mountIsland({
       id: 'question-keyboard-custom', sessionId: 's1', type: 'question', data: prompt, createdAt: Date.now(),
@@ -2064,9 +2269,17 @@ describe('NotchPanel island shell', () => {
     await keyboard.keyboard('[Space]')
     const field = await screen.findByPlaceholderText('Type your response...')
     expect(field).toHaveFocus()
-    await keyboard.keyboard('Use the staging environment{Enter}')
+    fireEvent.compositionStart(field)
+    fireEvent.compositionEnd(field, { data: '先在测试环境运行' })
+    fireEvent.change(field, { target: { value: '先在测试环境运行' } })
+    fireEvent.keyDown(field, { key: 'Escape', keyCode: 229 })
+    fireEvent.keyDown(field, { key: 'Enter', keyCode: 229 })
+    expect(field).toHaveValue('先在测试环境运行')
+    expect(field).toHaveFocus()
+    expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
 
-    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Use the staging environment', 'keyboard-custom')
+    await keyboard.keyboard('{Enter}')
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', '先在测试环境运行', 'keyboard-custom')
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
@@ -2329,6 +2542,28 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
   })
 
+  it('keeps composing Enter from sending plan feedback in the alert', async () => {
+    const plan = { planRequestId: 'plan-ime', planTitle: 'Implementation plan', planContent: '1. Fix jump' }
+    mountIsland({
+      id: 'plan-s1-ime',
+      sessionId: 's1',
+      type: 'plan',
+      data: plan,
+      createdAt: Date.now(),
+    }, { ...plan, phase: 'waiting_approval' })
+
+    const input = screen.getByPlaceholderText('Tell Claude what to change...')
+    fireEvent.change(input, { target: { value: '调整顺序' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
+    expect(tauriMocks.respondPlan).not.toHaveBeenCalled()
+    expect(input).toHaveValue('调整顺序')
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'feedback', '调整顺序', 'plan-ime')
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
+  })
+
   it('keeps failed plan feedback visible and retries it for the displayed plan', async () => {
     tauriMocks.respondPlan.mockRejectedValueOnce(new Error('Plan Hook disconnected'))
     const plan = { planRequestId: 'plan-feedback', planTitle: 'Implementation plan', planContent: '1. Fix jump' }
@@ -2493,13 +2728,16 @@ describe('NotchPanel island shell', () => {
 
     fireEvent.compositionEnd(replyInput, { data: '你' })
     fireEvent.change(replyInput, { target: { value: '你' } })
+    fireEvent.keyDown(replyInput, { key: 'Enter', keyCode: 229 })
+    expect(tauriMocks.sendMessage).not.toHaveBeenCalled()
+
     fireEvent.keyDown(replyInput, { key: 'Enter' })
 
     await waitFor(() => expect(tauriMocks.sendMessage).toHaveBeenCalledWith('s1', '你'))
   })
 
   it('keeps response feedback open after sending a reply until hover leaves', async () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       mountIsland({
         id: 'response-s1-reply-stays-open',
@@ -2550,7 +2788,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('does not dismiss feedback overlays on mouse leave while the reply input has draft text', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       mountIsland({
         id: 'response-s1-draft',
@@ -2648,11 +2886,12 @@ describe('NotchPanel island shell', () => {
       const onOpen = tauriMocks.listen.mock.calls.find(([event]) => event === 'tray-open-agentbro')![1]
       act(() => onOpen({ event: 'tray-open-agentbro', id: 1, payload: 'question-shortcut' }))
       vi.setSystemTime(Date.now() + 1500)
-      await act(() => new Promise((resolve) => setTimeout(resolve, 120)))
 
-      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalled()
-      expect(useSessionStore.getState().panelState).toBe('hover')
-      expect(screen.getByRole('button', { name: 'Production' })).toBeVisible()
+      await waitFor(() => {
+        expect(hasFocus).toHaveBeenCalled()
+        expect(useSessionStore.getState().panelState).toBe('hover')
+        expect(screen.getByRole('button', { name: 'Production' })).toBeVisible()
+      })
 
       hasFocus.mockReturnValue(false)
       await waitFor(() => expect(useSessionStore.getState().panelState).toBe('collapsed'))
@@ -2679,7 +2918,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('keeps the feedback countdown running while hovered', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       mountIsland({
         id: 'completion-s1',
@@ -2716,7 +2955,7 @@ describe('NotchPanel island shell', () => {
   })
 
   it('defers collapsed feedback presentation dismissal until the cursor leaves', () => {
-    vi.useFakeTimers()
+    mockIslandTimeouts()
     try {
       const activeOverlay: OverlayItem = {
         id: 'completion-s1-collapsed',

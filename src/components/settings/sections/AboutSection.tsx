@@ -147,6 +147,7 @@ export function AboutSection({
   const updateDescription = (() => {
     switch (updateStatus) {
       case 'checking': return t('settings.updateChecking', { defaultValue: '正在检查更新...' })
+      case 'installer-pending': return t('settings.updateInstallerPending', { version: updateVersion })
       case 'available':
         return updateInstallChannel === 'homebrew'
           ? t('settings.updateAvailableHomebrew', { version: updateVersion, command: HOMEBREW_UPDATE_COMMAND, defaultValue: `发现新版本 ${updateVersion}。请运行 ${HOMEBREW_UPDATE_COMMAND}` })

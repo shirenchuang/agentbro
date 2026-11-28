@@ -91,13 +91,34 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "AGENTBRO_WINDOWS_AGENT_TEST_EXE=$testExecutable" >> $env:GITHUB_ENV
       - name: Test Agent program management
-        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::programs::tests'
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::programs'
       - name: Test Agent launcher discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::executable::tests'
+      - name: Test pinned GitHub Skill resolution
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::installer::tests::pinned_github_'
       - name: Test Hook bridge repair
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::hook_manager::tests'
+      - name: Test shared Antigravity Hook recovery
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE shared_antigravity_hook_'
+      - name: Test Antigravity turn completion
+        run: |
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::antigravity::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::server::tests::antigravity_completion_
+      - name: Test concurrent Island preference saves
+        run: |
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE config::tests::island_preferences_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE config::tests::config_snapshot_
+      - name: Test Hook Doctor and the active Qoder CLI profile
+        run: |
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE commands::tests::hook_doctor_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::qoder_cli::tests
       - name: Test Qoder sessions and permission responses
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::server::tests::qoder_'
+      - name: Test Hook question and plan responses
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::server::tests::hook_reply_'
       - name: Test the native startup recovery dialog
         timeout-minutes: 2
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE platform::windows_startup::tests'
@@ -113,8 +134,12 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE --exact hooks::session_store::tests::pushed_and_polled_session_snapshots_share_revisions_across_store_clones'
       - name: Test Agent and Skill metadata writes
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::registry::tests'
+      - name: Test Skill Manager recovery snapshots
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::tests::snapshot_'
+      - name: Test Skill Manager diagnosis repairs
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE diagnosis_'
       - name: Test verification and restore of locked project Skills
-        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::project_lock::tests'
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::project_lock::'
       - name: Test offline Skill Pack ZIP migration
         run: |
           & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::v2::pack_archive::tests
@@ -124,3 +149,5 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE config::tests::first_run_setup_'
       - name: Test OpenCode MCP configuration discovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::mcp_management::opencode::tests'
+      - name: Test Codex MCP environment authentication
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE skills::mcp_management::tests::codex_http_environment_'

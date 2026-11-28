@@ -100,6 +100,11 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
         crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
     let path = transfer.path().join("技能包.agentbro-pack.zip");
     let swapped = transfer.path().join("other.zip");
+    let source = SkillPackGitHubSource {
+        repository: "example/workflows".into(),
+        commit: "a".repeat(40),
+        skill_path: "skills/审阅 模板/SKILL.md".into(),
+    };
     let manifest = SkillPackManifest {
         format: "agentbro-skill-pack".into(),
         version: 4,
@@ -118,6 +123,19 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
         let missing = add_center_test_skill(&sender, "bundle-missing", "portable-missing");
         fs::create_dir(missing.join("resources")).unwrap();
         fs::write(missing.join("resources/示例.bin"), b"\0\r\n").unwrap();
+        sender.db().with_conn(|connection| {
+            let recorded_uri = source.source_uri()?;
+            for (id, uri) in [
+                ("portable-clash", recorded_uri.clone()),
+                ("portable-missing", format!("{recorded_uri}?query=private-fixture")),
+            ] {
+                connection.execute(
+                    "UPDATE skill_sources SET source_type = 'github', source_uri = ?1, source_ref = ?2 WHERE skill_id = ?3",
+                    params![uri, source.commit, id],
+                ).map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        }).unwrap();
         sender.write_pack_archive(&path, manifest.clone()).unwrap();
         let original = fs::read(&path).unwrap();
         let mut changed = manifest.clone();
@@ -130,12 +148,19 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
     }
 
     let review = super::pack_archive::Archive::open(&path).unwrap().review;
+    #[cfg(not(unix))]
+    assert!(review.executable_fingerprints.is_empty());
     assert_eq!(review.manifest.skill_ids, manifest.skill_ids);
     assert_eq!(
         review.manifest.suggested_agent_ids,
         manifest.suggested_agent_ids
     );
     assert_eq!(review.manifest.skill_fingerprints.len(), 2);
+    assert_eq!(review.manifest.skill_sources.len(), 1);
+    assert_eq!(
+        review.manifest.skill_sources.get("portable-clash"),
+        Some(&source)
+    );
     let (_home, target, _lock) = fresh_service("pack-zip-target");
     let local = add_center_test_skill(&target, "target-local", "portable-clash");
     let restore = |skill_id: &str, destination_id: &str| SkillPackArchiveRestoreMember {
@@ -176,6 +201,42 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
         b"sender content\r\n"
     );
     assert_eq!(fs::read(local.join("reference.md")).unwrap(), b"center");
+    let restored = target
+        .get_skill_detail("portable-clash-restored")
+        .unwrap()
+        .source
+        .unwrap();
+    assert_eq!(restored.source_type, "archive");
+    assert_eq!(restored.source_uri, Some(source.source_uri().unwrap()));
+    assert_eq!(restored.source_ref.as_deref(), Some(source.commit.as_str()));
+    assert!(target
+        .check_skill_source_update("portable-clash-restored", None)
+        .unwrap_err()
+        .contains("does not have a supported Git source"));
+    let missing_source = target
+        .get_skill_detail("portable-missing")
+        .unwrap()
+        .source
+        .unwrap();
+    assert_eq!(missing_source.source_uri, None);
+    assert_eq!(missing_source.source_ref, None);
+
+    let mut reexport = manifest.clone();
+    reexport.version = 2;
+    reexport.suggested_agent_ids.clear();
+    reexport.skill_ids = vec!["portable-clash-restored".into()];
+    let reexport_path = transfer.path().join("restored.zip");
+    target.write_pack_archive(&reexport_path, reexport).unwrap();
+    let reexported = super::pack_archive::Archive::open(&reexport_path)
+        .unwrap()
+        .review
+        .manifest;
+    assert_eq!(reexported.version, 3);
+    assert_eq!(
+        reexported.skill_sources.get("portable-clash-restored"),
+        Some(&source)
+    );
+
     let mut imported = review.manifest;
     imported.skill_ids[0] = "portable-clash-restored".into();
     let hash = imported
@@ -185,11 +246,15 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
     imported
         .skill_fingerprints
         .insert(imported.skill_ids[0].clone(), hash);
+    let recorded_source = imported.skill_sources.remove("portable-clash").unwrap();
+    imported
+        .skill_sources
+        .insert(imported.skill_ids[0].clone(), recorded_source);
     let reviewed = target
         .archive_skill_pack_fingerprints(&imported.skill_ids)
         .unwrap();
     let detail = target
-        .import_reviewed_skill_pack(imported.clone(), &reviewed, false, true)
+        .import_reviewed_skill_pack(imported.clone(), &reviewed, false, true, None)
         .unwrap();
     assert_eq!(
         detail
@@ -199,6 +264,101 @@ fn offline_skill_pack_round_trips_custom_files_and_preserves_conflicting_skills(
             .collect::<Vec<_>>(),
         imported.skill_ids
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn offline_skill_pack_reviews_executable_permissions_and_restores_a_runnable_copy() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let transfer =
+        crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+    let path = transfer.path().join("script-pack.zip");
+    let skill_id = "review-script";
+    let script_name = "审阅.sh";
+    let script_content = b"#!/bin/sh\nprintf 'ready\\n'\n";
+    let manifest = SkillPackManifest {
+        format: "agentbro-skill-pack".into(),
+        version: 2,
+        name: "Executable review".into(),
+        description: String::new(),
+        tags: vec![],
+        skill_ids: vec![skill_id.into()],
+        skill_fingerprints: Default::default(),
+        skill_sources: Default::default(),
+        suggested_agent_ids: vec![],
+    };
+    {
+        let (_home, sender, _lock) = fresh_service("pack-executable-sender");
+        let script = add_center_test_skill(&sender, skill_id, skill_id).join(script_name);
+        fs::write(&script, script_content).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        sender.write_pack_archive(&path, manifest).unwrap();
+    }
+
+    let review = super::pack_archive::Archive::open(&path).unwrap().review;
+    let (_home, target, _lock) = fresh_service("pack-executable-target");
+    let original = add_center_test_skill(&target, skill_id, skill_id).join(script_name);
+    fs::write(&original, script_content).unwrap();
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o644)).unwrap();
+    let fingerprint = target
+        .archive_skill_pack_fingerprints(&review.manifest.skill_ids)
+        .unwrap();
+    assert_eq!(
+        fingerprint[0].fingerprint.as_ref(),
+        review.manifest.skill_fingerprints.get(skill_id)
+    );
+    assert_ne!(
+        fingerprint[0].executable_fingerprint.as_ref(),
+        review.executable_fingerprints.get(skill_id)
+    );
+    let create = |reviewed: &[SkillPackFingerprint], keep_local| {
+        target.import_reviewed_skill_pack(
+            review.manifest.clone(),
+            reviewed,
+            keep_local,
+            true,
+            Some(&review.executable_fingerprints),
+        )
+    };
+    assert!(create(&fingerprint, false)
+        .unwrap_err()
+        .contains("executable permissions differ"));
+    assert_eq!(
+        create(&fingerprint, true).unwrap().members[0].skill_id,
+        skill_id
+    );
+
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(create(&fingerprint, true)
+        .unwrap_err()
+        .contains("changed since review"));
+
+    let destination_id = "review-script-restored";
+    let restore = SkillPackArchiveRestoreMember {
+        skill_id: skill_id.into(),
+        destination_id: destination_id.into(),
+    };
+    assert!(target
+        .restore_archived_pack_skills(&path, &review.revision, &[restore])
+        .unwrap()
+        .is_empty());
+    let restored = target
+        .center_path()
+        .unwrap()
+        .join(destination_id)
+        .join(script_name);
+    assert_eq!(
+        fs::metadata(&restored).unwrap().permissions().mode() & 0o111,
+        0o111
+    );
+    assert_eq!(
+        fs::metadata(&original).unwrap().permissions().mode() & 0o111,
+        0o100
+    );
+    let result = std::process::Command::new(restored).output().unwrap();
+    assert!(result.status.success());
+    assert_eq!(result.stdout, b"ready\n");
 }
 
 #[test]
@@ -300,7 +460,7 @@ fn offline_skill_pack_protects_case_collisions_before_and_after_review() {
         .archive_skill_pack_fingerprints(&manifest.skill_ids)
         .unwrap();
     let pack = target
-        .import_reviewed_skill_pack(manifest, &reviewed, false, true)
+        .import_reviewed_skill_pack(manifest, &reviewed, false, true, None)
         .unwrap();
     assert_eq!(
         pack.members
@@ -352,7 +512,7 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
     text[0] = b'y';
     fs::write(docs.join("notes.txt"), &text).unwrap();
     let error = svc
-        .import_reviewed_skill_pack(manifest.clone(), &reviewed, true, false)
+        .import_reviewed_skill_pack(manifest.clone(), &reviewed, true, false, None)
         .unwrap_err();
     assert!(error.contains("changed since review"));
     let updated = svc
@@ -360,13 +520,13 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
         .unwrap();
     assert_ne!(reviewed, updated);
     let error = svc
-        .import_reviewed_skill_pack(manifest.clone(), &updated, false, false)
+        .import_reviewed_skill_pack(manifest.clone(), &updated, false, false, None)
         .unwrap_err();
     assert!(error.contains("Confirm the local copy"));
     assert_eq!(svc.list_skill_packs().unwrap().len(), initial_packs);
 
     let pack = svc
-        .import_reviewed_skill_pack(manifest, &updated, true, false)
+        .import_reviewed_skill_pack(manifest, &updated, true, false, None)
         .unwrap();
     assert_eq!(pack.name, "Shared review");
     assert_eq!(pack.members[0].skill_id, "review");
@@ -417,7 +577,7 @@ fn pack_recheck_discovers_a_manually_copied_skill_in_a_cold_library() {
         Some(fingerprint.as_str())
     );
     let pack = svc
-        .import_reviewed_skill_pack(manifest, &reviewed, false, false)
+        .import_reviewed_skill_pack(manifest, &reviewed, false, false, None)
         .unwrap();
     assert_eq!(pack.members[0].skill_id, "manual-review");
     assert!(!pack.members[0].missing);
@@ -537,7 +697,7 @@ fn pack_restore_checks_the_pinned_git_content_before_installing() {
     svc.restore_pack_skill_with(&pair, &unchanged, fetch)
         .unwrap();
     let pack = svc
-        .import_reviewed_skill_pack(manifest, &reviewed, false, false)
+        .import_reviewed_skill_pack(manifest, &reviewed, false, false, None)
         .unwrap();
     assert_eq!(pack.members[0].skill_id, skill_id);
 
@@ -2327,6 +2487,78 @@ fn apply_pack_is_idempotent() {
     let detail = svc.get_skill_detail("skill-authoring").unwrap();
     assert_eq!(detail.targets.len(), 1);
     assert_eq!(detail.targets[0].claims.len(), 1, "no duplicate pack claim");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn gemini_desktop_applies_a_pack_to_the_shared_antigravity_skills_directory() {
+    let (_home, svc, _lock) = fresh_service("gemini-desktop-skill-pack");
+    let skill_id = "skill-authoring";
+    let source = write_skill(&svc.home.join("sources"), "auth", skill_id, Some("v1"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let pack_id = "writing";
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: pack_id.to_string(),
+        name: "Writing".to_string(),
+        description: String::new(),
+        tags: vec![],
+        skill_ids: vec![skill_id.to_string()],
+    })
+    .unwrap();
+
+    let skills_dir = svc.home.join(".gemini/config/skills");
+    let target = skills_dir.join(skill_id);
+    assert!(!skills_dir.exists());
+    let preview = svc
+        .preview_distribute_skill(
+            vec![skill_id.to_string()],
+            vec!["gemini-desktop".to_string(), "antigravity".to_string()],
+            "link".to_string(),
+        )
+        .unwrap();
+    assert!(preview.blockers.is_empty());
+    assert_eq!(preview.target_agents, ["gemini-desktop"]);
+    assert_eq!(preview.changes.len(), 1);
+    assert_eq!(preview.changes[0].target_path, target.display().to_string());
+    svc.apply_reviewed_skill_pack(pack_id, preview, vec![])
+        .unwrap();
+    assert!(target.is_symlink());
+    assert!(target.join("SKILL.md").is_file());
+    assert!(!svc.home.join(".gemini/skills").exists());
+
+    let antigravity = svc.get_agent_detail("antigravity").unwrap();
+    let gemini_desktop = svc.get_agent_detail("gemini-desktop").unwrap();
+    assert_eq!(gemini_desktop.skills_dir, antigravity.skills_dir);
+    assert_eq!(gemini_desktop.skills[0].id, antigravity.skills[0].id);
+    assert_eq!(gemini_desktop.applied_packs[0].pack_id, pack_id);
+    assert_eq!(gemini_desktop.applied_packs[0].sync_status, "synced");
+
+    let reapplied = svc
+        .apply_skill_pack(pack_id, vec!["antigravity".to_string()], "link".to_string())
+        .unwrap();
+    assert!(reapplied.blockers.is_empty());
+    let detail = svc.get_skill_detail(skill_id).unwrap();
+    assert_eq!(detail.targets.len(), 1);
+    assert_eq!(detail.targets[0].claims.len(), 1);
+    let removal = svc
+        .preview_remove_pack_from_agent(pack_id, "gemini-desktop")
+        .unwrap();
+    assert_eq!(removal.will_remove_targets, 1);
+    svc.remove_skill_pack_from_agent(pack_id, "gemini-desktop")
+        .unwrap();
+    assert!(!target.exists());
 }
 
 #[test]
@@ -5436,6 +5668,23 @@ fn diagnosis_recommends_cleaning_managed_shared_agents_skill() {
     assert_eq!(issue.fix_kind, "auto");
     assert_eq!(issue.entity_id.as_deref(), Some("tgt-shared-dup"));
 
+    let edited = shared.join("local-notes.tmp");
+    fs::write(&edited, "local notes").unwrap();
+    assert!(
+        !crate::skills::v2::diagnosis::execute_fix(&svc, &issue.issue_type, "tgt-shared-dup")
+            .unwrap()
+    );
+    assert!(!crate::skills::v2::diagnosis::run(&svc)
+        .unwrap()
+        .iter()
+        .any(|issue| issue.issue_type == "agents_managed_duplicate"));
+    assert_eq!(fs::read_to_string(&edited).unwrap(), "local notes");
+    assert_eq!(
+        svc.get_skill_detail("shared-skill").unwrap().targets.len(),
+        1
+    );
+    fs::remove_file(edited).unwrap();
+
     let fixed = crate::skills::v2::diagnosis::execute_safe_fixes(&svc).unwrap();
     assert!(fixed >= 1);
     assert!(
@@ -5767,6 +6016,54 @@ fn migrates_legacy_packs_and_sources() {
 // ── Diagnosis ────────────────────────────────────────────────────
 
 #[test]
+fn diagnosis_keeps_a_target_reinstalled_after_the_missing_target_report() {
+    use crate::skills::v2::diagnosis;
+
+    let (_home, svc, _lock) = fresh_service("diag-reinstalled-copy");
+    let skill_id = "repair-skill";
+    add_center_test_skill(&svc, skill_id, skill_id);
+    let preview = svc
+        .preview_distribute_skill(
+            vec![skill_id.to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let detail = svc.get_skill_detail(skill_id).unwrap();
+    let target = &detail.targets[0];
+    assert_eq!(target.claims.len(), 1);
+    let path = Path::new(&target.target_path);
+    let file = path.join("SKILL.md");
+    fs::remove_dir_all(path).unwrap();
+    assert!(diagnosis::run(&svc)
+        .unwrap()
+        .iter()
+        .any(|issue| issue.issue_type == "target_missing"
+            && issue.entity_id.as_deref() == Some(&target.id)));
+
+    fs::create_dir(path).unwrap();
+    fs::write(&file, "---\nname: repair-skill\n---\nRestored locally").unwrap();
+    assert!(!diagnosis::execute_fix(&svc, "target_missing", &target.id).unwrap());
+    assert!(fs::read_to_string(&file)
+        .unwrap()
+        .contains("Restored locally"));
+    let retained = svc.get_skill_detail(skill_id).unwrap();
+    assert_eq!(retained.targets[0].claims[0].id, target.claims[0].id);
+
+    fs::remove_dir_all(path).unwrap();
+    assert!(diagnosis::execute_fix(&svc, "target_missing", &target.id).unwrap());
+    assert!(svc.get_skill_detail(skill_id).unwrap().targets.is_empty());
+    let snapshot_path = crate::skills::v2::snapshot::snapshot_path(&svc).unwrap();
+    let snapshot: Snapshot = serde_json::from_slice(&fs::read(snapshot_path).unwrap()).unwrap();
+    assert!(snapshot.targets.is_empty());
+    assert!(snapshot.claims.is_empty());
+    assert!(!diagnosis::execute_fix(&svc, "target_missing", &target.id).unwrap());
+}
+
+#[test]
+#[cfg(unix)]
 fn diagnosis_flags_broken_link_and_unmanaged() {
     let (_home, svc, _lock) = fresh_service("diag");
     let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("v1"));
@@ -5822,6 +6119,16 @@ fn diagnosis_flags_broken_link_and_unmanaged() {
         "found: {:?}",
         types
     );
+
+    let target = &svc.get_skill_detail("release-checklist").unwrap().targets[0];
+    fsutil::copy_dir_recursive(&src, &center).unwrap();
+    assert!(!crate::skills::v2::diagnosis::execute_fix(&svc, "broken_link", &target.id).unwrap());
+    let restored_link = Path::new(&target_path);
+    assert!(restored_link.is_symlink());
+    assert!(restored_link.join("SKILL.md").is_file());
+    let retained = svc.get_skill_detail("release-checklist").unwrap();
+    assert_eq!(retained.targets[0].claims[0].id, target.claims[0].id);
+    fs::remove_dir_all(&center).unwrap();
 
     // safe fixes clear broken link / orphan records
     let _fixed = crate::skills::v2::diagnosis::execute_safe_fixes(&svc).unwrap();
@@ -7044,6 +7351,117 @@ fn snapshot_written_and_read() {
     assert_eq!(snap.schema_version, SCHEMA_VERSION);
     assert_eq!(snap.skills.len(), 1);
     assert_eq!(snap.projects.len(), 1);
+
+    let mut previous = serde_json::to_value(snap).unwrap();
+    for key in ["packMembers", "packAgentSyncs", "settings"] {
+        previous.as_object_mut().unwrap().remove(key);
+    }
+    let previous: Snapshot = serde_json::from_value(previous).unwrap();
+    assert_eq!(previous.skills.len(), 1);
+    assert!(previous.pack_members.is_empty());
+    assert!(previous.pack_agent_syncs.is_empty());
+    assert!(previous.settings.is_none());
+}
+
+#[test]
+fn snapshot_records_ordered_pack_members_and_committed_agent_syncs() {
+    use crate::skills::v2::snapshot;
+    use serde_json::{json, Value};
+
+    let (_home, svc, _lock) = fresh_service("snapshot-pack-state");
+    add_center_test_skill(&svc, "one", "first");
+    add_center_test_skill(&svc, "two", "second");
+    svc.update_settings(
+        serde_json::from_value(json!({ "autoSyncSkillPacks": false, "startupScan": false }))
+            .unwrap(),
+    )
+    .unwrap();
+    let mut pack = UpsertPackInput {
+        id: "review-pack".into(),
+        name: "Review Pack".into(),
+        description: String::new(),
+        tags: vec!["review".into()],
+        skill_ids: vec!["second".into(), "first".into()],
+    };
+    svc.upsert_skill_pack(pack.clone()).unwrap();
+    let path = snapshot::snapshot_path(&svc).unwrap();
+    let read_file = || -> Value { serde_json::from_slice(&fs::read(&path).unwrap()).unwrap() };
+    let before_apply = read_file();
+    assert_eq!(
+        before_apply["packMembers"],
+        json!([
+            { "pack_id": "review-pack", "skill_id": "second", "sort_order": 0, "required": 1 },
+            { "pack_id": "review-pack", "skill_id": "first", "sort_order": 1, "required": 1 }
+        ])
+    );
+    assert_eq!(before_apply["settings"]["autoSyncSkillPacks"], false);
+    assert_eq!(before_apply["settings"]["startupScan"], false);
+
+    let application = svc
+        .apply_skill_pack("review-pack", vec!["claude-code".into()], "copy".into())
+        .unwrap();
+    assert!(application.blockers.is_empty());
+    let after_apply = read_file();
+    let applied = &after_apply["packAgentSyncs"][0];
+    assert_eq!(applied["agent_id"], "claude-code");
+    assert_eq!(applied["pack_id"], "review-pack");
+    assert_eq!(applied["synced_revision"], 1);
+    assert_eq!(applied["status"], "synced");
+    let claims = after_apply["claims"].as_array().unwrap();
+    assert_eq!(claims.len(), 2);
+    assert!(claims.iter().all(|claim| claim["pack_id"] == "review-pack"));
+
+    pack.skill_ids.reverse();
+    svc.upsert_skill_pack(pack).unwrap();
+    let after_edit = read_file();
+    assert_eq!(after_edit["packMembers"][0]["skill_id"], "first");
+    assert_eq!(after_edit["packs"][0]["revision"], 2);
+    assert_eq!(after_edit["packAgentSyncs"][0]["status"], "pending");
+    assert_eq!(after_edit["packAgentSyncs"][0]["synced_revision"], 1);
+
+    let live = serde_json::to_value(snapshot::export(&svc).unwrap()).unwrap();
+    for key in ["packMembers", "packAgentSyncs", "settings", "claims"] {
+        assert_eq!(live[key], after_edit[key]);
+    }
+}
+
+#[test]
+fn snapshot_serializes_publication_while_database_updates_can_continue() {
+    use crate::skills::v2::snapshot;
+    use std::sync::{mpsc, TryLockError};
+
+    let (_home, svc, _lock) = fresh_service("snapshot-publication-order");
+    let project = svc.home.join("workspace/after-older-capture");
+    fs::create_dir_all(&project).unwrap();
+    let svc = &svc;
+    std::thread::scope(|scope| {
+        let (captured, on_capture) = mpsc::channel();
+        let (publish, on_publish) = mpsc::channel();
+        let older = scope.spawn(move || {
+            snapshot::export_to_file_with(svc, |path, bytes| {
+                let captured_snapshot: Snapshot = serde_json::from_slice(bytes).unwrap();
+                assert!(captured_snapshot.projects.is_empty());
+                captured.send(()).unwrap();
+                on_publish.recv_timeout(Duration::from_secs(5)).unwrap();
+                fs::write(path, bytes)
+            })
+            .unwrap()
+        });
+        on_capture.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(
+            svc.snapshot_write_lock.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+        svc.add_project(project.display().to_string()).unwrap();
+        let newer = scope.spawn(|| snapshot::export_to_file(svc).unwrap());
+        publish.send(()).unwrap();
+        assert_eq!(older.join().unwrap(), newer.join().unwrap());
+    });
+
+    let file = snapshot::snapshot_path(svc).unwrap();
+    let saved: Snapshot = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+    assert_eq!(saved.projects.len(), 1);
+    assert_eq!(saved.projects[0]["name"], "after-older-capture");
 }
 
 #[test]

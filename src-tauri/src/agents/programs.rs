@@ -5,22 +5,28 @@ use crate::skills::{agent_paths, registry};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::pin::pin;
+use std::process::{ExitStatus, Stdio};
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::{timeout, Duration};
 
+mod npm_installation;
 #[cfg(target_os = "windows")]
 mod windows_app_paths;
+
+use npm_installation::{npm_installation, NpmInstallation};
 
 static AGENT_PACKAGE_OPERATION: Mutex<()> = Mutex::const_new(());
 static AGENT_PACKAGE_OUTPUT: std::sync::Mutex<BTreeMap<String, AgentPackageOutput>> =
     std::sync::Mutex::new(BTreeMap::new());
 const PACKAGE_OUTPUT_LINES: usize = 10;
 const PACKAGE_OUTPUT_LINE_BYTES: usize = 4096;
+const PACKAGE_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +44,25 @@ pub enum AgentProgramStatus {
     Unavailable,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentUpdateOutcome {
+    Completed,
+    NoNewerVersion,
+}
+
+enum PackageOperationOutcome {
+    Completed(&'static str),
+    NoNewerVersion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUninstallTarget {
+    path: String,
+    identity: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProgramInfo {
@@ -53,6 +78,8 @@ pub struct AgentProgramInfo {
     pub binary_path: Option<String>,
     pub config_dir: Option<String>,
     pub app_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_uninstall: Option<AppUninstallTarget>,
     pub download_url: Option<String>,
     pub install_command: Option<String>,
     pub update_command: Option<String>,
@@ -122,6 +149,31 @@ struct ProgramMetadata {
     download_url: Option<&'static str>,
 }
 
+impl ProgramMetadata {
+    fn npm_installation(&self, launcher: Option<&Path>) -> Option<NpmInstallation> {
+        if self.package_manager != Some("npm") {
+            return None;
+        }
+        npm_installation(launcher?, self.package_name?)
+    }
+
+    fn reviewed_npm_installation(
+        &self,
+        launcher: Option<&Path>,
+        expected_binary_path: Option<&str>,
+    ) -> Result<Option<NpmInstallation>, String> {
+        let installation = self.npm_installation(launcher);
+        if expected_binary_path.is_some_and(|expected| {
+            !installation
+                .as_ref()
+                .is_some_and(|selected| selected.launcher == Path::new(expected))
+        }) {
+            return Err("The selected npm Agent launcher changed. Refresh Agent Management and review the installation again.".to_string());
+        }
+        Ok(installation)
+    }
+}
+
 #[derive(Clone)]
 struct AgentProgramSeed {
     id: String,
@@ -173,7 +225,9 @@ pub async fn agent_install(
     state: State<'_, AppState>,
     agent_id: String,
 ) -> Result<(), String> {
-    run_agent_command(app, &state.adapters, &agent_id, "install").await
+    run_agent_command(app, &state.adapters, &agent_id, "install", None, None)
+        .await
+        .map(|_| ())
 }
 
 #[tauri::command]
@@ -181,8 +235,21 @@ pub async fn agent_update(
     app: AppHandle,
     state: State<'_, AppState>,
     agent_id: String,
-) -> Result<(), String> {
-    run_agent_command(app, &state.adapters, &agent_id, "update").await
+    expected_binary_path: Option<String>,
+) -> Result<AgentUpdateOutcome, String> {
+    run_agent_command(
+        app,
+        &state.adapters,
+        &agent_id,
+        "update",
+        expected_binary_path.as_deref(),
+        None,
+    )
+    .await
+    .map(|outcome| match outcome {
+        PackageOperationOutcome::Completed(_) => AgentUpdateOutcome::Completed,
+        PackageOperationOutcome::NoNewerVersion => AgentUpdateOutcome::NoNewerVersion,
+    })
 }
 
 #[tauri::command]
@@ -190,8 +257,19 @@ pub async fn agent_uninstall(
     app: AppHandle,
     state: State<'_, AppState>,
     agent_id: String,
+    expected_binary_path: Option<String>,
+    expected_app: Option<AppUninstallTarget>,
 ) -> Result<(), String> {
-    run_agent_command(app, &state.adapters, &agent_id, "uninstall").await
+    run_agent_command(
+        app,
+        &state.adapters,
+        &agent_id,
+        "uninstall",
+        expected_binary_path.as_deref(),
+        expected_app.as_ref(),
+    )
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -215,6 +293,16 @@ pub async fn agent_open_app(state: State<'_, AppState>, agent_id: String) -> Res
 pub(crate) fn open_agent_app(agent_id: &str) -> Result<(), String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     if let Some(path) = installed_app_path(agent_id, &meta) {
+        #[cfg(target_os = "windows")]
+        return windows_app_paths::launch_command(
+            Path::new(&path),
+            &windows_registration_names(agent_id, &meta),
+        )
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Open {path}: {error}"));
+
+        #[cfg(not(target_os = "windows"))]
         return open_target(&path);
     }
     if let Some(binary) = find_agent_binary(agent_id, &meta) {
@@ -465,6 +553,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     };
     let desktop_codex = desktop_codex_launcher(&id, binary_path.as_deref());
     let native_claude = native_claude_launcher(&id, binary_path.as_deref());
+    let npm = meta.npm_installation(binary_path.as_deref());
     if desktop_codex.is_some() || native_claude.is_some() {
         meta.package_manager = Some(if desktop_codex.is_some() {
             "app"
@@ -475,10 +564,22 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         meta.install_command = None;
         meta.update_command = native_claude.map(|_| CLAUDE_NATIVE_UPDATE_COMMAND);
         meta.uninstall_command = None;
+    } else if binary_path.is_some() && meta.package_manager == Some("npm") && npm.is_none() {
+        meta.update_command = None;
+        meta.uninstall_command = None;
     }
     let app_path = match &meta.kind {
         AgentProgramKind::Cli => None,
         AgentProgramKind::App => installed_app_path(&id, &meta),
+    };
+    let app_uninstall = if meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND) {
+        let target = app_path.as_deref().and_then(app_uninstall_target);
+        if target.is_none() {
+            meta.uninstall_command = None;
+        }
+        target
+    } else {
+        None
     };
     let display_app_path = if id == "antigravity" {
         app_path.clone()
@@ -496,8 +597,21 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         (desktop_codex_version(launcher).await, None)
     } else if let Some(launcher) = native_claude {
         (native_claude_version(launcher).await, None)
+    } else if let ("qoder-cli", Some(launcher)) = (id.as_str(), binary_path.as_deref()) {
+        let version = selected_cli_version(launcher, |line| {
+            Some(line.strip_prefix('v').unwrap_or(line))
+        })
+        .await;
+        (version, None)
     } else if installed {
-        version_info_for(&meta, app_path.as_deref(), include_latest).await
+        version_info_for(
+            &id,
+            &meta,
+            app_path.as_deref(),
+            npm.as_ref(),
+            include_latest,
+        )
+        .await
     } else {
         (None, None)
     };
@@ -529,9 +643,14 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         package_name: meta.package_name.map(ToString::to_string),
         installed_version,
         latest_version,
-        binary_path: binary_path.map(|path| path.display().to_string()),
+        binary_path: npm
+            .as_ref()
+            .map(|npm| &npm.launcher)
+            .or(binary_path.as_ref())
+            .map(|path| path.display().to_string()),
         config_dir,
         app_path: display_app_path,
+        app_uninstall,
         download_url: meta.download_url.map(ToString::to_string),
         install_command: meta.install_command.map(ToString::to_string),
         update_command: meta.update_command.map(ToString::to_string),
@@ -559,7 +678,9 @@ async fn selected_cli_version(
 ) -> Option<String> {
     let path = executable::augmented_path_env();
     let mut command = package_command(launcher, path.as_deref());
-    let output = package_probe_output(command.arg("--version"), Duration::from_secs(5)).await?;
+    let output = package_probe_output(command.arg("--version"), Duration::from_secs(5))
+        .await
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -573,32 +694,44 @@ async fn selected_cli_version(
 }
 
 async fn version_info_for(
+    _agent_id: &str,
     meta: &ProgramMetadata,
     app_path: Option<&str>,
+    npm: Option<&NpmInstallation>,
     include_latest: bool,
 ) -> (Option<String>, Option<String>) {
     if meta.kind == AgentProgramKind::App {
+        #[cfg(target_os = "windows")]
+        if _agent_id == super::gemini_desktop::ID {
+            let version = app_path
+                .and_then(|path| super::gemini_desktop::windows_release(Path::new(path)))
+                .map(|version| version.to_string());
+            return (version, None);
+        }
         let installed = match app_path {
             Some(path) => app_installed_version(path).await,
             None => None,
         };
         return (installed, None);
     }
-    if meta.package_manager != Some("npm") {
+    let (Some(installation), Some(package)) = (npm, meta.package_name) else {
         return (None, None);
-    }
-    let package = match meta.package_name {
-        Some(package) => package,
-        None => return (None, None),
     };
-    let npm = executable::command_path("npm");
-    let path = executable::augmented_path_env();
-    let installed = npm_installed_version(package_command(&npm, path.as_deref()), package);
-    if !include_latest {
-        return (installed.await, None);
-    }
-    let latest = npm_latest_version(package_command(&npm, path.as_deref()), package);
-    tokio::join!(installed, latest)
+    let latest = if include_latest {
+        let npm = executable::command_path("npm");
+        let path = executable::augmented_path_env();
+        npm_latest_version(
+            package_command(&npm, path.as_deref()),
+            package,
+            &installation.prefix,
+        )
+        .await
+        .ok()
+        .map(|version| version.to_string())
+    } else {
+        None
+    };
+    (Some(installation.version.clone()), latest)
 }
 
 #[cfg(target_os = "macos")]
@@ -705,61 +838,74 @@ async fn app_installed_version(_app_path: &str) -> Option<String> {
     None
 }
 
-async fn npm_installed_version(mut npm: Command, package: &str) -> Option<String> {
-    let output = package_probe_output(
-        npm.args([
-            "list",
-            "-g",
-            package,
-            "--depth=0",
-            "--json",
-            "--no-update-notifier",
-        ]),
-        Duration::from_secs(4),
-    )
-    .await?;
-
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    json.get("dependencies")?
-        .get(package)?
-        .get("version")?
-        .as_str()
-        .map(ToString::to_string)
-}
-
-async fn npm_latest_version(mut npm: Command, package: &str) -> Option<String> {
-    let output = package_probe_output(
-        npm.args([
-            "view",
-            package,
-            "version",
-            "--silent",
-            "--no-update-notifier",
-            "--fetch-retries=0",
-            "--fetch-timeout=4000",
-        ]),
-        Duration::from_secs(5),
-    )
-    .await?;
+async fn npm_latest_version(
+    mut npm: Command,
+    package: &str,
+    prefix: &Path,
+) -> Result<semver::Version, String> {
+    npm.args([
+        "view",
+        &format!("{package}@latest"),
+        "version",
+        "--silent",
+        "--no-update-notifier",
+        "--fetch-retries=0",
+        "--fetch-timeout=4000",
+    ]);
+    set_npm_prefix(&mut npm, prefix);
+    npm.arg("--prefer-online");
+    let output = package_probe_output(&mut npm, Duration::from_secs(5))
+        .await
+        .map_err(|error| format!("Could not start package command: {error}"))?;
 
     if !output.status.success() {
-        return None;
+        return Err(format!(
+            "npm version check failed for {package} ({})",
+            output.status
+        ));
     }
 
-    String::from_utf8(output.stdout)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    let value = std::str::from_utf8(&output.stdout).ok().map(str::trim);
+    value
+        .and_then(parse_semver)
+        .ok_or_else(|| format!("npm returned no valid latest version for {package}"))
 }
 
 async fn package_probe_output(
     command: &mut Command,
     deadline: Duration,
-) -> Option<std::process::Output> {
+) -> std::io::Result<std::process::Output> {
     timeout(deadline, command.kill_on_drop(true).output())
         .await
-        .ok()?
-        .ok()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "Version check timed out"))?
+}
+
+async fn npm_update_command_line(
+    agent_id: &str,
+    meta: &ProgramMetadata,
+    installation: &NpmInstallation,
+) -> Result<Option<String>, String> {
+    let package = meta
+        .package_name
+        .ok_or_else(|| format!("No npm package configured for {agent_id}"))?;
+    let installed = parse_semver(&installation.version)
+        .ok_or_else(|| format!("Could not verify the installed npm version for {package}"))?;
+    let npm = executable::command_path("npm");
+    let path = executable::augmented_path_env();
+    let latest = npm_latest_version(
+        package_command(&npm, path.as_deref()),
+        package,
+        &installation.prefix,
+    )
+    .await?;
+    let current_binary = find_agent_binary(agent_id, meta);
+    if meta.npm_installation(current_binary.as_deref()).as_ref() != Some(installation) {
+        return Err("The npm Agent installation changed while checking for updates. Refresh Agent Management and try again.".to_string());
+    }
+    Ok(latest
+        .cmp_precedence(&installed)
+        .is_gt()
+        .then(|| format!("npm install -g {package}@{latest}")))
 }
 
 fn versions_indicate_update(installed: Option<&str>, latest: Option<&str>) -> bool {
@@ -807,6 +953,7 @@ fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo 
         binary_path: None,
         config_dir: Some(config_dir),
         app_path: None,
+        app_uninstall: None,
         download_url: None,
         install_command: None,
         update_command: None,
@@ -828,15 +975,16 @@ async fn run_agent_command(
     _adapters: &[std::sync::Arc<dyn AgentAdapter>],
     agent_id: &str,
     operation: &str,
-) -> Result<(), String> {
+    expected_binary_path: Option<&str>,
+    expected_app: Option<&AppUninstallTarget>,
+) -> Result<PackageOperationOutcome, String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let _package_operation = claim_agent_package_operation()?;
-    let installed_binary =
-        if matches!(agent_id, "codex" | "claude-code") || operation == "uninstall" {
-            find_agent_binary(agent_id, &meta)
-        } else {
-            None
-        };
+    let installed_binary = if meta.package_manager == Some("npm") || operation == "uninstall" {
+        find_agent_binary(agent_id, &meta)
+    } else {
+        None
+    };
     if desktop_codex_launcher(agent_id, installed_binary.as_deref()).is_some() {
         return Err("The selected Codex installation is managed by its desktop client".to_string());
     }
@@ -847,10 +995,13 @@ async fn run_agent_command(
         operation,
         &meta,
         installed_binary.as_deref(),
+        expected_binary_path,
+        expected_app,
     )
     .await;
     let (stream, message) = match &result {
-        Ok(message) => ("info", *message),
+        Ok(PackageOperationOutcome::Completed(message)) => ("info", *message),
+        Ok(PackageOperationOutcome::NoNewerVersion) => ("info", "npm offers no newer version"),
         Err(error) => ("stderr", error.as_str()),
     };
     emit_output(
@@ -862,7 +1013,7 @@ async fn run_agent_command(
         true,
         Some(result.is_ok()),
     );
-    result.map(|_| ())
+    result
 }
 
 async fn execute_package_operation(
@@ -871,7 +1022,18 @@ async fn execute_package_operation(
     operation: &str,
     meta: &ProgramMetadata,
     installed_binary: Option<&Path>,
-) -> Result<&'static str, String> {
+    expected_binary_path: Option<&str>,
+    expected_app: Option<&AppUninstallTarget>,
+) -> Result<PackageOperationOutcome, String> {
+    let npm = meta.reviewed_npm_installation(installed_binary, expected_binary_path)?;
+    if operation == "uninstall"
+        && meta.kind == AgentProgramKind::App
+        && meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND)
+    {
+        return trash_agent_app(app, agent_id, meta, expected_app)
+            .await
+            .map(PackageOperationOutcome::Completed);
+    }
     if operation == "uninstall"
         && !program_is_installed_for_agent(
             agent_id,
@@ -880,34 +1042,58 @@ async fn execute_package_operation(
             installed_app_path(agent_id, meta).is_some(),
         )
     {
-        return Ok("Agent is already uninstalled");
+        return Ok(PackageOperationOutcome::Completed(
+            "Agent is already uninstalled",
+        ));
     }
-    if operation == "uninstall"
-        && meta.kind == AgentProgramKind::App
-        && meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND)
+    let (command_line, command) = if let Some(launcher) =
+        native_claude_launcher(agent_id, installed_binary)
     {
-        return trash_agent_app(app, agent_id, meta).await;
-    }
-    let (command_line, mut command) =
-        if let Some(launcher) = native_claude_launcher(agent_id, installed_binary) {
-            (
-                CLAUDE_NATIVE_UPDATE_COMMAND.to_string(),
-                native_claude_package_command(launcher, operation)?,
-            )
-        } else if agent_id == "aider" && operation == "uninstall" {
-            aider_uninstall_command(RuntimePlatform::current(), executable::find_binary).await?
-        } else {
-            let command_line = match operation {
-                "install" => meta.install_command,
-                "update" => meta.update_command,
-                "uninstall" => meta.uninstall_command,
-                _ => None,
+        (
+            CLAUDE_NATIVE_UPDATE_COMMAND.to_string(),
+            native_claude_package_command(launcher, operation)?,
+        )
+    } else if agent_id == "aider" && operation == "uninstall" {
+        aider_uninstall_command(RuntimePlatform::current(), executable::find_binary).await?
+    } else {
+        let mut command_line = match operation {
+            "install" => meta.install_command,
+            "update" => meta.update_command,
+            "uninstall" => meta.uninstall_command,
+            _ => None,
+        }
+        .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
+        .to_string();
+        if npm.is_none()
+            && meta.package_manager == Some("npm")
+            && (installed_binary.is_some() || operation != "install")
+        {
+            return Err(format!(
+                "Could not locate the npm installation for the detected {agent_id} launcher"
+            ));
+        }
+        if let Some(installation) = &npm {
+            emit_output(
+                app,
+                agent_id,
+                operation,
+                "info",
+                &format!("npm global directory: {}", installation.prefix.display()),
+                false,
+                None,
+            );
+            if operation == "update" {
+                let Some(update) = npm_update_command_line(agent_id, meta, installation).await?
+                else {
+                    return Ok(PackageOperationOutcome::NoNewerVersion);
+                };
+                command_line = update;
             }
-            .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
-            .to_string();
-            let command = package_operation_command(&command_line);
-            (command_line, command)
-        };
+        }
+        let command =
+            package_operation_command(&command_line, npm.as_ref().map(|npm| npm.prefix.as_path()));
+        (command_line, command)
+    };
 
     emit_output(
         app,
@@ -919,68 +1105,92 @@ async fn execute_package_operation(
         None,
     );
 
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Could not start package command: {error}"))?;
-
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
-    let out_app = app.clone();
-    let out_id = agent_id.to_string();
-    let out_op = operation.to_string();
-    let stdout_task = tokio::spawn(async move {
-        forward_package_output(stdout, |line| {
-            emit_output(&out_app, &out_id, &out_op, "stdout", line, false, None);
-        })
-        .await
-    });
-
-    let err_app = app.clone();
-    let err_id = agent_id.to_string();
-    let err_op = operation.to_string();
-    let stderr_task = tokio::spawn(async move {
-        forward_package_output(stderr, |line| {
-            emit_output(&err_app, &err_id, &err_op, "stderr", line, false, None);
-        })
-        .await
-    });
-
-    let status = child.wait().await;
-    if status.is_err() {
-        stdout_task.abort();
-        stderr_task.abort();
-    }
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
-
-    let status = status.map_err(|error| format!("Could not wait for package command: {error}"))?;
+    let status = run_package_command(
+        command,
+        |line| emit_output(app, agent_id, operation, "stdout", line, false, None),
+        |line| emit_output(app, agent_id, operation, "stderr", line, false, None),
+    )
+    .await?;
     if status.success() {
-        Ok("Operation completed")
+        Ok(PackageOperationOutcome::Completed("Operation completed"))
     } else {
         Err(format!("{operation} failed for {agent_id} ({status})"))
     }
 }
 
+async fn run_package_command(
+    mut command: Command,
+    mut emit_stdout: impl FnMut(&str),
+    mut emit_stderr: impl FnMut(&str),
+) -> Result<ExitStatus, String> {
+    #[cfg(target_os = "windows")]
+    let (stdout, stderr) = {
+        use crate::platform::process::windows_output_pipe;
+
+        let (stdout, child_stdout) = windows_output_pipe()
+            .await
+            .map_err(|error| format!("Could not prepare package stdout: {error}"))?;
+        let (stderr, child_stderr) = windows_output_pipe()
+            .await
+            .map_err(|error| format!("Could not prepare package stderr: {error}"))?;
+        command.stdout(child_stdout).stderr(child_stderr);
+        (Some(stdout), Some(stderr))
+    };
+    #[cfg(not(target_os = "windows"))]
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start package command: {error}"))?;
+    drop(command);
+    #[cfg(not(target_os = "windows"))]
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+
+    let mut stdout_line = Vec::new();
+    let mut stderr_line = Vec::new();
+    let status = {
+        let mut output = pin!(async {
+            let _ = tokio::join!(
+                forward_package_output(stdout, &mut stdout_line, &mut emit_stdout),
+                forward_package_output(stderr, &mut stderr_line, &mut emit_stderr),
+            );
+        });
+        tokio::select! {
+            status = child.wait() => {
+                // A background helper can inherit the pipes and keep them open after exit.
+                if status.is_ok() {
+                    let _ = timeout(PACKAGE_OUTPUT_DRAIN_TIMEOUT, output).await;
+                }
+                status
+            }
+            () = &mut output => child.wait().await,
+        }
+    };
+    if !stdout_line.is_empty() {
+        emit_stdout(&String::from_utf8_lossy(&stdout_line));
+    }
+    if !stderr_line.is_empty() {
+        emit_stderr(&String::from_utf8_lossy(&stderr_line));
+    }
+    status.map_err(|error| format!("Could not wait for package command: {error}"))
+}
+
 async fn forward_package_output(
     pipe: Option<impl AsyncRead + Unpin>,
+    line: &mut Vec<u8>,
     mut emit: impl FnMut(&str),
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     let Some(pipe) = pipe else {
         return Ok(());
     };
     let mut reader = BufReader::new(pipe);
-    let mut line = Vec::new();
-    while reader.read_until(b'\n', &mut line).await? != 0 {
+    while reader.read_until(b'\n', line).await? != 0 {
         if line.last() == Some(&b'\n') {
             line.pop();
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
         }
-        emit(&String::from_utf8_lossy(&line));
+        emit(&String::from_utf8_lossy(line));
         line.clear();
     }
     Ok(())
@@ -1041,7 +1251,7 @@ async fn aider_uninstall_command(
         };
         let mut probe = command_for_launcher();
         let output = package_probe_output(probe.args(probe_args), Duration::from_secs(5)).await;
-        let package_found = output.is_some_and(|output| {
+        let package_found = output.is_ok_and(|output| {
             output.status.success()
                 && (is_pip || String::from_utf8_lossy(&output.stdout).contains("aider-chat"))
         });
@@ -1058,20 +1268,12 @@ async fn trash_agent_app(
     app: &AppHandle,
     agent_id: &str,
     meta: &ProgramMetadata,
+    expected_app: Option<&AppUninstallTarget>,
 ) -> Result<&'static str, String> {
-    let app_path = installed_app_path(agent_id, meta)
-        .ok_or_else(|| format!("Application is not installed for {agent_id}"))?;
-    let path = Path::new(&app_path);
-    let system_apps = Path::new("/Applications");
-    let user_apps = dirs::home_dir().map(|home| home.join("Applications"));
-    let safe_parent = path.parent().is_some_and(|parent| {
-        parent == system_apps || user_apps.as_deref().is_some_and(|apps| parent == apps)
-    });
-    if path.extension().and_then(|value| value.to_str()) != Some("app") || !safe_parent {
-        return Err(format!(
-            "Refusing to trash unexpected application path: {app_path}"
-        ));
-    }
+    let detected = installed_app_path(agent_id, meta)
+        .as_deref()
+        .and_then(app_uninstall_target);
+    let app_path = reviewed_app_uninstall_target(detected, expected_app)?.path;
 
     emit_output(
         app,
@@ -1104,6 +1306,62 @@ async fn trash_agent_app(
             error
         })
     }
+}
+
+fn reviewed_app_uninstall_target(
+    detected: Option<AppUninstallTarget>,
+    expected: Option<&AppUninstallTarget>,
+) -> Result<AppUninstallTarget, String> {
+    detected.filter(|target| Some(target) == expected).ok_or_else(|| {
+        "The desktop Agent application changed. Refresh Agent Management and review the installation again.".to_string()
+    })
+}
+
+fn app_uninstall_target(path: &str) -> Option<AppUninstallTarget> {
+    #[cfg(target_os = "macos")]
+    {
+        let user_apps = dirs::home_dir().map(|home| home.join("Applications"));
+        app_uninstall_target_at(path, user_apps.as_deref())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn app_uninstall_target_at(app_path: &str, user_apps: Option<&Path>) -> Option<AppUninstallTarget> {
+    use std::os::unix::fs::MetadataExt;
+
+    let path = Path::new(app_path);
+    let parent = path.parent()?;
+    if path.extension() != Some(OsStr::new("app"))
+        || (parent != Path::new("/Applications") && Some(parent) != user_apps)
+    {
+        return None;
+    }
+    let bundle = std::fs::symlink_metadata(path).ok()?;
+    let plist = std::fs::symlink_metadata(path.join("Contents/Info.plist")).ok()?;
+    if !bundle.is_dir() || !plist.is_file() {
+        return None;
+    }
+    // Checking the plist also catches an update written inside the same bundle directory.
+    let identity = [bundle, plist]
+        .map(|entry| {
+            format!(
+                "{}:{}:{}:{}",
+                entry.dev(),
+                entry.ino(),
+                entry.ctime(),
+                entry.ctime_nsec()
+            )
+        })
+        .join("/");
+    Some(AppUninstallTarget {
+        path: app_path.to_string(),
+        identity,
+    })
 }
 
 fn emit_output(
@@ -1152,12 +1410,22 @@ fn package_command(program: impl AsRef<OsStr>, path: Option<&OsStr>) -> Command 
     command
 }
 
-fn package_operation_command(command: &str) -> Command {
+fn set_npm_prefix(command: &mut Command, prefix: &Path) {
+    #[cfg(target_os = "windows")]
+    command.env("npm_config_prefix", prefix);
+    #[cfg(not(target_os = "windows"))]
+    command.arg("--prefix").arg(prefix);
+}
+
+fn package_operation_command(command: &str, npm_prefix: Option<&Path>) -> Command {
     let path = executable::augmented_path_env();
     if let Some(arguments) = command.strip_prefix("npm ") {
         let launcher = executable::command_path("npm");
         let mut process = package_command(&launcher, path.as_deref());
         process.args(arguments.split_ascii_whitespace());
+        if let Some(prefix) = npm_prefix {
+            set_npm_prefix(&mut process, prefix);
+        }
         #[cfg(target_os = "windows")]
         if launcher
             .extension()
@@ -1268,6 +1536,12 @@ fn launch_binary(path: &Path) -> Result<(), String> {
 }
 
 fn find_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<PathBuf> {
+    if agent_id == super::gemini_desktop::ID {
+        return None;
+    }
+    if agent_id == "qoder-cli" {
+        return executable::find_qoder_cli_binary();
+    }
     binary_candidates_for_agent(agent_id, meta)
         .into_iter()
         .find_map(executable::find_binary)
@@ -1317,7 +1591,6 @@ fn binary_candidates_for_agent(agent_id: &str, meta: &ProgramMetadata) -> Vec<&'
         "cursor-cli" => vec!["cursor-agent"],
         "droid" | "factory-droid" => vec!["factory", "droid"],
         "kiro" => vec!["kiro", "kiro-cli"],
-        "qoder-cli" => vec!["qodercli", "qoder"],
         "qwen" => vec!["qwen-coder", "qwen"],
         _ => Vec::new(),
     };
@@ -1412,6 +1685,12 @@ pub(crate) fn installed_app_path_for_agent(agent_id: &str) -> Option<String> {
 }
 
 fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    if agent_id == super::gemini_desktop::ID {
+        if let Some(path) = windows_app_paths::gemini_install_location() {
+            return Some(path);
+        }
+    }
     let existing = app_path_candidates(agent_id, meta)
         .into_iter()
         .find(|path| {
@@ -1422,6 +1701,13 @@ fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> 
                 candidate.exists() && app_path_matches_agent(agent_id, candidate)
             }
         });
+    #[cfg(target_os = "macos")]
+    let existing = existing.or_else(|| {
+        macos_agent_bundle_ids(agent_id)
+            .iter()
+            .flat_map(|id| crate::platform::macos_applications::registered_app_paths(id))
+            .find_map(|path| path.into_os_string().into_string().ok())
+    });
     #[cfg(target_os = "windows")]
     let existing = existing.or_else(|| {
         windows_app_paths::find_registered(&windows_registration_names(agent_id, meta), |path| {
@@ -1431,7 +1717,35 @@ fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> 
     existing
 }
 
+#[cfg(target_os = "macos")]
+fn macos_agent_bundle_ids(agent_id: &str) -> &[&str] {
+    match agent_id {
+        super::gemini_desktop::ID => &[super::gemini_desktop::BUNDLE_ID],
+        "cursor" => &["com.todesktop.230313mzl4w4u92"],
+        "qoder" => &["com.qoder.ide"],
+        "qoder-desktop" => &["com.qoder.app"],
+        "codebuddy" => &["com.tencent.codebuddy"],
+        "codebuddycn" | "codybuddycn" => &["com.tencent.codebuddy.cn"],
+        "qwenwork-cn" => &["cn.qwenwork.desktop.mac"],
+        "deepseek-harness" => &["com.deepseek.dsh"],
+        "stepfun" => &["com.stepfun.app"],
+        "droid" | "factory-droid" => &["com.factory.app"],
+        "workbuddy" => &["com.tencent.workbuddy.mac", "com.workbuddy.workbuddy"],
+        "workbuddy-ai" => &["com.workbuddy.workbuddy-ai"],
+        "zcode" => &["dev.zcode.app"],
+        _ => &[],
+    }
+}
+
 fn app_path_matches_agent(agent_id: &str, path: &Path) -> bool {
+    if agent_id == super::gemini_desktop::ID {
+        #[cfg(target_os = "macos")]
+        return super::gemini_desktop::is_macos_bundle(path);
+        #[cfg(target_os = "windows")]
+        return super::gemini_desktop::windows_release(path).is_some();
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        return false;
+    }
     if !matches!(agent_id, "qoder" | "qoder-desktop") {
         return true;
     }
@@ -1542,6 +1856,12 @@ fn windows_app_path_candidates(agent_id: &str, meta: &ProgramMetadata) -> Vec<St
     let exe_names = windows_executable_names(agent_id, meta);
 
     if let Some(local_app_data) = windows_local_app_data_dir() {
+        if agent_id == super::gemini_desktop::ID {
+            paths.push(windows_join(
+                &local_app_data,
+                &["Google", "Gemini", "Gemini.exe"],
+            ));
+        }
         for dir in &dirs {
             for exe in &exe_names {
                 paths.push(windows_join(&local_app_data, &["Programs", dir, exe]));
@@ -1554,6 +1874,9 @@ fn windows_app_path_candidates(agent_id: &str, meta: &ProgramMetadata) -> Vec<St
         let Some(root) = std::env::var(env_key).ok().filter(|v| !v.is_empty()) else {
             continue;
         };
+        if agent_id == super::gemini_desktop::ID {
+            paths.push(windows_join(&root, &["Google", "Gemini", "Gemini.exe"]));
+        }
         for dir in &dirs {
             for exe in &exe_names {
                 paths.push(windows_join(&root, &[dir, exe]));
@@ -1686,6 +2009,7 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "cline" => "Cline",
         "codex" => "OpenAI Codex",
         "gemini" | "gemini-cli" => "Gemini CLI",
+        super::gemini_desktop::ID => "Gemini Desktop",
         "cursor" => "Cursor",
         "cursor-cli" => "Cursor CLI",
         "opencode" => "OpenCode",
@@ -1729,7 +2053,7 @@ fn display_name_for_agent(id: &str) -> &'static str {
 fn icon_for_agent(id: &str) -> String {
     match id {
         "codebuddycn" | "codybuddycn" => "codebuddy".to_string(),
-        "gemini-cli" => "gemini".to_string(),
+        "gemini-cli" | super::gemini_desktop::ID => "gemini".to_string(),
         "cursor-cli" => "cursor".to_string(),
         "qoder-cli" | "qoder-desktop" => "qoder".to_string(),
         "qwenwork-cn" => "qwen".to_string(),
@@ -1772,6 +2096,15 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "~/.gemini",
             "https://github.com/google-gemini/gemini-cli",
         ),
+        super::gemini_desktop::ID => ProgramMetadata {
+            config_dir: cfg!(target_os = "macos").then_some("~/.gemini/config"),
+            ..app_no_uninstall(
+                "Gemini",
+                "/Applications/Gemini.app",
+                "",
+                "https://gemini.google/desktop/",
+            )
+        },
         "opencode" => cli(
             "opencode",
             "npm",
@@ -1789,7 +2122,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             None,
             None,
             "~/.qoder",
-            "https://qoder.com",
+            "https://docs.qoder.com/cli/installation",
         ),
         "copilot" => cli(
             "copilot",
@@ -2117,6 +2450,56 @@ fn app_no_uninstall(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gemini_desktop_versions_come_from_the_packaged_app() {
+        let home =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let launcher = home.path().join("Gemini.exe");
+        std::fs::write(&launcher, "").unwrap();
+        let release = super::super::gemini_desktop::windows_release;
+        assert!(release(&launcher).is_none());
+        for (version, complete) in [("1.9.0", true), ("1.21.1", true), ("1.23.0", false)] {
+            let app = home.path().join(format!("app-{version}"));
+            std::fs::create_dir(&app).unwrap();
+            std::fs::write(app.join("Gemini.exe"), "").unwrap();
+            if complete {
+                std::fs::write(app.join("GEMINI_BUILD_INFO.txt"), "").unwrap();
+            }
+        }
+        assert_eq!(release(&launcher).unwrap().to_string(), "1.21.1");
+        assert_eq!(
+            release(&home.path().join("app-1.9.0/Gemini.exe"))
+                .unwrap()
+                .to_string(),
+            "1.9.0"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gemini_desktop_requires_its_bundle_identifier() {
+        let temp =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let bundle = temp.path().join("Gemini.app");
+        std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+        let plist = bundle.join("Contents/Info.plist");
+        for (id, detected) in [
+            ("com.google.GeminiMacOS", true),
+            ("com.google.Chrome.app.gemini", false),
+        ] {
+            std::fs::write(
+                &plist,
+                format!(
+                    r#"<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{id}</string></dict></plist>"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                super::app_path_matches_agent("gemini-desktop", &bundle),
+                detected
+            );
+        }
+    }
 
     #[tokio::test]
     async fn package_output_continues_after_non_utf8_bytes() {
@@ -2124,7 +2507,7 @@ mod tests {
         bytes.extend_from_slice(b"\xff line\r\nfinished\nfinal line");
         let mut received = Vec::new();
 
-        super::forward_package_output(Some(bytes.as_slice()), |line| {
+        super::forward_package_output(Some(bytes.as_slice()), &mut Vec::new(), |line| {
             received.push(line.to_string());
         })
         .await
@@ -2134,6 +2517,70 @@ mod tests {
             received,
             ["开始", "", "legacy � line", "finished", "final line"]
         );
+    }
+
+    #[tokio::test]
+    async fn package_command_finishes_while_a_helper_still_holds_its_pipes() {
+        use std::io::Write;
+        use std::time::{Duration, Instant};
+        const TEST: &str =
+            "agents::programs::tests::package_command_finishes_while_a_helper_still_holds_its_pipes";
+        const DIRECTORY: &str = "AGENTBRO_PACKAGE_PIPE_TEST_DIRECTORY";
+        const HOLDER: &str = "AGENTBRO_PACKAGE_PIPE_TEST_HOLDER";
+
+        let executable = std::env::current_exe().unwrap();
+        if let Some(directory) = std::env::var_os(DIRECTORY).map(std::path::PathBuf::from) {
+            let ready = directory.join("holder-ready");
+            if std::env::var_os(HOLDER).is_some() {
+                std::fs::write(&ready, b"ready").unwrap();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while directory.is_dir() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                return;
+            }
+
+            let mut helper = crate::platform::process::background_command(&executable)
+                .args(["--exact", TEST, "--nocapture"])
+                .env(HOLDER, "1")
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert!(ready.exists() && helper.try_wait().unwrap().is_none());
+            println!("package stdout before exit");
+            eprint!("package stderr without newline");
+            std::io::stderr().flush().unwrap();
+            std::process::exit(7);
+        }
+
+        let directory =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let mut command = super::package_command(&executable, None);
+        command
+            .args(["--exact", TEST, "--nocapture"])
+            .env(DIRECTORY, directory.path());
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let result = tokio::time::timeout(
+            Duration::from_secs(12),
+            super::run_package_command(
+                command,
+                |line| stdout.push(line.to_owned()),
+                |line| stderr.push(line.to_owned()),
+            ),
+        )
+        .await
+        .expect("the package command should finish before its helper releases the pipes")
+        .unwrap();
+        assert!(directory.path().join("holder-ready").is_file());
+        assert_eq!(result.code(), Some(7));
+        assert!(stdout
+            .iter()
+            .any(|line| line == "package stdout before exit"));
+        assert_eq!(stderr, ["package stderr without newline"]);
     }
 
     #[test]
@@ -2181,6 +2628,74 @@ mod tests {
         );
         drop(running);
         assert!(super::claim_agent_package_operation().is_ok());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn qoder_cli_program_shows_the_selected_version() {
+        const LAUNCHER: &str = "AGENTBRO_TEST_QODER_CLI_LAUNCHER";
+        const TEST: &str = "agents::programs::tests::qoder_cli_program_shows_the_selected_version";
+
+        if let Some(launcher) = std::env::var_os(LAUNCHER) {
+            let info = super::info_for_agent_seed(
+                super::AgentProgramSeed {
+                    id: "qoder-cli".into(),
+                    display_name: "Qoder CLI".into(),
+                    icon: "qoder".into(),
+                    hooks_installed: false,
+                },
+                true,
+            )
+            .await;
+            assert_eq!(
+                info.binary_path.as_deref().map(Path::new),
+                Some(Path::new(&launcher))
+            );
+            assert_eq!(info.status, super::AgentProgramStatus::Installed);
+            assert_eq!(info.installed_version.as_deref(), Some("1.1.98"));
+            assert!(info.latest_version.is_none());
+            return;
+        }
+
+        let temp =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let bin = temp.path().join("Qoder CLI 工具");
+        std::fs::create_dir(&bin).unwrap();
+        #[cfg(windows)]
+        let (launcher, script) = (
+            bin.join("qodercli.cmd"),
+            "@echo off\r\nif not \"%~1\"==\"--version\" exit /b 1\r\necho 1.1.98\r\n",
+        );
+        #[cfg(unix)]
+        let (launcher, script) = (
+            bin.join("qodercli"),
+            "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 1\necho '1.1.98'\n",
+        );
+        std::fs::write(&launcher, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::copy(&launcher, temp.path().join(launcher.file_name().unwrap())).unwrap();
+        let path = std::env::var_os("PATH");
+        let path = std::env::join_paths(
+            std::iter::once(bin).chain(path.as_deref().into_iter().flat_map(std::env::split_paths)),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .current_dir(temp.path())
+            .env("PATH", path)
+            .env(LAUNCHER, launcher)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[cfg(any(unix, windows))]
@@ -2448,7 +2963,7 @@ mod tests {
     }
 
     #[test]
-    fn npm_agent_updates_install_latest_package_directly() {
+    fn npm_agents_expose_update_metadata() {
         let claude = metadata_for("claude-code").expect("claude metadata");
         assert_eq!(
             claude.update_command,
@@ -2484,6 +2999,62 @@ mod tests {
 
         let cline = metadata_for("cline").expect("cline metadata");
         assert_eq!(cline.uninstall_command, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn desktop_trash_requires_the_original_reviewed_bundle() {
+        let fixture = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary applications");
+        let apps = fixture.path().join("Applications");
+        let original = apps.join("Cursor.app");
+        let alternate = apps.join("Cursor Copy.app");
+        let saved = fixture.path().join("saved.app");
+        for bundle in [&original, &alternate] {
+            std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+            std::fs::write(
+                bundle.join("Contents/Info.plist"),
+                br#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.todesktop.230313mzl4w4u92</string></dict></plist>"#,
+            )
+            .unwrap();
+        }
+        let inspect = |path: &std::path::Path| {
+            super::app_uninstall_target_at(path.to_str().unwrap(), Some(&apps))
+        };
+        let reviewed = inspect(&original).unwrap();
+        assert_eq!(
+            super::reviewed_app_uninstall_target(inspect(&original), Some(&reviewed)).unwrap(),
+            reviewed
+        );
+        assert!(super::reviewed_app_uninstall_target(inspect(&original), None).is_err());
+        assert!(
+            super::reviewed_app_uninstall_target(inspect(&alternate), Some(&reviewed)).is_err()
+        );
+        assert!(super::app_uninstall_target_at(original.to_str().unwrap(), None).is_none());
+
+        std::fs::rename(&original, &saved).unwrap();
+        assert!(super::reviewed_app_uninstall_target(inspect(&original), Some(&reviewed)).is_err());
+        std::fs::rename(&alternate, &original).unwrap();
+        let replacement = inspect(&original).unwrap();
+        assert_eq!(replacement.path, reviewed.path);
+        assert!(
+            super::reviewed_app_uninstall_target(Some(replacement.clone()), Some(&reviewed))
+                .is_err()
+        );
+        assert!(
+            super::reviewed_app_uninstall_target(inspect(&original), Some(&replacement)).is_ok()
+        );
+
+        let plist = original.join("Contents/Info.plist");
+        std::fs::rename(&plist, fixture.path().join("old.plist")).unwrap();
+        std::fs::copy(saved.join("Contents/Info.plist"), &plist).unwrap();
+        assert!(
+            super::reviewed_app_uninstall_target(inspect(&original), Some(&replacement)).is_err()
+        );
+        std::os::unix::fs::symlink(&saved, &alternate).unwrap();
+        assert!(inspect(&alternate).is_none());
+        assert!(saved.join("Contents/Info.plist").is_file());
+        assert!(plist.is_file());
     }
 
     #[test]
@@ -2659,25 +3230,61 @@ esac
         use std::os::unix::fs::PermissionsExt;
 
         const CHILD_PROBE: &str = "AGENTBRO_TEST_NPM_CHILD_PROBE";
-        if std::env::var_os(CHILD_PROBE).is_some() {
+        if let Some(prefix) = std::env::var_os(CHILD_PROBE).map(PathBuf::from) {
             let meta = metadata_for("claude-code").unwrap();
+            let info = super::info_for_agent_seed(
+                super::AgentProgramSeed {
+                    id: "claude-code".to_string(),
+                    display_name: "Claude Code".to_string(),
+                    icon: "claude".to_string(),
+                    hooks_installed: false,
+                },
+                true,
+            )
+            .await;
             assert_eq!(
-                version_info_for(&meta, None, true).await,
+                (info.installed_version, info.latest_version),
                 (Some("2.0.0".to_string()), Some("3.0.0".to_string()))
             );
-            for command in [
-                meta.install_command.unwrap(),
-                meta.update_command.unwrap(),
-                meta.uninstall_command.unwrap(),
+            assert_eq!(
+                info.binary_path.as_deref(),
+                prefix.join("bin/claude").to_str()
+            );
+            let installation = meta
+                .npm_installation(Some(&prefix.join("bin/claude")))
+                .unwrap();
+            let update_command = npm_update_command_line("claude-code", &meta, &installation)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                update_command,
+                "npm install -g @anthropic-ai/claude-code@3.0.0"
+            );
+            for registry_version in ["1.0.0", "2.0.0+registry", "2.0.0-rc.1"] {
+                std::fs::write(prefix.join("registry-version"), registry_version).unwrap();
+                assert!(npm_update_command_line("claude-code", &meta, &installation)
+                    .await
+                    .unwrap()
+                    .is_none());
+            }
+            for (command, prefix_arg) in [
+                (meta.install_command.unwrap(), None),
+                (update_command.as_str(), Some(prefix.as_path())),
+                (meta.uninstall_command.unwrap(), Some(prefix.as_path())),
             ] {
-                let output = super::package_operation_command(command)
+                let output = super::package_operation_command(command, prefix_arg)
                     .output()
                     .await
                     .unwrap();
                 assert!(output.status.success(), "{command}");
                 assert_eq!(
                     String::from_utf8_lossy(&output.stdout).trim(),
-                    format!("selected {command}")
+                    if prefix_arg.is_some() {
+                        format!("selected {command} --prefix {}", prefix.display())
+                    } else {
+                        format!("selected {command}")
+                    }
                 );
             }
             return;
@@ -2687,6 +3294,22 @@ esac
         let launcher = home.join("agent launchers");
         let login_launcher = home.join("login tools");
         let toolchain = home.join(".nvm/versions/node/v22.0.0/bin");
+        let prefix = home.join("selected prefix");
+        let package = prefix.join("lib/node_modules/@anthropic-ai/claude-code");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@anthropic-ai/claude-code","version":"2.0.0","bin":{"claude":"cli.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(package.join("cli.js"), "#!/bin/sh\necho 2.0.0\n").unwrap();
+        std::fs::set_permissions(
+            package.join("cli.js"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(package.join("cli.js"), prefix.join("bin/claude")).unwrap();
         std::fs::create_dir_all(&launcher).unwrap();
         std::fs::create_dir_all(&login_launcher).unwrap();
         std::fs::create_dir_all(&toolchain).unwrap();
@@ -2710,11 +3333,17 @@ esac
 case "$2" in
   list)
     [ "$7" = "--no-update-notifier" ] || exit 1
-    printf '%s\n' '{"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}'
+    printf '%s\n' '{"dependencies":{"@anthropic-ai/claude-code":{"version":"9.0.0"}}}'
     ;;
   view)
+    [ "$3" = "@anthropic-ai/claude-code@latest" ] || exit 1
     [ "$6 $7 $8" = "--no-update-notifier --fetch-retries=0 --fetch-timeout=4000" ] || exit 1
-    printf '%s\n' '3.0.0'
+    [ "$9" = "--prefix" ] && [ "${10}" = "$AGENTBRO_TEST_NPM_CHILD_PROBE" ] || exit 1
+    if [ -f "${10}/registry-version" ]; then
+        cat "${10}/registry-version"
+    else
+        printf '%s\n' '3.0.0'
+    fi
     ;;
   install|uninstall) shift; printf 'selected npm %s\n' "$*" ;;
   *) exit 1 ;;
@@ -2725,12 +3354,17 @@ esac
             std::fs::write(&path, contents).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let path =
-            std::env::join_paths([launcher.as_path(), Path::new("/usr/bin"), Path::new("/bin")])
-                .unwrap();
+        let path = std::env::join_paths([
+            prefix.join("bin").as_path(),
+            launcher.as_path(),
+            Path::new("/usr/bin"),
+            Path::new("/bin"),
+        ])
+        .unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .current_dir(&home)
-            .env(CHILD_PROBE, "1")
+            .env(CHILD_PROBE, prefix.canonicalize().unwrap())
+            .env("npm_config_prefix", home.join("default prefix"))
             .env("HOME", &home)
             .env("SHELL", "/bin/sh")
             .env("PATH", path)
@@ -2763,7 +3397,7 @@ esac
         assert!(
             super::package_probe_output(&mut npm, tokio::time::Duration::from_millis(500))
                 .await
-                .is_none()
+                .is_err()
         );
         let pid = std::fs::read_to_string(&pid_file).expect("npm probe process started");
         std::fs::remove_file(&pid_file).unwrap();

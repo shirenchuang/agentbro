@@ -48,6 +48,7 @@ pub fn managed_agent_ids() -> Vec<String> {
         "claude-code",
         "codex",
         "gemini",
+        "gemini-desktop",
         "antigravity",
         "cursor",
         "opencode",
@@ -119,6 +120,11 @@ fn table() -> &'static [AgentMeta] {
         AgentMeta {
             id: "gemini",
             display_name: "Gemini CLI",
+            icon_key: "gemini",
+        },
+        AgentMeta {
+            id: "gemini-desktop",
+            display_name: "Gemini Desktop",
             icon_key: "gemini",
         },
         AgentMeta {
@@ -277,18 +283,26 @@ fn humanize(id: &str) -> String {
         .join(" ")
 }
 
+pub(super) fn skill_target_owner(agent: &str) -> &str {
+    if cfg!(target_os = "macos") && agent == crate::agents::gemini_desktop::ID {
+        "antigravity"
+    } else {
+        agent
+    }
+}
+
 /// Resolve the primary skills directory for an agent under a given home.
 pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> {
     // Use the existing resolver by temporarily relying on its home() helper.
     // agent_paths uses dirs::home_dir(), so we pass-through; for tests we set
     // HOME env. To support a custom home we replicate the minimal mapping here.
-    let rel = match agent {
+    let rel = match skill_target_owner(agent) {
         "openclaw" => return Some(openclaw_workspace_dir(home).join("skills")),
         "agents" => ".agents/skills",
         "claude-code" => return Some(agent_paths::claude_code_home_for(home).join("skills")),
         "codex" => ".codex/skills",
         "gemini" => ".gemini/skills",
-        "antigravity" => ".gemini/config/skills",
+        "antigravity" => return Some(agent_paths::antigravity_skills_dir_for(home)),
         "cursor" => ".cursor/skills",
         "opencode" => ".opencode/skills",
         "qclaw" => ".qclaw/skills",
@@ -449,8 +463,10 @@ pub fn agent_installed(home: &std::path::Path, agent: &str) -> bool {
     #[cfg(target_os = "windows")]
     {
         // Check the desktop launcher directly without scanning PATH.
-        matches!(agent, "qwenwork-cn" | "workbuddy" | "workbuddy-ai")
-            && is_runtime_home(home)
+        matches!(
+            agent,
+            "gemini-desktop" | "qwenwork-cn" | "workbuddy" | "workbuddy-ai"
+        ) && is_runtime_home(home)
             && crate::agents::programs::installed_app_path_for_agent(agent).is_some()
     }
 

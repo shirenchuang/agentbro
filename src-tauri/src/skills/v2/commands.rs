@@ -469,12 +469,14 @@ pub fn execute_import_skill_pack_manifest(
     reviewed: Vec<SkillPackFingerprint>,
     accept_local_copies: bool,
     archive_review: Option<bool>,
+    archive_executable_fingerprints: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<SkillPackDetail, String> {
     svc()?.import_reviewed_skill_pack(
         manifest,
         &reviewed,
         accept_local_copies,
         archive_review.unwrap_or(false),
+        archive_executable_fingerprints.as_ref(),
     )
 }
 
@@ -781,7 +783,7 @@ pub fn preview_fix_diagnosis_issue(
 }
 
 #[tauri::command(async)]
-pub fn execute_fix_diagnosis_issue(issue_type: String, entity_id: String) -> Result<(), String> {
+pub fn execute_fix_diagnosis_issue(issue_type: String, entity_id: String) -> Result<bool, String> {
     let svc = svc()?;
     diagnosis::execute_fix(&svc, &issue_type, &entity_id)
 }

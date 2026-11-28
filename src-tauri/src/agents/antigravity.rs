@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 pub struct AntiGravityAdapter {
+    agent_id: &'static str,
     config_root: PathBuf,
     legacy_settings_path: PathBuf,
     status: AdapterStatus,
@@ -11,17 +12,35 @@ pub struct AntiGravityAdapter {
 
 impl AntiGravityAdapter {
     pub fn new() -> Self {
+        Self::with_agent_id("antigravity")
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn gemini_desktop() -> Self {
+        Self::with_agent_id(super::gemini_desktop::ID)
+    }
+
+    fn with_agent_id(agent_id: &'static str) -> Self {
         let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        let status = Self::detect_status();
+        let status = Self::detect_status(agent_id);
         Self {
+            agent_id,
             config_root: home.join(".gemini").join("config"),
             legacy_settings_path: home.join(".antigravity").join("settings.json"),
             status,
         }
     }
 
-    fn detect_status() -> AdapterStatus {
-        super::programs::detected_status_for_agent_program("antigravity")
+    fn detect_status(agent_id: &str) -> AdapterStatus {
+        #[cfg(target_os = "macos")]
+        if agent_id == super::gemini_desktop::ID {
+            return if super::gemini_desktop::has_bundled_runtime() {
+                AdapterStatus::Available
+            } else {
+                AdapterStatus::Unavailable
+            };
+        }
+        super::programs::detected_status_for_agent_program(agent_id)
     }
 
     fn hooks_path(&self) -> PathBuf {
@@ -31,15 +50,23 @@ impl AntiGravityAdapter {
 
 impl AgentAdapter for AntiGravityAdapter {
     fn name(&self) -> &str {
-        "antigravity"
+        self.agent_id
     }
 
     fn display_name(&self) -> &str {
-        "Antigravity"
+        if self.agent_id == super::gemini_desktop::ID {
+            "Gemini Desktop"
+        } else {
+            "Antigravity"
+        }
     }
 
     fn icon(&self) -> &str {
-        "antigravity"
+        if self.agent_id == super::gemini_desktop::ID {
+            "gemini"
+        } else {
+            "antigravity"
+        }
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -61,7 +88,7 @@ impl AgentAdapter for AntiGravityAdapter {
     }
 
     fn detect_status_now(&self) -> AdapterStatus {
-        Self::detect_status()
+        Self::detect_status(self.agent_id)
     }
 
     fn parse_event(&self, raw: &Value) -> Result<AgentEvent, Box<dyn std::error::Error>> {
@@ -90,12 +117,6 @@ impl AgentAdapter for AntiGravityAdapter {
             .unwrap_or_else(|| serde_json::json!({}));
 
         match event {
-            "PreToolUse" => Ok(AgentEvent::PermissionRequest {
-                session_id,
-                tool_name,
-                diff: None,
-                options: None,
-            }),
             "PostToolUse" => {
                 let error = string_field(raw, &["tool_error", "error"])
                     .filter(|value| !value.trim().is_empty());
@@ -113,11 +134,11 @@ impl AgentAdapter for AntiGravityAdapter {
             }
             "PreInvocation" => Ok(AgentEvent::Processing {
                 session_id,
-                description: "Antigravity is thinking".to_string(),
+                description: format!("{} is thinking", self.display_name()),
             }),
             "PostInvocation" => Ok(AgentEvent::Processing {
                 session_id,
-                description: "Antigravity is processing the next step".to_string(),
+                description: format!("{} is processing the next step", self.display_name()),
             }),
             "Stop" => {
                 let error = string_field(raw, &["error"]).filter(|value| !value.trim().is_empty());
@@ -129,15 +150,32 @@ impl AgentAdapter for AntiGravityAdapter {
                         session_id,
                         message: message.to_string(),
                     })
-                } else if termination_reason == "error" {
+                } else if termination_reason.eq_ignore_ascii_case("error") {
                     Ok(AgentEvent::Error {
                         session_id,
-                        message: "Antigravity execution stopped with an error".to_string(),
+                        message: format!("{} stopped with an error", self.display_name()),
+                    })
+                } else if raw
+                    .get("fully_idle")
+                    .or_else(|| raw.get("fullyIdle"))
+                    .and_then(Value::as_bool)
+                    == Some(false)
+                {
+                    Ok(AgentEvent::Processing {
+                        session_id,
+                        description: format!(
+                            "{} is finishing background tasks",
+                            self.display_name()
+                        ),
                     })
                 } else {
                     Ok(AgentEvent::TaskComplete {
                         session_id,
-                        summary: format!("Antigravity completed ({termination_reason})"),
+                        summary: if self.agent_id == super::gemini_desktop::ID {
+                            "Gemini coding turn completed".to_string()
+                        } else {
+                            format!("Antigravity completed ({termination_reason})")
+                        },
                     })
                 }
             }
@@ -146,7 +184,7 @@ impl AgentAdapter for AntiGravityAdapter {
                 project: super::project_name_from_path(&cwd),
                 cwd,
                 terminal: String::new(),
-                agent_type: "antigravity".to_string(),
+                agent_type: self.agent_id.to_string(),
             }),
             "SessionEnd" | "session_end" => Ok(AgentEvent::SessionEnd { session_id }),
             _ => Ok(AgentEvent::Processing {
@@ -191,34 +229,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_documented_pre_tool_payload() {
-        let adapter = AntiGravityAdapter::new();
-        let event = adapter
-            .parse_event(&serde_json::json!({
-                "event": "PreToolUse",
-                "conversationId": "conversation-1",
-                "workspacePaths": ["/workspace/project"],
-                "toolCall": {
-                    "name": "run_command",
-                    "args": {
-                        "CommandLine": "pnpm test",
-                        "Cwd": "/workspace/project"
-                    }
-                }
-            }))
-            .expect("parse PreToolUse");
-
-        assert!(matches!(
-            event,
-            AgentEvent::PermissionRequest {
-                session_id,
-                tool_name,
-                ..
-            } if session_id == "conversation-1" && tool_name == "run_command"
-        ));
-    }
-
-    #[test]
     fn parses_documented_stop_payload() {
         let adapter = AntiGravityAdapter::new();
         let event = adapter
@@ -236,6 +246,24 @@ mod tests {
                 session_id,
                 summary,
             } if session_id == "conversation-2" && summary.contains("model_stop")
+        ));
+    }
+
+    #[test]
+    fn antigravity_stays_active_until_background_work_finishes() {
+        let adapter = AntiGravityAdapter::new();
+        let event = adapter
+            .parse_event(&serde_json::json!({
+                "event": "Stop",
+                "conversationId": "conversation-2",
+                "terminationReason": "model_stop",
+                "fullyIdle": false,
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            event,
+            AgentEvent::Processing { session_id, .. } if session_id == "conversation-2"
         ));
     }
 

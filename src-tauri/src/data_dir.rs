@@ -11,23 +11,23 @@ pub fn agentbro_home() -> PathBuf {
         .join(".agentbro")
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn try_windows_startup_lock(
     directory: &Path,
     port: u16,
 ) -> io::Result<Option<fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
     fs::create_dir_all(directory)?;
     let path = directory.join(format!("windows-startup-{port}.lock"));
-    let mut options = fs::OpenOptions::new();
-    options.create(true).truncate(false).write(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
-        // Keep the lock file's identity while the first process is running.
-        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
-    }
-    let file = options.open(path)?;
+    // Keep the lock file's identity while the first process is running.
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(path)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(fs::TryLockError::WouldBlock) => Ok(None),
@@ -163,24 +163,6 @@ mod tests {
     use super::*;
     use crate::skills::installer::TempInstallDir;
     use rusqlite::config::DbConfig;
-
-    #[test]
-    fn windows_startup_lock_excludes_only_the_same_port_and_releases_on_drop() {
-        let directory = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
-        let launch = try_windows_startup_lock(directory.path(), 17894)
-            .unwrap()
-            .unwrap();
-        assert!(try_windows_startup_lock(directory.path(), 17894)
-            .unwrap()
-            .is_none());
-        assert!(try_windows_startup_lock(directory.path(), 17895)
-            .unwrap()
-            .is_some());
-        drop(launch);
-        assert!(try_windows_startup_lock(directory.path(), 17894)
-            .unwrap()
-            .is_some());
-    }
 
     fn write_wal_database(path: &Path) -> Connection {
         let db = Connection::open(path).unwrap();

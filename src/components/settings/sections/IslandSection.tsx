@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { open as openDialog, ask as askDialog } from '@tauri-apps/plugin-dialog'
 import { useConfigStore } from '../../../stores/configStore'
 import type { SoundChoice, SoundRule } from '../../../stores/configStore'
@@ -24,12 +25,14 @@ import {
   registerGlobalShortcut, setGlobalActionShortcuts, setIslandFeatureFlags, setIslandSurfaceOptions,
   setActiveBackendTheme,
   runHookDoctor, uninstallAllHooks,
-  getConfig, updateConfig as updateBackendConfig, listUsageProviders, authorizeUsageProvider,
+  updateIslandPreferences, listUsageProviders, authorizeUsageProvider,
   setAgentDefaultPet,
   resetPetPosition,
 } from '../../../services/tauriApi'
 import type { BackendDisplayInfo, HookDoctorCheck, HookDoctorReport, HookEventStatus, UsageProviderStatus } from '../../../services/tauriApi'
 import type { IslandLayoutPreviewMode, IslandLayoutPreviewOptions } from '../../../services/tauriApi'
+import type { IslandPreferencesPatch } from '../../../services/tauriApi'
+import { usesSharedAntigravityHook } from '../../../services/agentApi'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
@@ -135,30 +138,17 @@ function persistIslandSurfaceOptions(next: Partial<{ islandSurfaceMode: 'island'
 }
 
 function persistPetVitalsDebugOpen(open: boolean) {
-  getConfig()
-    .then((backendConfig) => updateBackendConfig({ ...backendConfig, petVitalsDebugOpen: open }))
+  updateIslandPreferences({ petVitalsDebugOpen: open })
     .catch((err) => console.error('Failed to persist pet vitals debug panel setting:', err))
 }
 
-function persistUsageQuerySettings(next: Partial<{ usageQueryEnabled: boolean; showUsageQuota: boolean }>) {
-  const state = useConfigStore.getState()
-  getConfig()
-    .then((backendConfig) => updateBackendConfig({
-      ...backendConfig,
-      usageQueryEnabled: next.usageQueryEnabled ?? state.usageQueryEnabled,
-      showTokenUsage: next.showUsageQuota ?? state.showUsageQuota,
-    }))
+function persistUsageQuerySettings(enabled: boolean) {
+  updateIslandPreferences({ usageQueryEnabled: enabled, showTokenUsage: enabled })
     .catch((err) => console.error('Failed to persist usage query settings:', err))
 }
 
-function persistIdleInteractionRouting(next: Partial<{ enabled: boolean; minutes: number }>) {
-  const state = useConfigStore.getState()
-  getConfig()
-    .then((backendConfig) => updateBackendConfig({
-      ...backendConfig,
-      idleInteractionRoutingEnabled: next.enabled ?? state.idleInteractionRoutingEnabled,
-      idleInteractionRoutingMinutes: next.minutes ?? state.idleInteractionRoutingMinutes,
-    }))
+function persistIdleInteractionRouting(patch: Pick<IslandPreferencesPatch, 'idleInteractionRoutingEnabled' | 'idleInteractionRoutingMinutes'>) {
+  updateIslandPreferences(patch)
     .catch((err) => console.error('Failed to persist idle interaction routing:', err))
 }
 
@@ -762,7 +752,7 @@ function BehaviorTab() {
         <SettingRow label={t('settings.idleInteractionRouting')} description={t('settings.idleInteractionRoutingDesc')}>
           <Toggle checked={config.idleInteractionRoutingEnabled} onChange={(v) => {
             config.updateConfig('idleInteractionRoutingEnabled', v)
-            persistIdleInteractionRouting({ enabled: v })
+            persistIdleInteractionRouting({ idleInteractionRoutingEnabled: v })
           }} />
         </SettingRow>
         {config.idleInteractionRoutingEnabled && (
@@ -773,7 +763,7 @@ function BehaviorTab() {
               onChange={(v) => {
                 const minutes = Number(v)
                 config.updateConfig('idleInteractionRoutingMinutes', minutes)
-                persistIdleInteractionRouting({ minutes })
+                persistIdleInteractionRouting({ idleInteractionRoutingMinutes: minutes })
               }}
               minWidth={130}
             />
@@ -809,13 +799,29 @@ function DisplayTab() {
   const compactPillWidthValue = Math.round(config.compactPillWidth * (config.collapsedWidthScale / 100))
 
   useEffect(() => {
-    listDisplays().then(setDisplays)
-    if (!isTauri()) return
+    let cancelled = false
+    let requestId = 0
     let unlisten: (() => void) | undefined
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<BackendDisplayInfo[]>('display-changed', (e) => { setDisplays(e.payload) }).then((fn) => { unlisten = fn })
-    })
-    return () => { unlisten?.() }
+    const refreshDisplays = () => {
+      if (cancelled) return
+      const id = ++requestId
+      void listDisplays().then((current) => {
+        if (!cancelled && id === requestId) setDisplays(current)
+      }).catch(() => {})
+    }
+
+    if (isTauri()) {
+      void listen('display-changed', refreshDisplays).then((dispose) => {
+        if (cancelled) dispose()
+        else unlisten = dispose
+      }).catch(() => {}).then(refreshDisplays)
+    } else {
+      refreshDisplays()
+    }
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
   }, [])
 
   const previewLayout = useCallback((mode: IslandLayoutPreviewMode, overrides: IslandLayoutPreviewOptions = {}) => {
@@ -1989,7 +1995,7 @@ function IntegrationTab() {
   const setUsageQueryEnabled = (enabled: boolean) => {
     config.updateConfig('usageQueryEnabled', enabled)
     config.updateConfig('showUsageQuota', enabled)
-    persistUsageQuerySettings({ usageQueryEnabled: enabled, showUsageQuota: enabled })
+    persistUsageQuerySettings(enabled)
     window.setTimeout(() => { fetchUsageProviders({ live: false, showLoading: false }) }, 150)
   }
 
@@ -2318,6 +2324,9 @@ function IntegrationTab() {
                   )}
                 </div>
                 <div className="hook-tool-row__path">{tool.configPath || tool.status || toolId}</div>
+                {usesSharedAntigravityHook(toolId) && (
+                  <div className="hook-tool-row__description">{t('skills.agentManagement.geminiSharedHook')}</div>
+                )}
               </div>
               <div className={`hook-status-badge hook-status-badge--${installStatus}`}>
                 {hookInstallStatusLabel(t, installStatus)}

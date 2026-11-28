@@ -8,13 +8,19 @@ param(
     [switch]$VerifyPinnedPackManifest,
     [string]$PackManifestLink,
     [switch]$TracePermissionUi,
+    [switch]$VerifyQuestionReconnect,
     [string]$SymbolsDirectory,
     [switch]$VerifyDrag,
+    [switch]$VerifyDisplayChange,
     [switch]$CloseStartupSettings,
     [switch]$AutomationFocusPermission,
     [switch]$VerifyGlobalShortcuts,
     [switch]$VerifyStartupStackSampler,
     [switch]$VerifyStartupLock,
+    [switch]$VerifyStartupFailure,
+    [switch]$VerifyStartupOrder,
+    [switch]$VerifyStartupReopen,
+    [switch]$VerifyDiagnosticsExport,
     [switch]$VerifyAgentPackageConsole,
     [switch]$VerifyRegisteredAgentApp
 )
@@ -38,28 +44,69 @@ if ($VerifyAgentPackageConsole) {
     $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED = Join-Path $stage 'package-updated'
     $env:AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION = Join-Path $stage 'package-changed-version'
     $env:AGENTBRO_PACKAGE_FIXTURE_NEW_TAG = Join-Path $stage 'package-new-tag'
+    $env:AGENTBRO_PACKAGE_OUTPUT_HOLDER = Join-Path $stage 'hold-package-output.cjs'
+    @'
+const { spawn } = require('node:child_process')
+const { existsSync, writeFileSync } = require('node:fs')
+
+if (process.argv[2] === 'hold') {
+  writeFileSync(__filename + '.pid', String(process.pid))
+  const deadline = Date.now() + 60000
+  const check = setInterval(() => {
+    if (existsSync(__filename + '.release') || !existsSync(__dirname) || Date.now() >= deadline) {
+      clearInterval(check)
+    }
+  }, 50)
+} else {
+  // On Windows, Node terminates non-detached children when the launcher exits.
+  const holder = spawn(process.execPath, [__filename, 'hold'], {
+    detached: true,
+    stdio: ['ignore', 'inherit', 'inherit'],
+    windowsHide: true,
+  })
+  holder.unref()
+}
+'@ | Set-Content -LiteralPath $env:AGENTBRO_PACKAGE_OUTPUT_HOLDER -Encoding ascii
     $env:npm_config_offline = 'true'
     $env:npm_config_cache = Join-Path $stage 'isolated npm cache'
     $env:npm_config_prefix = Join-Path $stage 'isolated npm prefix'
+    $env:AGENTBRO_PACKAGE_FIXTURE_PREFIX = $fixtureBin
+    $packageRelative = 'node_modules\@anthropic-ai\claude-code'
+    $env:AGENTBRO_PACKAGE_FIXTURE_MANIFEST = Join-Path $fixtureBin "$packageRelative\package.json"
+    $fixtureLauncherText = @'
+@ECHO off
+SET "dp0=%~dp0"
+node "%dp0%\node_modules\@anthropic-ai\claude-code\cli.js" %*
+'@
+    $fixtureLauncherBackup = Join-Path $stage 'claude.cmd.fixture'
+    Set-Content -LiteralPath $fixtureLauncherBackup -Value $fixtureLauncherText -Encoding ascii
+    $alternatePrefix = Join-Path $stage 'alternate npm prefix'
+    foreach ($prefix in @($fixtureBin, $env:npm_config_prefix, $alternatePrefix)) {
+        $package = Join-Path $prefix $packageRelative
+        $null = New-Item -ItemType Directory -Path $package -Force
+        $version = if ($prefix -eq $env:npm_config_prefix) { '9.0.0' } else { '2.0.0' }
+        "{`"name`":`"@anthropic-ai/claude-code`",`"version`":`"$version`",`"bin`":{`"claude`":`"./cli.js`"}}" |
+            Set-Content -LiteralPath (Join-Path $package 'package.json') -Encoding ascii
+        Set-Content -LiteralPath (Join-Path $package 'cli.js') -Value 'console.log(require("./package.json").version)' -Encoding ascii
+        Copy-Item -LiteralPath $fixtureLauncherBackup -Destination (Join-Path $prefix 'claude.cmd') -Force
+    }
     $fallbackBin = Join-Path $stage 'fallback bin'
     $null = New-Item -ItemType Directory -Path $fallbackBin
     Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\whoami.exe') -Destination (Join-Path $fallbackBin 'claude.exe')
-    $fixtureSearchPath += $fallbackBin
+    $fixtureAlias = Join-Path $stage 'active npm prefix'
+    $null = New-Item -ItemType Junction -Path $fixtureAlias -Target $fixtureBin
+    $fixtureSearchPath = @($fixtureAlias, $fixtureBin, $fallbackBin)
     $fixtureNpm = @'
 @echo off
 if /i "%~1"=="list" (
     if "%~3"=="@anthropic-ai/claude-code" (
         if not "%~6"=="--no-update-notifier" exit /b 1
-        if exist "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%" (
-            echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"999.0.0"}}}
-        ) else (
-            echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}
-        )
+        echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"9.0.0"}}}
     )
     exit /b 0
 )
 if /i "%~1"=="view" (
-    if "%~2"=="@anthropic-ai/claude-code" (
+    if "%~2"=="@anthropic-ai/claude-code@latest" (
         if not "%~5 %~6 %~7"=="--no-update-notifier --fetch-retries=0 --fetch-timeout=4000" exit /b 1
         if exist "%AGENTBRO_PACKAGE_FIXTURE_NEW_TAG%" (
             echo 999.0.0
@@ -69,7 +116,9 @@ if /i "%~1"=="view" (
     )
     exit /b 0
 )
-if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
+if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@999.0.0" (
+    >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.mutation" echo install
+    if /i not "%npm_config_prefix%"=="%AGENTBRO_PACKAGE_FIXTURE_PREFIX%" exit /b 2
     >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo npm fixture entered the update
     set "agentbro_retry="
     if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%" set "agentbro_retry=1"
@@ -79,20 +128,29 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
         exit /b 1
     )
     if exist "%AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION%" set "agentbro_retry=1"
-    if defined agentbro_retry type nul > "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%"
+    if defined agentbro_retry (
+        >"%npm_config_prefix%\node_modules\@anthropic-ai\claude-code\package.json" echo {"name":"@anthropic-ai/claude-code","version":"999.0.0","bin":{"claude":"./cli.js"}}
+        type nul > "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%"
+    )
     echo agentbro-package-fixture-stdout
     >&2 echo agentbro-package-fixture-stderr
+    if exist "%AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION%" (
+        node "%AGENTBRO_PACKAGE_OUTPUT_HOLDER%"
+        if errorlevel 1 exit /b 1
+    )
     exit /b 0
 )
 if "%~1 %~2 %~3"=="uninstall -g @anthropic-ai/claude-code" (
+    >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.mutation" echo uninstall
+    if /i not "%npm_config_prefix%"=="%AGENTBRO_PACKAGE_FIXTURE_PREFIX%" exit /b 2
     if not exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall-failed" (
         type nul > "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall-failed"
         >&2 echo fixture uninstall failed
         exit /b 1
     )
     if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall" (
-        del /q "%~dp0claude.cmd"
-        if exist "%~dp0claude.cmd" exit /b 1
+        del /q "%npm_config_prefix%\claude.cmd"
+        if exist "%npm_config_prefix%\claude.cmd" exit /b 1
     ) else (
         type nul > "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.uninstall"
     )
@@ -398,6 +456,7 @@ function Test-DuplicateStartup([string]$State) {
     $launchLog = Join-Path $stage "duplicate-$State.stdout.log"
     $launchError = Join-Path $stage "duplicate-$State.stderr.log"
     $duplicate = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+        -ArgumentList '--startup-lock-probe' `
         -RedirectStandardOutput $launchLog -RedirectStandardError $launchError
     try {
         if (-not $duplicate.WaitForExit(10000)) {
@@ -433,6 +492,14 @@ if ($VerifyStartupLock) {
         Test-DuplicateStartup 'cold-start'
     } finally {
         $fixtureLock.Dispose()
+    }
+}
+
+if ($VerifyStartupFailure) {
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    & $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test-windows-startup-error.ps1') -AppPath $appPath -Stage $stage
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The installed app failed the Windows startup error check.'
     }
 }
 
@@ -605,11 +672,18 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
         Set-Clipboard -Value $PackManifestLink
     }
     if ($VerifyQwenWork) { $start.ArgumentList.Add('-VerifyQwenWork') }
+    if ($VerifyDiagnosticsExport) {
+        $start.ArgumentList.Add('-DiagnosticsExportPath')
+        $start.ArgumentList.Add((Join-Path $stage 'AgentBro startup diagnostics.zip'))
+    }
     if ($VerifyAgentPackageConsole) { $start.ArgumentList.Add('-VerifyAgentPackageConsole') }
     if ($VerifyRegisteredAgentApp) { $start.ArgumentList.Add('-VerifyRegisteredAgentApp') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
+    if ($VerifyQuestionReconnect) { $start.ArgumentList.Add('-VerifyQuestionReconnect') }
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
+    if ($VerifyDisplayChange) { $start.ArgumentList.Add('-VerifyDisplayChange') }
     if ($CloseStartupSettings) { $start.ArgumentList.Add('-CloseStartupSettings') }
+    if ($VerifyStartupReopen) { $start.ArgumentList.Add('-VerifyStartupReopen') }
     if ($AutomationFocusPermission) { $start.ArgumentList.Add('-AutomationFocusPermission') }
     if ($VerifyGlobalShortcuts) { $start.ArgumentList.Add('-VerifyGlobalShortcuts') }
     $start.UseShellExecute = $false
@@ -621,7 +695,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
         $output = $tester.StandardOutput.ReadToEndAsync()
         $errors = $tester.StandardError.ReadToEndAsync()
         $desktopTimeout = if ($VerifyPackManifest -or $VerifyPackArchive -or $VerifyPinnedPackManifest -or $PackManifestLink -or
-            $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) { 180000 } else { 120000 }
+            $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyDiagnosticsExport) { 180000 } else { 120000 }
         if (-not $tester.WaitForExit($desktopTimeout)) {
             throw 'The installed desktop interaction check timed out'
         }
@@ -645,6 +719,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
 }
 
 $hookReady = $false
+$desktopReady = $false
 try {
     Wait-AppCondition 'the installed app to listen on its Hook port' {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
@@ -652,6 +727,20 @@ try {
     $hookReady = $true
     if ($VerifyStartupLock) {
         Test-DuplicateStartup 'active-primary'
+    }
+    if ($VerifyStartupOrder) {
+        Wait-AppCondition 'the installed Windows desktop setup to finish' {
+            Select-String -LiteralPath $stdoutPath -SimpleMatch 'Startup: Windows desktop setup complete' -Quiet
+        }
+        $desktopReady = $true
+        $listener = Select-String -LiteralPath $stdoutPath -SimpleMatch "Listening on TCP: 127.0.0.1:$port" |
+            Select-Object -First 1
+        $notch = Select-String -LiteralPath $stdoutPath -SimpleMatch "Startup: creating Windows window 'notch'" |
+            Select-Object -First 1
+        if (-not $listener -or -not $notch -or $listener.LineNumber -ge $notch.LineNumber) {
+            throw 'The Hook listener did not start before Windows created the Island WebView.'
+        }
+        Write-Output 'The Hook listener opened before the Island WebView, and desktop setup completed.'
     }
     if ($VerifyStartupStackSampler) {
         Write-StartupStacks
@@ -707,7 +796,7 @@ try {
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
     if ($VerifyIsland -or $VerifyPackManifest -or $VerifyPackArchive -or $VerifyPinnedPackManifest -or $PackManifestLink -or
-        $VerifyDrag -or $VerifyQwenWork -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
+        $VerifyDrag -or $VerifyDisplayChange -or $VerifyQwenWork -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp -or $VerifyDiagnosticsExport) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
         $event.session_id = $restoredSession
@@ -733,7 +822,7 @@ try {
             Get-Content -LiteralPath $diagnosticLog -Tail 30
         }
     }
-    if ($SymbolsDirectory -and -not $hookReady -and -not $app.HasExited) {
+    if ($SymbolsDirectory -and (-not $hookReady -or ($VerifyStartupOrder -and -not $desktopReady)) -and -not $app.HasExited) {
         try {
             Write-StartupStacks
         } catch {

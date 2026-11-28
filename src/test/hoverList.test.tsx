@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { AnimatePresence, motion } from 'framer-motion'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HoverList } from '../components/notch/HoverList'
 import { useConfigStore } from '../stores/configStore'
@@ -713,6 +714,87 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
+  it('leaves candidate navigation keys with the input method', () => {
+    const onJumpToTerminal = vi.fn()
+    render(<HoverList sessions={[session()]} onSessionClick={vi.fn()} onJumpToTerminal={onJumpToTerminal} />)
+
+    expect(fireEvent.keyDown(window, { key: 'ArrowDown', isComposing: true })).toBe(true)
+    expect(fireEvent.keyDown(window, { key: 'ArrowUp', keyCode: 229 })).toBe(true)
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(onJumpToTerminal).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(onJumpToTerminal).toHaveBeenCalledExactlyOnceWith('s1')
+  })
+
+  it('keeps the keyboard selection when a live update reorders the rows', () => {
+    const onSessionClick = vi.fn()
+    const onJumpToTerminal = vi.fn()
+    const working = session({ id: 'working', sessionTitle: 'Working session' })
+    const idle = session({ id: 'idle', phase: 'idle', sessionTitle: 'Other session' })
+    const list = (sessions: SessionState[]) => (
+      <HoverList sessions={sessions} onSessionClick={onSessionClick} onJumpToTerminal={onJumpToTerminal} />
+    )
+    const { rerender } = render(list([working, idle]))
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    rerender(list([working, { ...idle, phase: 'waiting_approval' }]))
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    expect(onJumpToTerminal).toHaveBeenCalledExactlyOnceWith('working')
+    expect(screen.getByRole('group', { name: /Working session/ })).toHaveClass('hover-list__card--selected')
+    expect(screen.getByRole('group', { name: /Other session/ })).not.toHaveClass('hover-list__card--selected')
+
+    fireEvent.keyDown(window, { key: 'ArrowUp' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(onJumpToTerminal).toHaveBeenNthCalledWith(2, 'idle')
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('leaves Enter unhandled when the selected session moves outside the visible limit', () => {
+    useConfigStore.setState({ maxVisibleSessions: 1 })
+    const onJumpToTerminal = vi.fn()
+    const onSessionClick = vi.fn()
+    const working = session({ id: 'working', sessionTitle: 'Working session' })
+    const idle = session({ id: 'idle', phase: 'idle', sessionTitle: 'Other session' })
+    const list = (sessions: SessionState[]) => (
+      <HoverList sessions={sessions} onSessionClick={onSessionClick} onJumpToTerminal={onJumpToTerminal} />
+    )
+    const { rerender } = render(list([working, idle]))
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    rerender(list([working, { ...idle, phase: 'waiting_approval' }]))
+    expect(fireEvent.keyDown(window, { key: 'Enter' })).toBe(true)
+    expect(onJumpToTerminal).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(onJumpToTerminal).toHaveBeenCalledExactlyOnceWith('idle')
+  })
+
+  it('does not route the Enter key through the exiting session list', () => {
+    const onSessionClick = vi.fn()
+    const onJumpToTerminal = vi.fn()
+    const list = (visible: boolean) => (
+      <AnimatePresence>
+        {visible && (
+          <motion.div key="hover" exit={{ opacity: 0 }} transition={{ duration: 1 }}>
+            <HoverList sessions={[session()]} onSessionClick={onSessionClick} onJumpToTerminal={onJumpToTerminal} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    )
+    const { rerender } = render(list(true))
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    rerender(list(false))
+    expect(screen.getByText('agentbro · Fix island interactions')).toBeInTheDocument()
+    expect(fireEvent.keyDown(window, { key: 'Enter' })).toBe(true)
+    expect(onJumpToTerminal).not.toHaveBeenCalled()
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
   it('opens a focused row with Enter or Space without jumping to the terminal', async () => {
     const onSessionClick = vi.fn()
     const onJumpToTerminal = vi.fn()
@@ -1102,6 +1184,24 @@ describe('HoverList interactions', () => {
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
+  it('waits for an ordinary Enter before sending an inline custom answer', async () => {
+    renderInlineQuestion({ toolUseId: 'inline-question-ime', question: 'Which target?', options: ['Preview'] })
+    fireEvent.click(screen.getByRole('button', { name: /Other/ }))
+    const field = screen.getByPlaceholderText('Type your response...')
+    fireEvent.change(field, { target: { value: '使用测试环境' } })
+
+    fireEvent.keyDown(field, { key: 'Escape', keyCode: 229 })
+    fireEvent.keyDown(field, { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(field, { key: 'Enter', keyCode: 229 })
+    expect(field).toBeInTheDocument()
+    expect(field).toHaveValue('使用测试环境')
+    expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(field, { key: 'Enter' })
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', '使用测试环境', 'inline-question-ime')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+  })
+
   it('renders inline question options as compact question cards with descriptions', () => {
     render(
       <HoverList
@@ -1217,6 +1317,22 @@ describe('HoverList interactions', () => {
     expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Preview')
     expect(onSessionClick).not.toHaveBeenCalled()
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+  })
+
+  it('waits for an ordinary Enter before sending inline plan feedback', async () => {
+    const pending = session({ phase: 'waiting_approval', planRequestId: 'inline-plan-ime', planTitle: 'Implementation plan' })
+    useSessionStore.setState({ sessions: { s1: pending }, sessionList: [pending], planReplies: new Map() })
+    render(<HoverList sessions={[pending]} onSessionClick={vi.fn()} />)
+
+    const input = screen.getByPlaceholderText('Tell Claude what to change...')
+    fireEvent.change(input, { target: { value: '请再检查一次' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
+    expect(tauriMocks.respondPlan).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'feedback', '请再检查一次', 'inline-plan-ime')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planRequestId).toBeUndefined())
   })
 
   it('sends inline plan feedback from the input row without opening the row', async () => {

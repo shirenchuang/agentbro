@@ -1,7 +1,7 @@
 /* AgentBro — Shared TypeScript Types */
 
 export type AgentType =
-  | 'claude-code' | 'cline' | 'codex' | 'gemini-cli'
+  | 'claude-code' | 'cline' | 'codex' | 'gemini-cli' | 'gemini-desktop'
   | 'cursor' | 'cursor-cli'
   | 'copilot'
   | 'qoder' | 'qoder-cli' | 'qoder-desktop'

@@ -1,6 +1,6 @@
 [package]
 name = "agentbro"
-version = "3.7.0"
+version = "3.8.0"
 description = "Your AI agents' best bro — monitor, manage, and supercharge every coding agent from one native app"
 authors = ["AgentBro"]
 license = "Apache-2.0"
@@ -42,6 +42,8 @@ base64 = "0.22"
 rodio = "0.19"
 notify = "7"
 zip = "2"
+tar = { version = "0.4.46", default-features = false }
+flate2 = "1"
 tauri-plugin-dialog = "2"
 axum = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip", "brotli", "deflate", "zstd"] }

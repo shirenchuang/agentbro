@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { OverlayItem, PermissionRequest, SessionState } from '../../types/agent'
+import { isComposingKey } from '../../utils/keyboardShortcuts'
 import { getPermissionReply, useSessionStore } from '../../stores/sessionStore'
 import { OverlayCard } from './OverlayCard'
 import { DiffView } from '../notch/DiffView'
@@ -218,7 +219,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   }, [feedbackText, onDeny, sending])
 
   const handleDeny = () => {
-    if (session.agentType === 'deepseek-harness' || showFeedback) {
+    if (['deepseek-harness', 'qoder-desktop', 'gemini-desktop'].includes(session.agentType) || showFeedback) {
       handleReject()
       return
     }
@@ -248,6 +249,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (isComposingKey(e)) return
       const isInput = (e.target as HTMLElement).tagName === 'INPUT'
 
       if (e.key === 'Escape') {
