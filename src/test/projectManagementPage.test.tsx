@@ -7,6 +7,7 @@ import { SettingsSidebar } from '../components/settings/SettingsSidebar'
 import { skillApiV2 } from '../services/skillApiV2'
 import * as tauriApi from '../services/tauriApi'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
+import * as tauriPath from '@tauri-apps/api/path'
 import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../stores/runtimeEnvironmentStore'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
 import i18n from '../i18n'
@@ -15,6 +16,7 @@ import type { AddCenterSkillPreview, ProjectDetail, SkillManagerOverview, SkillS
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }))
+vi.mock('@tauri-apps/api/path', { spy: true })
 
 function makeSkill(): SkillSummary {
   return {
@@ -309,6 +311,44 @@ describe('ProjectManagementPage', () => {
       if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
       else Reflect.deleteProperty(navigator, 'clipboard')
     }
+  })
+
+  it('saves the reviewed Antigravity handoff Markdown in the mapped workspace', async () => {
+    await i18n.changeLanguage('en')
+    vi.spyOn(tauriApi, 'isTauri').mockReturnValue(true)
+    const directory = '/projects/Antigravity workspace'
+    const destination = `${directory}/conversation-handoff.md`
+    vi.mocked(openDialog).mockResolvedValue(directory)
+    vi.mocked(saveDialog).mockResolvedValue(destination)
+    vi.mocked(tauriPath.join).mockResolvedValueOnce(destination)
+    const session = { id: 'codex-source', title: 'Review the build', cwd: '/Users/me/agentbro', archived: false, updatedAt: null, directoryExists: true }
+    vi.spyOn(skillApiV2, 'listProjectConversations').mockResolvedValue([session])
+    vi.spyOn(skillApiV2, 'previewProjectConversationMigration').mockResolvedValue({
+      revision: 'handoff-review',
+      bundle: {
+        projectRoot: session.cwd, targetDirectory: directory,
+        conversations: [{ ...session, readIssue: null, git: null, messages: [
+          { id: 'q', role: 'user', timestamp: null, text: 'Review the build.' },
+        ] }],
+      },
+    })
+    const exportHandoff = vi.spyOn(skillApiV2, 'exportProjectConversationHandoff').mockResolvedValue()
+    const migrate = vi.spyOn(skillApiV2, 'migrateProjectConversations')
+    render(<ProjectManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversations' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Migration direction' }), { target: { value: 'codexToAntigravity' } })
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Review the build/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
+    await screen.findByText(directory)
+    fireEvent.click(screen.getByRole('button', { name: 'Preview migration' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Preview migration' })
+    expect(within(dialog).getByText(/attach the handoff Markdown/)).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Save handoff' })).toBeEnabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save Markdown for Antigravity' }))
+    await screen.findByText('Handoff saved.')
+    expect(saveDialog).toHaveBeenCalledWith({ defaultPath: destination, filters: [{ name: 'Markdown', extensions: ['md'] }] })
+    expect(exportHandoff).toHaveBeenCalledExactlyOnceWith({ projectId: 'project-1', direction: 'codexToAntigravity', sessionIds: [session.id], targetDirectory: directory }, 'handoff-review', destination)
+    expect(migrate).not.toHaveBeenCalled()
   })
 
   it('previews a project lock and restores only checked Skills with per-Skill feedback', async () => {

@@ -702,6 +702,8 @@
   "skills": {
     "conversationMigration": {
       "migrateClaude": "Claude Code に移行",
+      "saveMarkdown": "Antigravity 用の Markdown を保存",
+      "antigravityHandoff": "Antigravity で移行先のフォルダーを開き、新しい会話に引き継ぎ用の Markdown を添付してください。",
       "copyResume": "再開コマンドをコピー",
       "claudeResumeCwd": "{{directory}} で再開コマンドを実行してください。",
       "resumeCopied": "再開コマンドをコピーしました。",

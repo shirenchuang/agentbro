@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { open, save } from '@tauri-apps/plugin-dialog'
+import { join } from '@tauri-apps/api/path'
 import { skillApiV2, type ConversationMigrationDirection, type ConversationMigrationPreview, type ConversationMigrationSelection, type MigratedConversation, type ProjectConversationSummary } from '../../services/skillApiV2'
 import { agentApi } from '../../services/agentApi'
 import { captureProjectView } from '../../stores/skillStoreV2'
@@ -8,7 +9,7 @@ import { PreviewDialog } from './PreviewDialog'
 import { writeClipboardText } from './clipboard'
 import './ProjectConversationMigration.css'
 
-const agents = { codex: 'Codex', zcode: 'ZCode', 'claude-code': 'Claude Code' }
+const agents = { codex: 'Codex', zcode: 'ZCode', 'claude-code': 'Claude Code', antigravity: 'Antigravity' }
 
 const directions = [
   { id: 'zcodeToCodex', source: 'zcode', target: 'codex' },
@@ -17,6 +18,12 @@ const directions = [
   { id: 'codexToClaudeCode', source: 'codex', target: 'claude-code' },
   { id: 'claudeCodeToZcode', source: 'claude-code', target: 'zcode' },
   { id: 'zcodeToClaudeCode', source: 'zcode', target: 'claude-code' },
+  { id: 'antigravityToCodex', source: 'antigravity', target: 'codex' },
+  { id: 'codexToAntigravity', source: 'codex', target: 'antigravity' },
+  { id: 'antigravityToClaudeCode', source: 'antigravity', target: 'claude-code' },
+  { id: 'claudeCodeToAntigravity', source: 'claude-code', target: 'antigravity' },
+  { id: 'antigravityToZcode', source: 'antigravity', target: 'zcode' },
+  { id: 'zcodeToAntigravity', source: 'zcode', target: 'antigravity' },
 ] as const
 
 export function ProjectConversationMigration({ projectId, rootPath }: { projectId: string; rootPath: string }) {
@@ -56,6 +63,8 @@ function ConversationSelection({ direction, projectId, rootPath }: {
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const target = directions.find((item) => item.id === direction)?.target ?? 'codex'
+  const handoffOnly = target === 'antigravity'
 
   useEffect(() => {
     let cancelled = false
@@ -93,17 +102,20 @@ function ConversationSelection({ direction, projectId, rootPath }: {
     }
   }
 
-  const apply = async (action: 'migrate' | 'export') => {
+  const apply = async (action: 'migrate' | 'export' | 'markdown') => {
     if (!preview) return
     const view = captureProjectView(projectId)
     setBusy(true)
     setError(null)
     try {
       const { selection, value } = preview
-      if (action === 'export') {
+      if (action !== 'migrate') {
+        const markdown = action === 'markdown'
         const path = await save({
-          defaultPath: 'conversation-handoff.zip',
-          filters: [{ name: t('skills.conversationMigration.archive'), extensions: ['zip'] }],
+          defaultPath: markdown
+            ? await join(value.bundle.targetDirectory, 'conversation-handoff.md')
+            : 'conversation-handoff.zip',
+          filters: [{ name: markdown ? 'Markdown' : t('skills.conversationMigration.archive'), extensions: [markdown ? 'md' : 'zip'] }],
         })
         if (!path || !view.isSelected()) return
         await skillApiV2.exportProjectConversationHandoff(selection, value.revision, path)
@@ -125,17 +137,17 @@ function ConversationSelection({ direction, projectId, rootPath }: {
 
   const title = (row: ProjectConversationSummary) => row.title || row.id
   const text = (key: string) => t('skills.conversationMigration.' + key)
-  const target = directions.find((item) => item.id === direction)?.target ?? 'codex'
   const openTarget = async (id: string) => {
     if (target === 'codex') await skillApiV2.openMigratedCodexThread(id)
     else if (target === 'zcode') await agentApi.openApp('zcode')
-    else {
+    else if (target === 'claude-code') {
       await writeClipboardText(`claude --resume ${id}`)
       setCopiedResume(true)
     }
   }
-  const openLabel = { codex: 'openCodex', zcode: 'openZcode', 'claude-code': 'copyResume' }[target]
-  const migrateLabel = { codex: 'migrate', zcode: 'migrateZcode', 'claude-code': 'migrateClaude' }[target]
+  const openLabel = target === 'antigravity' ? null : { codex: 'openCodex', zcode: 'openZcode', 'claude-code': 'copyResume' }[target]
+  const migrateLabel = { codex: 'migrate', zcode: 'migrateZcode', 'claude-code': 'migrateClaude', antigravity: 'saveMarkdown' }[target]
+  const confirmAction = handoffOnly ? 'markdown' : 'migrate'
 
   return (
     <section className="sm2-conversation-migration">
@@ -184,7 +196,7 @@ function ConversationSelection({ direction, projectId, rootPath }: {
               <span>{sessions?.find((session) => session.id === row.sourceId)?.title || row.sourceId}</span>
               <span>{row.reused ? text('alreadyImported') : text('imported')}</span>
               <code>{row.targetId}</code>
-              <button className="sm2__btn" onClick={() => void openTarget(row.targetId).catch((cause: unknown) => setError(String(cause)))}>{text(openLabel)}</button>
+              {openLabel && <button className="sm2__btn" onClick={() => void openTarget(row.targetId).catch((cause: unknown) => setError(String(cause)))}>{text(openLabel)}</button>}
             </li>
           ))}
         </ul>
@@ -194,12 +206,12 @@ function ConversationSelection({ direction, projectId, rootPath }: {
           title={text('preview')}
           busy={busy}
           onCancel={() => setPreview(null)}
-          onConfirm={() => void apply('migrate')}
+          onConfirm={() => void apply(confirmAction)}
           actions={(
             <>
               <button className="sm2__btn" disabled={busy} onClick={() => setPreview(null)}>{t('skills.cancel')}</button>
               <button className="sm2__btn" disabled={busy} onClick={() => void apply('export')}>{text('export')}</button>
-              <button className="sm2__btn sm2__btn--primary" disabled={busy || !preview.value.bundle.conversations.some((row) => row.messages.length > 0)} onClick={() => void apply('migrate')}>{busy ? text('working') : text(migrateLabel)}</button>
+              <button className="sm2__btn sm2__btn--primary" disabled={busy || !preview.value.bundle.conversations.some((row) => row.messages.length > 0)} onClick={() => void apply(confirmAction)}>{busy && !handoffOnly ? text('working') : text(migrateLabel)}</button>
             </>
           )}
         >
@@ -208,6 +220,7 @@ function ConversationSelection({ direction, projectId, rootPath }: {
             <dt>{text('sourceProject')}</dt><dd><code>{preview.value.bundle.projectRoot}</code></dd>
             <dt>{text('targetFolder')}</dt><dd><code>{preview.value.bundle.targetDirectory}</code></dd>
           </dl>
+          {handoffOnly && <p>{text('antigravityHandoff')}</p>}
           {preview.value.bundle.conversations.map((row) => (
             <details className="sm2-conversation-migration__preview" key={row.id}>
               <summary>{title(row)} · {t('skills.conversationMigration.messageCount', { count: row.messages.length })}</summary>

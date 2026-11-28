@@ -1,3 +1,4 @@
+mod antigravity;
 mod claude;
 mod codex;
 mod codex_source;
@@ -20,6 +21,7 @@ pub enum ConversationAgent {
     Codex,
     Zcode,
     ClaudeCode,
+    Antigravity,
 }
 
 impl ConversationAgent {
@@ -28,6 +30,7 @@ impl ConversationAgent {
             Self::Codex => "codex",
             Self::Zcode => "zcode",
             Self::ClaudeCode => "claude-code",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -36,6 +39,7 @@ impl ConversationAgent {
             Self::Codex => "Codex",
             Self::Zcode => "ZCode",
             Self::ClaudeCode => "Claude Code",
+            Self::Antigravity => "Antigravity",
         }
     }
 }
@@ -50,6 +54,12 @@ pub enum MigrationDirection {
     CodexToClaudeCode,
     ClaudeCodeToZcode,
     ZcodeToClaudeCode,
+    AntigravityToCodex,
+    CodexToAntigravity,
+    AntigravityToClaudeCode,
+    ClaudeCodeToAntigravity,
+    AntigravityToZcode,
+    ZcodeToAntigravity,
 }
 
 impl MigrationDirection {
@@ -61,6 +71,18 @@ impl MigrationDirection {
             Self::CodexToClaudeCode => (ConversationAgent::Codex, ConversationAgent::ClaudeCode),
             Self::ClaudeCodeToZcode => (ConversationAgent::ClaudeCode, ConversationAgent::Zcode),
             Self::ZcodeToClaudeCode => (ConversationAgent::Zcode, ConversationAgent::ClaudeCode),
+            Self::AntigravityToCodex => (ConversationAgent::Antigravity, ConversationAgent::Codex),
+            Self::CodexToAntigravity => (ConversationAgent::Codex, ConversationAgent::Antigravity),
+            Self::AntigravityToClaudeCode => (
+                ConversationAgent::Antigravity,
+                ConversationAgent::ClaudeCode,
+            ),
+            Self::ClaudeCodeToAntigravity => (
+                ConversationAgent::ClaudeCode,
+                ConversationAgent::Antigravity,
+            ),
+            Self::AntigravityToZcode => (ConversationAgent::Antigravity, ConversationAgent::Zcode),
+            Self::ZcodeToAntigravity => (ConversationAgent::Zcode, ConversationAgent::Antigravity),
         }
     }
 }
@@ -172,6 +194,10 @@ pub fn list(
             .map(|row| row.summary)
             .collect()),
         ConversationAgent::ClaudeCode => Ok(claude::catalog(service.home(), Some(&scope))?
+            .into_iter()
+            .map(|row| row.summary)
+            .collect()),
+        ConversationAgent::Antigravity => Ok(antigravity::catalog(service.home(), &scope)?
             .into_iter()
             .map(|row| row.summary)
             .collect()),
@@ -335,6 +361,23 @@ pub fn preview(service: &Service, selection: HandoffSelection) -> Result<Handoff
                 }
             }
         }
+        ConversationAgent::Antigravity => {
+            for row in antigravity::catalog(service.home(), &scope)? {
+                if selected.remove(&row.summary.id) {
+                    let (messages, issue) = match antigravity::messages(&row) {
+                        Ok((messages, partial)) => (messages, partial.then_some("partial")),
+                        Err(_) => (Vec::new(), Some("unavailable")),
+                    };
+                    conversations.push(portable_session(
+                        row.summary,
+                        messages,
+                        issue,
+                        None,
+                        &mut git_by_directory,
+                    ));
+                }
+            }
+        }
     }
     if !selected.is_empty() {
         return Err(
@@ -483,13 +526,17 @@ fn git_context(directory: &Path) -> Option<GitContext> {
 }
 
 pub fn export(bundle: &HandoffBundle, destination: &Path) -> Result<(), String> {
-    if !destination.is_absolute()
-        || !destination
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
-    {
-        return Err("Choose a .zip file for the conversation handoff.".to_string());
+    let extension = destination.extension().and_then(|ext| ext.to_str());
+    let archive = extension.is_some_and(|ext| ext.eq_ignore_ascii_case("zip"));
+    let markdown = bundle.target == ConversationAgent::Antigravity
+        && extension.is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+    if !destination.is_absolute() || !(archive || markdown) {
+        return Err(if bundle.target == ConversationAgent::Antigravity {
+            "Choose a .zip or .md file for the conversation handoff."
+        } else {
+            "Choose a .zip file for the conversation handoff."
+        }
+        .to_string());
     }
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -498,12 +545,19 @@ pub fn export(bundle: &HandoffBundle, destination: &Path) -> Result<(), String> 
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options
+    let mut file = options
         .open(destination)
-        .map_err(|err| format!("Could not create the handoff archive: {err}"))?;
-    if let Err(error) = write_archive(bundle, file) {
+        .map_err(|err| format!("Could not create the handoff file: {err}"))?;
+    let saved = if markdown {
+        write_markdown(&mut file, bundle)
+            .and_then(|()| file.sync_all())
+            .map_err(Into::into)
+    } else {
+        write_archive(bundle, file)
+    };
+    if let Err(error) = saved {
         let _ = fs::remove_file(destination);
-        return Err(format!("Could not write the handoff archive: {error}"));
+        return Err(format!("Could not write the handoff file: {error}"));
     }
     Ok(())
 }
@@ -592,6 +646,9 @@ pub async fn migrate(
             tokio::task::spawn_blocking(move || claude::import(&home, &bundle))
                 .await
                 .map_err(|err| err.to_string())?
+        }
+        ConversationAgent::Antigravity => {
+            Err("Save a handoff to continue the conversation in Antigravity.".to_string())
         }
     }
 }
