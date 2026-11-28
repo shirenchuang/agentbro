@@ -5687,15 +5687,10 @@ pub async fn get_chat_history(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<ParsedMessage>, String> {
-    parse_session_messages_for_command(&state, &session_id).map(|either| match either {
-        SessionMessagesResult::Local(messages) => messages,
-        SessionMessagesResult::Remote(messages) => messages,
-    })
+    parse_session_messages_for_command(&state, &session_id, false).map(|history| history.messages)
 }
 
-/// Paginated slice of a session's chat history. Used by the frontend to load
-/// only the tail of a transcript on first open (typical 50 messages instead
-/// of the full file, which can be 100MB+ for long Codex sessions).
+/// Paginated slice of a session's chat history.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatHistorySlice {
@@ -5708,6 +5703,7 @@ pub struct ChatHistorySlice {
 
 const DEFAULT_TAIL_LIMIT: usize = 50;
 const MAX_TAIL_LIMIT: usize = 500;
+const MAX_CONVERSATION_MINIMUM: usize = 10;
 
 #[tauri::command]
 pub async fn get_chat_history_tail(
@@ -5715,42 +5711,83 @@ pub async fn get_chat_history_tail(
     session_id: String,
     limit: Option<usize>,
     before_id: Option<String>,
+    min_conversation_messages: Option<usize>,
 ) -> Result<ChatHistorySlice, String> {
     let limit = limit.unwrap_or(DEFAULT_TAIL_LIMIT).clamp(1, MAX_TAIL_LIMIT);
-    let (messages, transcript_path) = match parse_session_messages_for_command(&state, &session_id)?
-    {
-        SessionMessagesResult::Local(messages) => {
-            let path = resolve_transcript_path_for_session(&state, &session_id);
-            (messages, path)
-        }
-        SessionMessagesResult::Remote(messages) => (messages, None),
-    };
-
+    let minimum = min_conversation_messages
+        .unwrap_or(0)
+        .min(MAX_CONVERSATION_MINIMUM);
+    let history = parse_session_messages_for_command(&state, &session_id, minimum > 0)?;
+    let messages = &history.messages;
     let total_count = messages.len();
     let end = match before_id.as_deref() {
         Some(id) => messages
             .iter()
-            .position(|m| m.id == id)
+            .position(|message| message.id == id)
             .unwrap_or(total_count),
         None => total_count,
     };
-    let start = end.saturating_sub(limit);
-
-    let slice = messages[start..end].to_vec();
-    let first_message_id = slice.first().map(|m| m.id.clone());
+    let (first_index, slice) = select_chat_history_tail(&messages[..end], limit, minimum);
+    let first_message_id = slice.first().map(|message| message.id.clone());
 
     Ok(ChatHistorySlice {
         messages: slice,
-        has_more: start > 0,
+        has_more: first_index > 0,
         first_message_id,
         total_count,
-        transcript_path: transcript_path.map(|p| p.to_string_lossy().into_owned()),
+        transcript_path: history
+            .transcript_path
+            .map(|path| path.to_string_lossy().into_owned()),
     })
 }
 
-enum SessionMessagesResult {
-    Local(Vec<ParsedMessage>),
-    Remote(Vec<ParsedMessage>),
+fn select_chat_history_tail(
+    messages: &[ParsedMessage],
+    limit: usize,
+    minimum: usize,
+) -> (usize, Vec<ParsedMessage>) {
+    let start = messages.len().saturating_sub(limit);
+    let mut earlier = Vec::new();
+    if minimum > 0 && start > 0 {
+        let mut count = 0;
+        let mut newer_role = None;
+        for (index, message) in messages.iter().enumerate().rev() {
+            if count >= minimum {
+                break;
+            }
+            let has_dialog = message.blocks.iter().any(|block| match block {
+                MessageBlock::Text { text } => !text.trim().is_empty(),
+                MessageBlock::Image { source } => !source.is_empty(),
+                _ => false,
+            });
+            if !has_dialog {
+                continue;
+            }
+            // The Island folds consecutive assistant records into one bubble.
+            let starts_bubble = message.role == ChatRole::User || newer_role != Some(&message.role);
+            newer_role = Some(&message.role);
+            if starts_bubble {
+                count += 1;
+                if index < start {
+                    earlier.push((index, message));
+                }
+            }
+        }
+    }
+    let first_index = earlier.last().map_or(start, |(index, _)| *index);
+    let slice = earlier
+        .into_iter()
+        .rev()
+        .map(|(_, message)| message)
+        .chain(&messages[start..])
+        .cloned()
+        .collect();
+    (first_index, slice)
+}
+
+struct SessionMessagesResult {
+    messages: Vec<ParsedMessage>,
+    transcript_path: Option<PathBuf>,
 }
 
 fn resolve_transcript_path_for_session(
@@ -5788,6 +5825,7 @@ fn resolve_transcript_path_for_session(
     }
     if session.engine_label.as_deref() == Some("Claude Desktop") {
         crate::hooks::claude_desktop_watcher::find_audit_file_for_cli_session(session_id)
+            .or_else(|| discover_session_file_in_dirs(session_id, &cwd, &projects_dirs))
     } else if session.agent_type == "codex" {
         discover_codex_session_file(session_id)
             .or_else(|| discover_session_file_in_dirs(session_id, &cwd, &projects_dirs))
@@ -5799,38 +5837,33 @@ fn resolve_transcript_path_for_session(
 fn parse_session_messages_for_command(
     state: &State<'_, AppState>,
     session_id: &str,
+    include_all_history: bool,
 ) -> Result<SessionMessagesResult, String> {
     let session = state.session_store.get_session(session_id);
     let file_path = resolve_transcript_path_for_session(state, session_id);
 
     let Some(file_path) = file_path else {
-        // No JSONL file — build chat history from raw hook events.
-        // This covers agents like OpenCode that don't write transcript files.
         let raw_events = state.hook_server.raw_events_for_session(session_id);
-        if !raw_events.is_empty() {
-            let fallback_session = session.unwrap_or_else(|| {
-                crate::hooks::session_store::SessionState::new(
-                    session_id.to_string(),
-                    "unknown".to_string(),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                )
-            });
-            return Ok(SessionMessagesResult::Remote(remote_session_chat_history(
-                &fallback_session,
-                raw_events,
-            )));
+        if raw_events.is_empty()
+            && !session.as_ref().is_some_and(|session| {
+                session.remote_host_id.is_some() || session.remote_host_name.is_some()
+            })
+        {
+            return Err(format!("No JSONL file found for session {}", session_id));
         }
-        if let Some(ref session) = session {
-            if session.remote_host_id.is_some() || session.remote_host_name.is_some() {
-                return Ok(SessionMessagesResult::Remote(remote_session_chat_history(
-                    session,
-                    state.hook_server.raw_events_for_session(session_id),
-                )));
-            }
-        }
-        return Err(format!("No JSONL file found for session {}", session_id));
+        let fallback_session = session.unwrap_or_else(|| {
+            SessionState::new(
+                session_id.to_string(),
+                "unknown".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+            )
+        });
+        return Ok(SessionMessagesResult {
+            messages: remote_session_chat_history(&fallback_session, raw_events),
+            transcript_path: None,
+        });
     };
 
     hydrate_subagents_from_file(&state.session_store, session_id, &file_path);
@@ -5838,15 +5871,26 @@ fn parse_session_messages_for_command(
     if let Ok(watcher_guard) = state.conversation_watcher.lock() {
         if let Some(ref watcher) = *watcher_guard {
             if let Some(result) = watcher.parse_session_full(session_id, file_path.clone()) {
-                return Ok(SessionMessagesResult::Local(result.all_messages));
+                // The reset puts the whole transcript in new_messages; all_messages is capped.
+                return Ok(SessionMessagesResult {
+                    messages: if include_all_history {
+                        result.new_messages
+                    } else {
+                        result.all_messages
+                    },
+                    transcript_path: Some(file_path),
+                });
             }
         }
     }
 
-    let mut parser = crate::hooks::conversation_parser::ConversationParser::new(file_path);
+    let mut parser = crate::hooks::conversation_parser::ConversationParser::new(file_path.clone());
     parser
         .parse_full()
-        .map(SessionMessagesResult::Local)
+        .map(|messages| SessionMessagesResult {
+            messages,
+            transcript_path: Some(file_path),
+        })
         .map_err(|e| format!("Failed to parse conversation: {}", e))
 }
 
@@ -7501,6 +7545,70 @@ mod tests {
         );
         assert_eq!(response["scope"], "session");
         assert!(response["permissions"].get("network").is_some());
+    }
+
+    #[test]
+    fn island_history_keeps_ten_dialog_bubbles_under_heavy_tool_activity() {
+        use super::{parsed_text_message, select_chat_history_tail, ParsedMessage};
+
+        let mut history = Vec::new();
+        for turn in 0..6 {
+            history.push(parsed_text_message(
+                format!("user-{turn}"),
+                ChatRole::User,
+                None,
+                "Question",
+            ));
+            history.push(parsed_text_message(
+                format!("progress-{turn}"),
+                ChatRole::Assistant,
+                None,
+                "Working",
+            ));
+            history.push(parsed_text_message(
+                format!("assistant-{turn}"),
+                ChatRole::Assistant,
+                None,
+                "Answer",
+            ));
+        }
+        history.extend((0..600).map(|step| ParsedMessage {
+            id: format!("tool-{step}"),
+            role: ChatRole::Assistant,
+            timestamp: None,
+            blocks: vec![MessageBlock::ToolUse {
+                id: format!("call-{step}"),
+                name: "shell".to_string(),
+                input: HashMap::new(),
+            }],
+        }));
+        let (first, messages) = select_chat_history_tail(&history, 50, 10);
+        assert_eq!(first, 3);
+        assert_eq!(messages.len(), 60);
+        assert_eq!(
+            messages
+                .iter()
+                .take(10)
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "user-1",
+                "assistant-1",
+                "user-2",
+                "assistant-2",
+                "user-3",
+                "assistant-3",
+                "user-4",
+                "assistant-4",
+                "user-5",
+                "assistant-5"
+            ]
+        );
+        assert_eq!(messages[10].id, "tool-550");
+        assert_eq!(messages.last().unwrap().id, "tool-599");
+        let (first, ordinary) = select_chat_history_tail(&history, 50, 0);
+        assert_eq!(first, history.len() - 50);
+        assert_eq!(ordinary.len(), 50);
     }
 
     #[test]

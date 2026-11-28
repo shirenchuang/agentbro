@@ -1310,7 +1310,7 @@ export function NotchPanel() {
       setPanelState('expanded')
     }, 0)
 
-    getChatHistoryTail(sessionId, { limit: 50 })
+    getChatHistoryTail(sessionId, { limit: 50, minConversationMessages: 10 })
       .then((slice) => {
         if (slice.messages.length > 0) {
           const messages = mapParsedMessages(slice.messages)

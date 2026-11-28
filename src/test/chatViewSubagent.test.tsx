@@ -227,6 +227,7 @@ describe('ChatView subagent history', () => {
 
     expect(await screen.findByText('性能优化，只加载最近几条消息。')).toBeInTheDocument()
     await waitFor(() => expect(tauriMocks.getChatHistoryTail).toHaveBeenCalledTimes(1))
+    expect(tauriMocks.getChatHistoryTail).toHaveBeenCalledWith(current.id, { limit: 50, minConversationMessages: 10 })
     tauriMocks.getChatHistoryTail.mockClear()
 
     const scrollArea = container.querySelector('.chat-view__messages') as HTMLDivElement

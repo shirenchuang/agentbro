@@ -225,9 +225,56 @@ impl ConversationWatcher {
         let mut parsers = self.parsers.lock().ok()?;
         let parser = parsers
             .entry(session_id.to_string())
-            .or_insert_with(|| ConversationParser::new(file_path));
+            .or_insert_with(|| ConversationParser::new(file_path.clone()));
+        if parser.file_path() != &file_path {
+            *parser = ConversationParser::new(file_path);
+        }
 
         parser.reset();
         parser.parse_incremental().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opening_a_session_follows_its_current_transcript_path() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-moved-transcript-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let current = home.join("active.jsonl");
+        let archived = home.join("archived.jsonl");
+        std::fs::write(
+            &current,
+            r#"{"uuid":"message-1","type":"user","message":{"content":"History"}}"#,
+        )
+        .unwrap();
+        let watcher = ConversationWatcher {
+            _watcher: PollWatcher::new(|_: Result<Event, notify::Error>| {}, Config::default())
+                .unwrap(),
+            parsers: Arc::new(Mutex::new(HashMap::new())),
+        };
+        assert_eq!(
+            watcher
+                .parse_session_full("session", current.clone())
+                .unwrap()
+                .new_messages
+                .len(),
+            1
+        );
+        std::fs::rename(current, &archived).unwrap();
+        assert_eq!(
+            watcher
+                .parse_session_full("session", archived)
+                .unwrap()
+                .new_messages[0]
+                .id,
+            "message-1"
+        );
+        std::fs::remove_dir_all(home).unwrap();
     }
 }
