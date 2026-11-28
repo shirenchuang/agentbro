@@ -3,7 +3,6 @@
 // and keeps connections alive for permission request/response flow.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-#[cfg(unix)]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -23,9 +22,10 @@ use crate::agents::{AgentAdapter, AgentEvent};
 use crate::config::{AppConfig, ConfigStore};
 use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
-    discover_codex_session_file, discover_session_file, extract_cache_ttl_info,
-    extract_latest_assistant_text, extract_pending_codex_user_input, extract_session_title,
-    extract_subagents_from_transcript, CodexPendingUserInput, TranscriptSubagentInfo,
+    discover_antigravity_session_file, discover_codex_session_file, discover_session_file,
+    extract_antigravity_invocation_reply, extract_cache_ttl_info, extract_latest_assistant_text,
+    extract_pending_codex_user_input, extract_session_title, extract_subagents_from_transcript,
+    CodexPendingUserInput, TranscriptSubagentInfo,
 };
 use crate::sound::{SoundEngine, SoundEvent};
 use crate::terminal::suppression;
@@ -1498,8 +1498,28 @@ impl HookServer {
                 }
             }
             Some(ref agent_event) => {
-                // Process non-permission events (with sound)
-                Self::process_event(agent_event, &raw, &store, &sound, &app, &config_store);
+                let completion_preview = match agent_event {
+                    AgentEvent::TaskComplete { session_id, .. } => {
+                        dirs::home_dir().and_then(|home| {
+                            Self::antigravity_completion_preview(
+                                &raw_events,
+                                &raw,
+                                session_id,
+                                &home,
+                            )
+                        })
+                    }
+                    _ => None,
+                };
+                Self::process_event(
+                    agent_event,
+                    &raw,
+                    &store,
+                    &sound,
+                    &app,
+                    &config_store,
+                    completion_preview.as_deref(),
+                );
                 match agent_event {
                     AgentEvent::ToolUse {
                         session_id, status, ..
@@ -1773,6 +1793,7 @@ impl HookServer {
         sound: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
         app: &Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
         config_store: &Arc<std::sync::Mutex<Option<ConfigStore>>>,
+        completion_preview: Option<&str>,
     ) {
         Self::update_session_metadata_from_raw(store, _raw);
 
@@ -2094,10 +2115,11 @@ impl HookServer {
                     "Task completed",
                     Some(_raw),
                 );
+                let preview = completion_preview.unwrap_or(&summary);
                 store.update_session(session_id, |s| {
                     s.phase = SessionPhase::Done;
-                    s.description = Some(summary.clone());
-                    s.last_response = Some(summary.clone());
+                    s.description = Some(preview.to_string());
+                    s.last_response = Some(preview.to_string());
                 });
                 Self::refresh_cache_ttl_from_transcript(store, session_id, _raw);
                 Self::refresh_subagents_from_transcript(store, session_id, _raw);
@@ -2933,6 +2955,43 @@ impl HookServer {
         Self::useful_completion_text(extract_latest_assistant_text(&path).as_deref())
     }
 
+    fn antigravity_completion_preview(
+        raw_events: &std::sync::Mutex<RawHookEventStore>,
+        raw: &serde_json::Value,
+        session_id: &str,
+        home: &Path,
+    ) -> Option<String> {
+        let agent = raw.get("agent")?.as_str()?;
+        if !matches!(agent, "antigravity" | crate::agents::gemini_desktop::ID)
+            || Self::raw_event_name(raw) != "Stop"
+            || Self::is_remote_hook_event(raw)
+            || raw.get("_wsl_distribution").is_some()
+        {
+            return None;
+        }
+        let first_step = {
+            let events = raw_events.lock().ok()?;
+            let invocation = events
+                .by_session
+                .get(session_id)?
+                .iter()
+                .rev()
+                .find(|event| {
+                    event.event_name == "PreInvocation"
+                        && event.agent.as_deref() == Some(agent)
+                        && !Self::is_remote_hook_event(&event.raw)
+                })?;
+            invocation
+                .raw
+                .get("initial_num_steps")
+                .or_else(|| invocation.raw.get("initialNumSteps"))
+                .and_then(|step| step.as_u64())?
+        };
+        let path = discover_antigravity_session_file(home, session_id, agent)?;
+        let reply = extract_antigravity_invocation_reply(&path, first_step)?;
+        Some(Self::truncate_preview(&reply, 2000))
+    }
+
     fn is_subagent_tool(tool_name: &str) -> bool {
         let normalized = tool_name
             .trim()
@@ -3686,7 +3745,7 @@ mod tests {
                     .to_string(),
             );
         });
-        HookServer::process_event(&event, &raw, &store, &sound, &app, &config_store);
+        HookServer::process_event(&event, &raw, &store, &sound, &app, &config_store, None);
 
         let session = store
             .get_session("codex-title-session")
@@ -3724,7 +3783,7 @@ mod tests {
         let config_store = Arc::new(std::sync::Mutex::new(None));
 
         HookServer::ensure_session_for_event(&store, &event, &raw);
-        HookServer::process_event(&event, &raw, &store, &sound, &app, &config_store);
+        HookServer::process_event(&event, &raw, &store, &sound, &app, &config_store, None);
 
         let sessions = store.get_all_sessions();
         assert_eq!(sessions.len(), 1);
@@ -4208,6 +4267,104 @@ mod tests {
             Some("Gemini coding turn completed")
         );
         assert!(session.pending_permission.is_none());
+    }
+
+    #[tokio::test]
+    async fn antigravity_completion_previews_only_the_current_local_invocation() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("isolated home");
+        let id = "956e6da6-0b95-4e51-bb24-e602bb412500";
+        let transcript = home.path().join(format!(
+            ".gemini/antigravity/brain/{id}/.system_generated/logs/transcript.jsonl"
+        ));
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        let first_records = concat!(
+            r#"{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","content":"Report status"}"#,
+            "\n",
+            r#"{"step_index":1,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","content":"Previous answer"}"#,
+            "\n",
+        );
+        let current_records = concat!(
+            r#"{"step_index":2,"type":"USER_INPUT","source":"USER_EXPLICIT","content":"Report status"}"#,
+            "\n",
+            r#"{"step_index":3,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","thinking":"Private reasoning","tool_calls":[{}]}"#,
+            "\n",
+            r#"{"step_index":4,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","content":"Current answer"}"#,
+            "\n",
+            r#"{"step_index":5,"type":"USER_INPUT","source":"HOOK","content":"Injected input"}"#,
+            "\n",
+            r#"{"step_index":6,"type":"PLANNER_RESPONSE","source":"MODEL","status":"RUNNING","content":"Unfinished text"}"#,
+            "\n",
+            "{",
+        );
+
+        for agent in ["antigravity", "gemini-desktop"] {
+            let store = Arc::new(SessionStore::new());
+            let server = HookServer::new(store.clone(), Arc::new(Vec::new()));
+            let context = server.connection_context();
+            let pre = serde_json::json!({
+                "event": "PreInvocation", "agent": agent, "session_id": id,
+                "initial_num_steps": 3, "prompt": "Report status"
+            });
+            let stop = serde_json::json!({
+                "event": "Stop", "agent": agent, "session_id": id, "fullyIdle": true,
+            });
+            let preview = |event: &serde_json::Value| {
+                HookServer::antigravity_completion_preview(
+                    &context.raw_events,
+                    event,
+                    id,
+                    home.path(),
+                )
+            };
+            HookServer::record_raw_event(&context.raw_events, &pre, None);
+            std::fs::write(&transcript, first_records).unwrap();
+            assert_eq!(preview(&stop), None);
+
+            std::fs::write(&transcript, format!("{first_records}{current_records}")).unwrap();
+            assert_eq!(preview(&stop).as_deref(), Some("Current answer"));
+            let mut remote = stop.clone();
+            remote["_remote_host_id"] = "other-host".into();
+            assert_eq!(preview(&remote), None);
+            let mut wsl = stop.clone();
+            wsl["_wsl_distribution"] = "Ubuntu".into();
+            assert_eq!(preview(&wsl), None);
+
+            let finished = AgentEvent::TaskComplete {
+                session_id: id.to_string(),
+                summary: "Coding turn completed".to_string(),
+            };
+            HookServer::ensure_session_for_event(&store, &finished, &stop);
+            HookServer::process_event(
+                &finished,
+                &stop,
+                &store,
+                &context.sound,
+                &context.app,
+                &context.config_store,
+                preview(&stop).as_deref(),
+            );
+            let session = store.get_session(id).unwrap();
+            assert_eq!(session.phase, SessionPhase::Done);
+            assert_eq!(session.description.as_deref(), Some("Current answer"));
+            assert_eq!(session.last_response.as_deref(), Some("Current answer"));
+
+            let next_prompt = r#"{"step_index":7,"type":"USER_INPUT","source":"USER_EXPLICIT","content":"Report status"}"#;
+            std::fs::write(
+                &transcript,
+                format!("{first_records}{current_records}\n{next_prompt}\n"),
+            )
+            .unwrap();
+            assert_eq!(preview(&stop), None);
+            let mut legacy_pre = pre.clone();
+            legacy_pre
+                .as_object_mut()
+                .unwrap()
+                .remove("initial_num_steps");
+            HookServer::record_raw_event(&context.raw_events, &legacy_pre, None);
+            std::fs::write(&transcript, format!("{first_records}{current_records}")).unwrap();
+            assert_eq!(preview(&stop), None);
+        }
     }
 
     #[tokio::test]
@@ -5579,6 +5736,7 @@ mod tests {
             &sound,
             &app,
             &config_store,
+            None,
         );
 
         let session = store
@@ -5599,6 +5757,7 @@ mod tests {
             &sound,
             &app,
             &config_store,
+            None,
         );
 
         let session = store
