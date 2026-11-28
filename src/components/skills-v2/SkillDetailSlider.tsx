@@ -13,6 +13,7 @@ import { PreviewDialog } from './PreviewDialog'
 import { isMarkdownPath } from './filePreview'
 import { extractSkillDescription as extractFrontmatterDescription, stripSkillFrontmatter as stripFrontmatter } from './frontmatter'
 import { MarkdownContent } from './MarkdownContent'
+import { writeClipboardText } from './clipboard'
 
 type DetailTab = 'overview' | 'files' | 'agents' | 'source'
 type FileViewMode = 'preview' | 'source'
@@ -518,26 +519,6 @@ export function SkillDetailSlider({
     )}
     </>
   )
-}
-
-async function writeClipboardText(text: string): Promise<void> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-      return
-    }
-  } catch {
-    // Fall through to the WebView-compatible copy command.
-  }
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.style.position = 'fixed'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-  textarea.select()
-  const copied = document.execCommand('copy')
-  textarea.remove()
-  if (!copied) throw new Error('剪贴板不可用')
 }
 
 function OverviewTab({

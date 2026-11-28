@@ -1,4 +1,4 @@
-use super::{HandoffBundle, MigratedConversation, PortableSession};
+use super::{ConversationAgent, HandoffBundle, MigratedConversation, PortableSession};
 use crate::agents::executable;
 use crate::hooks::conversation_parser::ChatRole;
 use crate::platform::process::background_tokio_command;
@@ -34,7 +34,7 @@ pub(super) async fn import(bundle: HandoffBundle) -> Result<Vec<MigratedConversa
     let mut codex = Client::connect(&binary).await?;
     let expected: HashSet<_> = sources
         .iter()
-        .map(|record| provenance_id(&record.summary.id, &bundle.target_directory))
+        .map(|record| provenance_id(bundle.source, &record.summary.id, &bundle.target_directory))
         .collect();
     let mut existing = codex
         .imported_threads(&bundle.target_directory, &expected)
@@ -42,7 +42,7 @@ pub(super) async fn import(bundle: HandoffBundle) -> Result<Vec<MigratedConversa
     let stage = TempInstallDir::create_in(&std::env::temp_dir())?;
     let mut migrated = Vec::new();
     for session in sources {
-        let source_id = provenance_id(&session.summary.id, &bundle.target_directory);
+        let source_id = provenance_id(bundle.source, &session.summary.id, &bundle.target_directory);
         let (target_id, reused) = if let Some(thread_id) = existing.remove(&source_id) {
             (thread_id, true)
         } else {
@@ -90,9 +90,11 @@ pub(super) async fn import(bundle: HandoffBundle) -> Result<Vec<MigratedConversa
     Ok(migrated)
 }
 
-pub(super) fn provenance_id(id: &str, target: &str) -> Uuid {
+pub(super) fn provenance_id(agent: ConversationAgent, id: &str, target: &str) -> Uuid {
     let mut hasher = Sha256::new();
-    hasher.update(b"AgentBro portability v1\0zcode\0codex\0");
+    hasher.update(b"AgentBro portability v1\0");
+    hasher.update(agent.id());
+    hasher.update(b"\0codex\0");
     hasher.update(id.as_bytes());
     hasher.update(b"\0");
     hasher.update(target.as_bytes());
@@ -346,6 +348,7 @@ impl Client {
                         "thread/list",
                         json!({
                             "cwd": directory, "archived": archived, "limit": 100, "cursor": cursor,
+                            "modelProviders": [],
                         }),
                     )
                     .await?;
@@ -390,14 +393,26 @@ mod tests {
         let dir = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
         let path = dir.path().join("preview.jsonl");
         let target = dir.path().join("target");
-        let source = provenance_id("sess_portable", target.to_str().unwrap());
+        let source = provenance_id(
+            ConversationAgent::Zcode,
+            "sess_portable",
+            target.to_str().unwrap(),
+        );
         assert_eq!(
             source,
-            provenance_id("sess_portable", target.to_str().unwrap())
+            provenance_id(
+                ConversationAgent::Zcode,
+                "sess_portable",
+                target.to_str().unwrap()
+            )
         );
         assert_ne!(
             source,
-            provenance_id("sess_portable", dir.path().to_str().unwrap())
+            provenance_id(
+                ConversationAgent::Zcode,
+                "sess_portable",
+                dir.path().to_str().unwrap()
+            )
         );
 
         let session = PortableSession {

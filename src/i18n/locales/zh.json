@@ -741,11 +741,15 @@
   },
   "skills": {
     "conversationMigration": {
+      "migrateClaude": "迁移到 Claude Code",
+      "copyResume": "复制续聊命令",
+      "claudeResumeCwd": "请在 {{directory}} 运行续聊命令。",
+      "resumeCopied": "已复制续聊命令。",
       "directionLabel": "迁移方向",
       "openZcode": "打开 ZCode",
       "migrateZcode": "迁移到 ZCode",
       "partiallyReadable": "部分内容无法读取。以下是可读消息。",
-      "returnedHistory": "原 ZCode 会话 {{id}} · {{count}} 条消息与原历史一致",
+      "returnedHistory": "原 {{agent}} 会话 {{id}} · {{count}} 条消息与原历史一致",
       "continuedMessages": "原有历史之后的消息",
       "missingFolder": "来源目录不存在",
       "tab": "会话",

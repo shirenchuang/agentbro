@@ -243,7 +243,7 @@ describe('ProjectManagementPage', () => {
         targetDirectory: '/Users/me/agentbro',
         conversations: [{
           ...archived, readIssue: 'partial', git: null,
-          returnContext: { originalSessionId: 'sess-source', matchingMessages: 1 },
+          returnContext: { originalAgent: 'zcode', originalSessionId: 'sess-source', matchingMessages: 1 },
           messages: [
             { id: 'original', role: 'user', timestamp: null, text: 'Original message' },
             { id: 'continued', role: 'assistant', timestamp: null, text: 'Work continued in Codex' },
@@ -268,6 +268,47 @@ describe('ProjectManagementPage', () => {
     const selection = { projectId: 'project-1', direction: 'codexToZcode', sessionIds: ['codex-fork'], targetDirectory: '/Users/me/agentbro' }
     expect(preview).toHaveBeenCalledExactlyOnceWith(selection)
     expect(migrate).toHaveBeenCalledExactlyOnceWith(selection, 'reverse-preview')
+  })
+
+  it('copies the native Claude Code resume command for the mapped project', async () => {
+    await i18n.changeLanguage('en')
+    vi.spyOn(tauriApi, 'isTauri').mockReturnValue(true)
+    const directory = '/projects/Claude workspace'
+    vi.mocked(openDialog).mockResolvedValue(directory)
+    const session = { id: 'codex-source', title: 'Review the build', cwd: '/Users/me/agentbro', archived: false, updatedAt: null, directoryExists: true }
+    vi.spyOn(skillApiV2, 'listProjectConversations').mockResolvedValue([session])
+    vi.spyOn(skillApiV2, 'previewProjectConversationMigration').mockResolvedValue({
+      revision: 'claude-preview',
+      bundle: {
+        projectRoot: session.cwd, targetDirectory: directory,
+        conversations: [{ ...session, readIssue: null, git: null, messages: [
+          { id: 'q', role: 'user', timestamp: null, text: 'Review the build.' },
+        ] }],
+      },
+    })
+    const id = '1dee7df9-9ae0-408c-a410-c1a5e1e0b754'
+    const migrate = vi.spyOn(skillApiV2, 'migrateProjectConversations').mockResolvedValue([{ sourceId: session.id, targetId: id, reused: false }])
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    try {
+      render(<ProjectManagementPage />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Conversations' }))
+      fireEvent.change(screen.getByRole('combobox', { name: 'Migration direction' }), { target: { value: 'codexToClaudeCode' } })
+      fireEvent.click(await screen.findByRole('checkbox', { name: /Review the build/ }))
+      fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
+      await screen.findByText(directory)
+      fireEvent.click(screen.getByRole('button', { name: 'Preview migration' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Preview migration' })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Migrate to Claude Code' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Copy resume command' }))
+      expect(migrate).toHaveBeenCalledExactlyOnceWith({ projectId: 'project-1', direction: 'codexToClaudeCode', sessionIds: [session.id], targetDirectory: directory }, 'claude-preview')
+      expect(writeText).toHaveBeenCalledExactlyOnceWith(`claude --resume ${id}`)
+      expect(await screen.findByText('Resume command copied.')).toBeInTheDocument()
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    }
   })
 
   it('previews a project lock and restores only checked Skills with per-Skill feedback', async () => {

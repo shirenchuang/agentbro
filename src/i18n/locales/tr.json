@@ -595,11 +595,15 @@
   },
   "skills": {
     "conversationMigration": {
+      "migrateClaude": "Claude Code'a taşı",
+      "copyResume": "Sürdürme komutunu kopyala",
+      "claudeResumeCwd": "Sürdürme komutunu {{directory}} dizininde çalıştırın.",
+      "resumeCopied": "Sürdürme komutu kopyalandı.",
       "directionLabel": "Taşıma yönü",
       "openZcode": "ZCode'u aç",
       "migrateZcode": "ZCode'a taşı",
       "partiallyReadable": "İçeriğin bir kısmı okunamadı. Okunabilen mesajlar aşağıda gösterilir.",
-      "returnedHistory": "Özgün ZCode oturumu {{id}} · {{count}} eşleşen mesaj",
+      "returnedHistory": "Özgün {{agent}} oturumu {{id}} · {{count}} eşleşen mesaj",
       "continuedMessages": "Özgün geçmişten sonraki mesajlar",
       "missingFolder": "Kaynak klasör eksik",
       "tab": "Konuşmalar",

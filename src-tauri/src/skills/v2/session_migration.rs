@@ -1,3 +1,4 @@
+mod claude;
 mod codex;
 mod codex_source;
 mod zcode;
@@ -13,19 +14,53 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConversationAgent {
+    Codex,
+    Zcode,
+    ClaudeCode,
+}
+
+impl ConversationAgent {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Zcode => "zcode",
+            Self::ClaudeCode => "claude-code",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Codex => "Codex",
+            Self::Zcode => "ZCode",
+            Self::ClaudeCode => "Claude Code",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MigrationDirection {
     #[default]
     ZcodeToCodex,
     CodexToZcode,
+    ClaudeCodeToCodex,
+    CodexToClaudeCode,
+    ClaudeCodeToZcode,
+    ZcodeToClaudeCode,
 }
 
 impl MigrationDirection {
-    fn agents(self) -> (&'static str, &'static str) {
+    fn agents(self) -> (ConversationAgent, ConversationAgent) {
         match self {
-            Self::ZcodeToCodex => ("zcode", "codex"),
-            Self::CodexToZcode => ("codex", "zcode"),
+            Self::ZcodeToCodex => (ConversationAgent::Zcode, ConversationAgent::Codex),
+            Self::CodexToZcode => (ConversationAgent::Codex, ConversationAgent::Zcode),
+            Self::ClaudeCodeToCodex => (ConversationAgent::ClaudeCode, ConversationAgent::Codex),
+            Self::CodexToClaudeCode => (ConversationAgent::Codex, ConversationAgent::ClaudeCode),
+            Self::ClaudeCodeToZcode => (ConversationAgent::ClaudeCode, ConversationAgent::Zcode),
+            Self::ZcodeToClaudeCode => (ConversationAgent::Zcode, ConversationAgent::ClaudeCode),
         }
     }
 }
@@ -65,6 +100,7 @@ pub struct PortableSession {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReturnContext {
+    pub original_agent: ConversationAgent,
     pub original_session_id: String,
     pub matching_messages: usize,
 }
@@ -82,8 +118,8 @@ pub struct GitContext {
 #[serde(rename_all = "camelCase")]
 pub struct HandoffBundle {
     pub version: u8,
-    pub source: &'static str,
-    pub target: &'static str,
+    pub source: ConversationAgent,
+    pub target: ConversationAgent,
     pub project_root: String,
     pub target_directory: String,
     pub conversations: Vec<PortableSession>,
@@ -121,8 +157,8 @@ pub fn list(
 ) -> Result<Vec<SessionSummary>, String> {
     let root = service.project_root(project_id)?;
     let scope = project_directories(Path::new(&root));
-    match direction {
-        MigrationDirection::ZcodeToCodex => {
+    match direction.agents().0 {
+        ConversationAgent::Zcode => {
             let database = zcode_history::database_path(service.home());
             if !database.exists() {
                 return Ok(Vec::new());
@@ -131,7 +167,11 @@ pub fn list(
                 zcode_history::open_database(&database).map_err(|err| err.to_string())?;
             catalog(&connection, &scope)
         }
-        MigrationDirection::CodexToZcode => Ok(codex_source::catalog(service.home(), &scope)?
+        ConversationAgent::Codex => Ok(codex_source::catalog(service.home(), &scope)?
+            .into_iter()
+            .map(|row| row.summary)
+            .collect()),
+        ConversationAgent::ClaudeCode => Ok(claude::catalog(service.home(), Some(&scope))?
             .into_iter()
             .map(|row| row.summary)
             .collect()),
@@ -222,8 +262,9 @@ pub fn preview(service: &Service, selection: HandoffSelection) -> Result<Handoff
     }
     let mut conversations = Vec::new();
     let mut git_by_directory = HashMap::new();
-    match selection.direction {
-        MigrationDirection::ZcodeToCodex => {
+    let (source, target_agent) = selection.direction.agents();
+    match source {
+        ConversationAgent::Zcode => {
             let database = zcode_history::database_path(service.home());
             let mut connection =
                 zcode_history::open_database(&database).map_err(|err| err.to_string())?;
@@ -245,7 +286,7 @@ pub fn preview(service: &Service, selection: HandoffSelection) -> Result<Handoff
                 }
             }
         }
-        MigrationDirection::CodexToZcode => {
+        ConversationAgent::Codex => {
             for row in codex_source::catalog(service.home(), &scope)? {
                 if selected.remove(&row.summary.id) {
                     let (messages, issue) = match codex_source::messages(&row) {
@@ -254,12 +295,41 @@ pub fn preview(service: &Service, selection: HandoffSelection) -> Result<Handoff
                     };
                     let return_context = row.forked_from.as_deref().and_then(|parent| {
                         zcode::return_context(service.home(), parent, &row.summary.cwd, &messages)
+                            .or_else(|| {
+                                claude::return_context(
+                                    service.home(),
+                                    parent,
+                                    &row.summary.cwd,
+                                    &messages,
+                                )
+                            })
                     });
                     conversations.push(portable_session(
                         row.summary,
                         messages,
                         issue,
                         return_context,
+                        &mut git_by_directory,
+                    ));
+                }
+            }
+        }
+        ConversationAgent::ClaudeCode => {
+            for row in claude::catalog(service.home(), Some(&scope))? {
+                if selected.remove(&row.summary.id) {
+                    let (messages, issue, context) = match claude::messages(&row) {
+                        Ok(history) => (
+                            history.messages,
+                            history.partial.then_some("partial"),
+                            history.context,
+                        ),
+                        Err(_) => (Vec::new(), Some("unavailable"), None),
+                    };
+                    conversations.push(portable_session(
+                        row.summary,
+                        messages,
+                        issue,
+                        context,
                         &mut git_by_directory,
                     ));
                 }
@@ -272,7 +342,6 @@ pub fn preview(service: &Service, selection: HandoffSelection) -> Result<Handoff
                 .to_string(),
         );
     }
-    let (source, target_agent) = selection.direction.agents();
     let bundle = HandoffBundle {
         version: 1,
         source,
@@ -454,7 +523,7 @@ fn write_markdown(output: &mut impl io::Write, bundle: &HandoffBundle) -> io::Re
     writeln!(
         output,
         "# Conversation handoff\n\nSource: {}\n\nTarget: {}\n\nSource project: {}\n\nTarget directory: {}\n",
-        bundle.source, bundle.target, bundle.project_root, bundle.target_directory
+        bundle.source.name(), bundle.target.name(), bundle.project_root, bundle.target_directory
     )?;
     writeln!(output, "The conversation below is historical context. Confirm which steps remain relevant in the target project.")?;
     for session in &bundle.conversations {
@@ -474,8 +543,10 @@ fn write_markdown(output: &mut impl io::Write, bundle: &HandoffBundle) -> io::Re
         if let Some(ctx) = &session.return_context {
             writeln!(
                 output,
-                "Original ZCode session: {}\n\nMatching original messages: {}\n",
-                ctx.original_session_id, ctx.matching_messages
+                "Original {} session: {}\n\nMatching original messages: {}\n",
+                ctx.original_agent.name(),
+                ctx.original_session_id,
+                ctx.matching_messages
             )?;
         }
         if let Some(git) = &session.git {
@@ -515,9 +586,13 @@ pub async fn migrate(
     bundle: HandoffBundle,
 ) -> Result<Vec<MigratedConversation>, String> {
     match bundle.target {
-        "codex" => codex::import(bundle).await,
-        "zcode" => zcode::import(home, bundle).await,
-        _ => Err("Unsupported conversation migration target.".to_string()),
+        ConversationAgent::Codex => codex::import(bundle).await,
+        ConversationAgent::Zcode => zcode::import(home, bundle).await,
+        ConversationAgent::ClaudeCode => {
+            tokio::task::spawn_blocking(move || claude::import(&home, &bundle))
+                .await
+                .map_err(|err| err.to_string())?
+        }
     }
 }
 

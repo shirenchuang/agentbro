@@ -700,11 +700,15 @@
   },
   "skills": {
     "conversationMigration": {
+      "migrateClaude": "Migrate to Claude Code",
+      "copyResume": "Copy resume command",
+      "claudeResumeCwd": "Run the resume command from {{directory}}.",
+      "resumeCopied": "Resume command copied.",
       "directionLabel": "Migration direction",
       "openZcode": "Open ZCode",
       "migrateZcode": "Migrate to ZCode",
       "partiallyReadable": "Some content was unavailable. The readable messages are shown below.",
-      "returnedHistory": "Original ZCode session {{id}} · {{count}} matching messages",
+      "returnedHistory": "Original {{agent}} session {{id}} · {{count}} matching messages",
       "continuedMessages": "Messages after the original history",
       "missingFolder": "Source folder missing",
       "tab": "Conversations",
