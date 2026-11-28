@@ -699,6 +699,25 @@
     "dismiss": "Dismiss"
   },
   "skills": {
+    "projectImport": {
+      "chooseFolder": "Choose project folder",
+      "discover": "Recent projects",
+      "localPath": "Drop a folder here or paste its path",
+      "path": "Project folder path",
+      "oneFolder": "Drop one project folder at a time.",
+      "add": "Add",
+      "adding": "Adding…",
+      "addSelected": "Add selected ({{count}})",
+      "loading": "Finding projects in local Agent history…",
+      "unavailableSources": "History could not be read from {{sources}}.",
+      "noCandidates": "No project folders were found in local Agent history.",
+      "unavailablePath": "This folder is missing or inaccessible.",
+      "alreadyAdded": "Already added",
+      "showProject": "Show project",
+      "gitWorktree": "Git worktree",
+      "gitCommon": "Shared Git directory",
+      "empty": "Add a project to see its Agent resources."
+    },
     "conversationMigration": {
       "migrateClaude": "Migrate to Claude Code",
       "saveMarkdown": "Save Markdown for Antigravity",

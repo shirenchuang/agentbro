@@ -12,6 +12,7 @@ use crate::skills::v2::agent_meta;
 use crate::skills::v2::db::{self, Db};
 use crate::skills::v2::fsutil::{self, inspect_path, PathKind};
 use crate::skills::v2::models::*;
+use crate::skills::v2::session_migration::project_discovery::{self, ProjectDiscovery};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1529,6 +1530,15 @@ impl Service {
         rows.into_iter()
             .map(|row| self.project_summary_for_row(&row))
             .collect()
+    }
+
+    pub(super) fn discover_projects(&self) -> Result<ProjectDiscovery, String> {
+        let registered = self
+            .project_rows()?
+            .into_iter()
+            .map(|row| (row.root_path, row.id))
+            .collect();
+        Ok(project_discovery::discover(self.home(), registered))
     }
 
     pub fn add_project(&self, root_path: String) -> Result<ProjectDetail, String> {

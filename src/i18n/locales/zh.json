@@ -740,6 +740,25 @@
     "dismiss": "关闭"
   },
   "skills": {
+    "projectImport": {
+      "chooseFolder": "选择项目文件夹",
+      "discover": "最近项目",
+      "localPath": "拖入文件夹或粘贴路径",
+      "path": "项目文件夹路径",
+      "oneFolder": "请一次拖入一个项目文件夹。",
+      "add": "添加",
+      "adding": "正在添加…",
+      "addSelected": "添加所选项目（{{count}}）",
+      "loading": "正在从本机 Agent 会话发现项目…",
+      "unavailableSources": "无法读取 {{sources}} 的会话记录。",
+      "noCandidates": "本机 Agent 会话里没有找到项目文件夹。",
+      "unavailablePath": "目录不存在或无法访问。",
+      "alreadyAdded": "已添加",
+      "showProject": "查看项目",
+      "gitWorktree": "Git 工作树",
+      "gitCommon": "Git 共享目录",
+      "empty": "添加项目后，即可查看项目级 Agent 资源。"
+    },
     "conversationMigration": {
       "migrateClaude": "迁移到 Claude Code",
       "saveMarkdown": "保存 Antigravity 交接 Markdown",

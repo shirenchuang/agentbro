@@ -700,6 +700,25 @@
     "dismiss": "닫기"
   },
   "skills": {
+    "projectImport": {
+      "chooseFolder": "프로젝트 폴더 선택",
+      "discover": "최근 프로젝트",
+      "localPath": "폴더를 놓거나 경로를 붙여넣으세요",
+      "path": "프로젝트 폴더 경로",
+      "oneFolder": "한 번에 프로젝트 폴더 하나를 놓으세요.",
+      "add": "추가",
+      "adding": "추가 중…",
+      "addSelected": "선택한 프로젝트 추가 ({{count}})",
+      "loading": "로컬 에이전트 기록에서 프로젝트를 찾는 중…",
+      "unavailableSources": "{{sources}} 기록을 읽을 수 없습니다.",
+      "noCandidates": "로컬 에이전트 기록에 프로젝트 폴더가 없습니다.",
+      "unavailablePath": "폴더가 없거나 접근할 수 없습니다.",
+      "alreadyAdded": "이미 추가됨",
+      "showProject": "프로젝트 보기",
+      "gitWorktree": "Git 작업 트리",
+      "gitCommon": "Git 공유 디렉터리",
+      "empty": "프로젝트를 추가하면 에이전트 리소스를 볼 수 있습니다."
+    },
     "conversationMigration": {
       "migrateClaude": "Claude Code로 이전",
       "saveMarkdown": "Antigravity용 Markdown 저장",

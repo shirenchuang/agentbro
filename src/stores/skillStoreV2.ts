@@ -23,6 +23,8 @@ import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from './runt
 export type SkillManagerTab = 'library' | 'install' | 'packs' | 'projects' | 'agents' | 'diagnostics' | 'settings'
 export type SkillInstallTab = 'official' | 'agent' | 'local' | 'git'
 export type SkillViewMode = 'cards' | 'list'
+
+type ProjectAddResult = { path: string; error: string | null }
 export type MarketplaceInstallItemStatus = 'queued' | 'installing' | 'success' | 'failed' | 'cancelled'
 
 export interface MarketplaceInstallItemState {
@@ -131,7 +133,7 @@ interface SkillV2Actions {
   removeAgentSkillItems: (expectedRuntimeEnvironmentId: string, agentId: string, managedTargetIds: string[], unmanagedIds: string[]) => boolean
   loadProjects: (force?: boolean) => Promise<void>
   refreshProject: (projectId: string | null) => Promise<void>
-  addProject: (rootPath: string) => Promise<void>
+  addProjects: (rootPaths: string[]) => Promise<ProjectAddResult[]>
   removeProject: (projectId: string) => Promise<void>
   selectProject: (id: string | null, force?: boolean) => Promise<void>
   scanProject: (projectId: string) => Promise<void>
@@ -615,20 +617,29 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       await get().selectProject(projectId, true)
     }
   },
-  addProject: async (rootPath) => {
+  addProjects: async (rootPaths): Promise<ProjectAddResult[]> => {
     const view = captureProjectView(get().selectedProjectId)
-    if (!view.isRuntimeCurrent()) return
+    if (!view.isRuntimeCurrent()) return []
+    const results: ProjectAddResult[] = []
+    let firstAdded: string | null = null
     set({ error: null })
-    try {
-      const detail = await skillApiV2.addProject(rootPath)
-      if (!view.isRuntimeCurrent()) return
-      await get().loadProjects()
-      if (view.isSelected() && get().projects.some((project) => project.id === detail.id)) {
-        await get().selectProject(detail.id, true)
+    for (const path of new Set(rootPaths)) {
+      if (!view.isRuntimeCurrent()) return []
+      try {
+        const detail = await skillApiV2.addProject(path)
+        firstAdded ??= detail.id
+        results.push({ path, error: null })
+      } catch (error) {
+        results.push({ path, error: String(error) })
       }
-    } catch (e) {
-      if (view.isSelected()) set({ error: String(e) })
     }
+    if (view.isRuntimeCurrent() && firstAdded) {
+      await get().loadProjects()
+      if (view.isSelected() && get().projects.some((project) => project.id === firstAdded)) {
+        await get().selectProject(firstAdded, true)
+      }
+    }
+    return view.isRuntimeCurrent() ? results : []
   },
   removeProject: async (projectId) => {
     const view = captureProjectView(projectId)

@@ -11,6 +11,7 @@ use crate::skills::v2::service::{
     DeleteUnmanagedAgentSkillsResult, Service, UpsertPackInput,
 };
 use crate::skills::v2::{diagnosis, fsutil, session_migration, snapshot};
+use session_migration::project_discovery::ProjectDiscovery;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -687,6 +688,14 @@ pub fn list_agent_skill_inventory_v2() -> Result<Vec<AgentSkillInventoryAgent>, 
 #[tauri::command(async)]
 pub fn list_skill_projects_v2() -> Result<Vec<ProjectSummary>, String> {
     svc()?.list_projects()
+}
+
+#[tauri::command]
+pub async fn discover_skill_projects_v2() -> Result<ProjectDiscovery, String> {
+    let service = svc()?;
+    tokio::task::spawn_blocking(move || service.discover_projects())
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command(async)]

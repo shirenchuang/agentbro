@@ -16,7 +16,7 @@ pub(super) struct AntigravityConversation {
 
 pub(super) fn catalog(
     home: &Path,
-    scope: &[PathBuf],
+    scope: Option<&[PathBuf]>,
 ) -> Result<Vec<AntigravityConversation>, String> {
     let desktop = home.join(".gemini/antigravity");
     let database = desktop.join("conversation_summaries.db");
@@ -30,7 +30,7 @@ pub(super) fn catalog(
 fn read_catalog(
     desktop: &Path,
     database: &Path,
-    scope: &[PathBuf],
+    scope: Option<&[PathBuf]>,
 ) -> rusqlite::Result<Vec<AntigravityConversation>> {
     let conn = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let has_index: bool = conn.query_row(
@@ -63,7 +63,7 @@ fn read_catalog(
         let workspaces: String = row.get(2)?;
         let Some(cwd) = workspace_paths(&workspaces)
             .into_iter()
-            .find(|path| in_project_scope(path, scope))
+            .find(|path| scope.is_none_or(|roots| in_project_scope(path, roots)))
         else {
             continue;
         };
@@ -224,7 +224,7 @@ mod tests {
         .unwrap();
         drop(conn);
         let before = fs::read(&db).unwrap();
-        let list = catalog(home, &[project.canonicalize().unwrap()]).unwrap();
+        let list = catalog(home, Some(&[project.canonicalize().unwrap()])).unwrap();
         assert_eq!(list.len(), 2);
         let main = list.iter().find(|row| row.summary.id == primary).unwrap();
         let old = list.iter().find(|row| row.summary.id == archived).unwrap();

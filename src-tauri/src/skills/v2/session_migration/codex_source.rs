@@ -13,14 +13,14 @@ pub(super) struct CodexRollout {
     path: PathBuf,
 }
 
-pub(super) fn catalog(home: &Path, scope: &[PathBuf]) -> Result<Vec<CodexRollout>, String> {
+pub(super) fn catalog(home: &Path, scope: Option<&[PathBuf]>) -> Result<Vec<CodexRollout>, String> {
     let configured = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute());
     catalog_at(&configured.unwrap_or_else(|| home.join(".codex")), scope)
 }
 
-fn catalog_at(home: &Path, scope: &[PathBuf]) -> Result<Vec<CodexRollout>, String> {
+fn catalog_at(home: &Path, scope: Option<&[PathBuf]>) -> Result<Vec<CodexRollout>, String> {
     let titles = local_titles(home);
     let mut sessions = Vec::new();
     let mut seen = HashSet::new();
@@ -64,7 +64,11 @@ fn catalog_at(home: &Path, scope: &[PathBuf]) -> Result<Vec<CodexRollout>, Strin
                     continue;
                 };
                 let id = id.to_string();
-                if !in_project_scope(Path::new(cwd), scope) || !seen.insert(id.clone()) {
+                let directory = Path::new(cwd);
+                if !directory.is_absolute()
+                    || scope.is_some_and(|roots| !in_project_scope(directory, roots))
+                    || !seen.insert(id.clone())
+                {
                     continue;
                 }
                 let metadata = titles.get(&id);
@@ -292,7 +296,7 @@ mod tests {
         writeln!(out, "damaged record").unwrap();
         drop(out);
         let scope = vec![project.canonicalize().unwrap()];
-        let listing = catalog_at(dir.path(), &scope).unwrap();
+        let listing = catalog_at(dir.path(), Some(&scope)).unwrap();
         assert!(listing[0].summary.archived);
         assert_eq!(listing[0].forked_from, Some(parent.to_string()));
         let (messages, partial) = messages(&listing[0]).unwrap();
