@@ -439,7 +439,7 @@ impl ConversationParser {
         })
     }
 
-    fn parse_antigravity_message(
+    pub(crate) fn parse_antigravity_message(
         msg_type: &str,
         json: &serde_json::Value,
     ) -> Option<ParsedMessage> {

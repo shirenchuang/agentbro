@@ -596,6 +596,8 @@
   "skills": {
     "conversationMigration": {
       "migrateClaude": "Claude Code'a taşı",
+      "saveMarkdown": "Antigravity için Markdown kaydet",
+      "antigravityHandoff": "Antigravity'de hedef klasörü açın ve devir Markdown dosyasını yeni bir konuşmaya ekleyin.",
       "copyResume": "Sürdürme komutunu kopyala",
       "claudeResumeCwd": "Sürdürme komutunu {{directory}} dizininde çalıştırın.",
       "resumeCopied": "Sürdürme komutu kopyalandı.",

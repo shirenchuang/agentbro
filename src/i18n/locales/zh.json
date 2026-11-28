@@ -742,6 +742,8 @@
   "skills": {
     "conversationMigration": {
       "migrateClaude": "迁移到 Claude Code",
+      "saveMarkdown": "保存 Antigravity 交接 Markdown",
+      "antigravityHandoff": "在 Antigravity 中打开目标目录，再把交接 Markdown 附加到新对话。",
       "copyResume": "复制续聊命令",
       "claudeResumeCwd": "请在 {{directory}} 运行续聊命令。",
       "resumeCopied": "已复制续聊命令。",

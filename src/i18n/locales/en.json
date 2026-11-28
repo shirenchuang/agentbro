@@ -701,6 +701,8 @@
   "skills": {
     "conversationMigration": {
       "migrateClaude": "Migrate to Claude Code",
+      "saveMarkdown": "Save Markdown for Antigravity",
+      "antigravityHandoff": "Open the target directory in Antigravity and attach the handoff Markdown to a new conversation.",
       "copyResume": "Copy resume command",
       "claudeResumeCwd": "Run the resume command from {{directory}}.",
       "resumeCopied": "Resume command copied.",

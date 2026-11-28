@@ -702,6 +702,8 @@
   "skills": {
     "conversationMigration": {
       "migrateClaude": "Claude Code로 이전",
+      "saveMarkdown": "Antigravity용 Markdown 저장",
+      "antigravityHandoff": "Antigravity에서 대상 폴더를 열고 새 대화에 인계용 Markdown 파일을 첨부하세요.",
       "copyResume": "재개 명령 복사",
       "claudeResumeCwd": "{{directory}}에서 재개 명령을 실행하세요.",
       "resumeCopied": "재개 명령을 복사했습니다.",

@@ -52,6 +52,9 @@ export type ConversationMigrationDirection =
   | 'zcodeToCodex' | 'codexToZcode'
   | 'claudeCodeToCodex' | 'codexToClaudeCode'
   | 'claudeCodeToZcode' | 'zcodeToClaudeCode'
+  | 'antigravityToCodex' | 'codexToAntigravity'
+  | 'antigravityToClaudeCode' | 'claudeCodeToAntigravity'
+  | 'antigravityToZcode' | 'zcodeToAntigravity'
 
 export interface ConversationMigrationPreview {
   revision: string
@@ -63,7 +66,7 @@ export interface ConversationMigrationPreview {
       readIssue: 'empty' | 'unavailable' | 'partial' | null
       git: { worktree: string; commonDirectory: string; branch: string | null; commit: string } | null
       returnContext?: {
-        originalAgent: 'codex' | 'zcode' | 'claude-code'
+        originalAgent: 'codex' | 'zcode' | 'claude-code' | 'antigravity'
         originalSessionId: string
         matchingMessages: number
       }
