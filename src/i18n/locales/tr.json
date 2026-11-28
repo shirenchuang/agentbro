@@ -594,6 +594,25 @@
     "dismiss": "Kapat"
   },
   "skills": {
+    "projectImport": {
+      "chooseFolder": "Proje klasörünü seç",
+      "discover": "Son projeler",
+      "localPath": "Bir klasör bırakın veya yolunu yapıştırın",
+      "path": "Proje klasörü yolu",
+      "oneFolder": "Bir seferde bir proje klasörü bırakın.",
+      "add": "Ekle",
+      "adding": "Ekleniyor…",
+      "addSelected": "Seçilenleri ekle ({{count}})",
+      "loading": "Yerel aracı geçmişinde projeler aranıyor…",
+      "unavailableSources": "{{sources}} geçmişi okunamadı.",
+      "noCandidates": "Yerel aracı geçmişinde proje klasörü bulunamadı.",
+      "unavailablePath": "Klasör eksik veya erişilemiyor.",
+      "alreadyAdded": "Zaten eklendi",
+      "showProject": "Projeyi göster",
+      "gitWorktree": "Git çalışma ağacı",
+      "gitCommon": "Paylaşılan Git dizini",
+      "empty": "Aracı kaynaklarını görmek için proje ekleyin."
+    },
     "conversationMigration": {
       "migrateClaude": "Claude Code'a taşı",
       "saveMarkdown": "Antigravity için Markdown kaydet",

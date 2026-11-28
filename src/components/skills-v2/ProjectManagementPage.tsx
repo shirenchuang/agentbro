@@ -3,11 +3,11 @@ import { useTranslation } from 'react-i18next'
 import { captureProjectView, useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { ProjectAgentDetail, ProjectDetail, ProjectSkillItem } from '../../services/skillApiV2'
-import { isWindowsPlatform } from '../../utils/platform'
 import { isTauri } from '../../services/tauriApi'
 import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { AgentIconBadge } from './AgentIconBadge'
 import { ProjectConversationMigration } from './ProjectConversationMigration'
+import { ProjectImportPanel } from './ProjectImportPanel'
 import { ProjectSkillLockPanel } from './ProjectSkillLockPanel'
 
 type ProjectTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'instructions' | 'config' | 'conversations'
@@ -17,13 +17,14 @@ function showProjectPathError(error: unknown) {
 }
 
 export function ProjectManagementPage() {
+  const { t } = useTranslation()
   const state = useSkillStoreV2()
-  const [rootPath, setRootPath] = useState('')
+  const environmentId = useRuntimeEnvironmentStore((value) => value.selectedEnvironmentId)
+  const environmentRevision = useRuntimeEnvironmentStore((value) => value.selectionRevision)
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState<ProjectTab>('overview')
   const [agentFilter, setAgentFilter] = useState('all')
   const [busy, setBusy] = useState(false)
-  const [adding, setAdding] = useState(false)
 
   useEffect(() => {
     if (state.initialized && !state.startupScanInFlight) void state.loadOverview()
@@ -51,18 +52,6 @@ export function ProjectManagementPage() {
   }, [query, state.projects])
 
   const detail = state.selectedProjectDetail?.id === state.selectedProjectId ? state.selectedProjectDetail : null
-
-  const addProject = async () => {
-    const value = rootPath.trim()
-    if (!value) return
-    setAdding(true)
-    try {
-      await state.addProject(value)
-      setRootPath((current) => current.trim() === value ? '' : current)
-    } finally {
-      setAdding(false)
-    }
-  }
 
   const refreshProjects = async () => {
     setBusy(true)
@@ -92,21 +81,7 @@ export function ProjectManagementPage() {
 
       <div className="sm2__project-layout">
         <aside className="sm2__project-sidebar settings-scroll">
-          <div className="sm2__project-import">
-            <label htmlFor="skill-project-root">导入项目</label>
-            <div className="sm2__project-import-row">
-              <input
-                id="skill-project-root"
-                className="sm2__search sm2__search--full"
-                value={rootPath}
-                onChange={(event) => setRootPath(event.target.value)}
-                placeholder={isWindowsPlatform() ? 'C:\\Users\\me\\work\\repo' : '/Users/me/work/repo'}
-              />
-              <button className="sm2__btn sm2__btn--primary" disabled={!rootPath.trim() || adding || state.projectDetailLoading} onClick={addProject}>
-                添加
-              </button>
-            </div>
-          </div>
+          {environmentId === state.runtimeEnvironmentId && <ProjectImportPanel key={`${environmentId}:${environmentRevision}`} environmentId={environmentId} />}
 
           <input
             className="sm2__search sm2__search--full"
@@ -115,12 +90,7 @@ export function ProjectManagementPage() {
             placeholder="搜索项目名或路径"
           />
 
-          {state.projects.length === 0 ? (
-            <div className="sm2__project-empty">
-              <strong>还没有导入项目</strong>
-              <span>粘贴项目根目录后，AgentBro 会扫描项目级 Skills、MCP、插件和指令文件。</span>
-            </div>
-          ) : filteredProjects.length === 0 ? (
+          {state.projects.length > 0 && (filteredProjects.length === 0 ? (
             <div className="sm2__empty sm2__empty--compact">没有匹配的项目</div>
           ) : (
             <div className="sm2__project-list">
@@ -138,13 +108,13 @@ export function ProjectManagementPage() {
                 </button>
               ))}
             </div>
-          )}
+          ))}
         </aside>
 
         <main className="sm2__project-canvas settings-scroll">
           {!detail ? (
             <div className="sm2__empty">
-              {state.projectDetailLoading ? '加载项目详情…' : '选择或导入一个项目'}
+              {state.projectDetailLoading ? '加载项目详情…' : state.projects.length ? '选择或导入一个项目' : t('skills.projectImport.empty')}
             </div>
           ) : (
             <ProjectDetailView

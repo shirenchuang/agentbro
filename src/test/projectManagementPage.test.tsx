@@ -8,15 +8,18 @@ import { skillApiV2 } from '../services/skillApiV2'
 import * as tauriApi from '../services/tauriApi'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import * as tauriPath from '@tauri-apps/api/path'
+import { PhysicalPosition } from '@tauri-apps/api/dpi'
+import { getCurrentWebview, type Webview } from '@tauri-apps/api/webview'
 import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../stores/runtimeEnvironmentStore'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
 import i18n from '../i18n'
-import type { AddCenterSkillPreview, ProjectDetail, SkillManagerOverview, SkillSummary } from '../services/skillApiV2'
+import type { AddCenterSkillPreview, ProjectCandidate, ProjectDetail, ProjectDiscovery, SkillManagerOverview, SkillSummary } from '../services/skillApiV2'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }))
 vi.mock('@tauri-apps/api/path', { spy: true })
+vi.mock('@tauri-apps/api/webview', { spy: true })
 
 function makeSkill(): SkillSummary {
   return {
@@ -118,6 +121,10 @@ function alternateProject(): ProjectDetail {
   return { ...makeProject(), id: 'project-2', name: 'Second project', rootPath: '/Users/me/second' }
 }
 
+function candidate(path: string, overrides: Partial<ProjectCandidate> = {}): ProjectCandidate {
+  return { path, name: 'Example repo', sources: ['codex', 'claude-code'], lastUsedAt: null, directoryAvailable: true, registeredProjectId: null, git: null, ...overrides }
+}
+
 describe('ProjectManagementPage', () => {
   beforeEach(() => {
     cleanup()
@@ -145,7 +152,109 @@ describe('ProjectManagementPage', () => {
     vi.spyOn(skillApiV2, 'getProjectDetail').mockResolvedValue(project)
   })
 
+  it('imports a folder chosen from the native picker and opens its overview', async () => {
+    await i18n.changeLanguage('en')
+    vi.spyOn(tauriApi, 'isTauri').mockReturnValue(true)
+    const project = { ...alternateProject(), rootPath: 'C:\\Users\\me\\Second project' }
+    useSkillStoreV2.setState({ projects: [] })
+    vi.mocked(skillApiV2.listProjects).mockResolvedValueOnce([]).mockResolvedValue([project])
+    vi.mocked(skillApiV2.getProjectDetail).mockResolvedValue(project)
+    vi.mocked(openDialog).mockResolvedValue(project.rootPath)
+    const add = vi.spyOn(skillApiV2, 'addProject').mockResolvedValue(project)
+    render(<ProjectManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Choose project folder' }))
+    expect(await screen.findByRole('heading', { name: project.name })).toBeInTheDocument()
+    expect(openDialog).toHaveBeenCalledWith({ directory: true, multiple: false })
+    expect(add).toHaveBeenCalledExactlyOnceWith(project.rootPath)
+  })
+
+  it('keeps a manually supplied path when adding that directory fails', async () => {
+    await i18n.changeLanguage('en')
+    vi.spyOn(skillApiV2, 'addProject').mockRejectedValue(new Error('Project directory was moved'))
+    render(<ProjectManagementPage />)
+    const path = screen.getByRole('textbox', { name: 'Project folder path' })
+    fireEvent.change(path, { target: { value: '/moved/project' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Project directory was moved')
+    expect(path).toHaveValue('/moved/project')
+  })
+
+  it('accepts a native drop within the project import controls only', async () => {
+    await i18n.changeLanguage('en')
+    vi.spyOn(tauriApi, 'isTauri').mockReturnValue(true)
+    const unlisten = vi.fn()
+    const onDragDropEvent = vi.fn<Webview['onDragDropEvent']>().mockResolvedValue(unlisten)
+    vi.mocked(getCurrentWebview, { partial: true }).mockReturnValueOnce({ onDragDropEvent })
+    const view = render(<ProjectManagementPage />)
+    const input = screen.getByRole('textbox', { name: 'Drop a folder here or paste its path' })
+    const zone = input.closest('.sm2__project-import')!
+    vi.spyOn(zone, 'getBoundingClientRect').mockReturnValue(new DOMRect(20, 30, 200, 100))
+    await waitFor(() => expect(onDragDropEvent).toHaveBeenCalledOnce())
+    const [drop] = onDragDropEvent.mock.calls[0]
+    const scale = window.devicePixelRatio
+    act(() => drop({ event: 'tauri://drag-drop', id: 1, payload: { type: 'drop', paths: ['/outside'], position: new PhysicalPosition(10 * scale, 10 * scale) } }))
+    expect(input).toHaveValue('')
+    act(() => drop({ event: 'tauri://drag-drop', id: 1, payload: { type: 'drop', paths: ['/path/linked worktree'], position: new PhysicalPosition(30 * scale, 40 * scale) } }))
+    expect(input).toHaveValue('/path/linked worktree')
+    view.unmount()
+    expect(unlisten).toHaveBeenCalledOnce()
+  })
+
+  it('adds only checked recent projects and keeps per-folder batch failures available for retry', async () => {
+    await i18n.changeLanguage('en')
+    vi.spyOn(tauriApi, 'isTauri').mockReturnValue(true)
+    const current = makeProject()
+    const added = alternateProject()
+    const failed = '/Users/me/moved'
+    vi.spyOn(skillApiV2, 'discoverProjects').mockResolvedValue({
+      candidates: [
+        candidate(current.rootPath, { name: current.name, registeredProjectId: current.id }),
+        candidate(added.rootPath, { name: added.name, git: { worktree: added.rootPath, commonDirectory: '/repo/.git', branch: 'topic', commit: 'abc' } }),
+        candidate(failed, { name: 'Moved later' }),
+        candidate('/not-found', { name: 'Missing now', directoryAvailable: false }),
+      ],
+      unavailableSources: ['antigravity'],
+    })
+    vi.mocked(skillApiV2.listProjects).mockResolvedValueOnce([current]).mockResolvedValue([added, current])
+    vi.mocked(skillApiV2.getProjectDetail).mockImplementation(async (id) => id === added.id ? added : current)
+    const add = vi.spyOn(skillApiV2, 'addProject').mockResolvedValueOnce(added).mockRejectedValueOnce(new Error('Folder moved'))
+    render(<ProjectManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Recent projects' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Recent projects' })
+    expect(await within(dialog).findByText(/History could not be read from Antigravity/)).toBeInTheDocument()
+    expect(within(dialog).getByRole('checkbox', { name: /agentbro/ })).toBeDisabled()
+    expect(within(dialog).getByRole('checkbox', { name: /Missing now/ })).toBeDisabled()
+    expect(within(dialog).getByText('/repo/.git')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Second project/ }))
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Moved later/ }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add selected (2)' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Folder moved')
+    expect(add.mock.calls).toEqual([[added.rootPath], [failed]])
+    expect(within(dialog).getByRole('checkbox', { name: /Second project/ })).toBeDisabled()
+    expect(within(dialog).getByRole('checkbox', { name: /Moved later/ })).toBeChecked()
+  })
+
+  it.each([false, true])('drops a discovery result after switching runtimes with return to local %s', async (returnToLocal) => {
+    await i18n.changeLanguage('en')
+    vi.spyOn(tauriApi, 'isTauri').mockReturnValue(true)
+    const pending = deferred<ProjectDiscovery>()
+    vi.spyOn(skillApiV2, 'discoverProjects').mockReturnValue(pending.promise)
+    render(<ProjectManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Recent projects' }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    await act(async () => {
+      const runtime = useRuntimeEnvironmentStore.getState()
+      runtime.selectEnvironment('other-machine')
+      if (returnToLocal) runtime.selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      pending.resolve({ candidates: [candidate('/local/private-repo')], unavailableSources: [] })
+    })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByText('/local/private-repo')).not.toBeInTheDocument()
+  })
+
   it('shows the error when the project directory cannot be opened', async () => {
+    await i18n.changeLanguage('zh')
     const openPath = vi.spyOn(skillApiV2, 'openPath').mockRejectedValue(new Error('Project path no longer exists'))
     render(<ProjectManagementPage />)
 

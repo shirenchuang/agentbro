@@ -41,6 +41,23 @@ export interface ProjectConversationSummary {
   directoryExists: boolean
 }
 
+export type ProjectDiscoverySource = 'codex' | 'claude-code' | 'zcode' | 'antigravity'
+
+export interface ProjectCandidate {
+  path: string
+  name: string
+  sources: ProjectDiscoverySource[]
+  lastUsedAt: string | null
+  directoryAvailable: boolean
+  registeredProjectId: string | null
+  git: { worktree: string; commonDirectory: string; branch: string | null; commit: string } | null
+}
+
+export interface ProjectDiscovery {
+  candidates: ProjectCandidate[]
+  unavailableSources: ProjectDiscoverySource[]
+}
+
 export interface ConversationMigrationSelection {
   projectId: string
   sessionIds: string[]
@@ -1669,6 +1686,7 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<AgentSkillInventoryAgent[]>('list_agent_skill_inventory_v2') : Promise.resolve(demoAgentInventory()),
   listProjects: () =>
     isTauriRuntime() ? invoke<ProjectSummary[]>('list_skill_projects_v2') : Promise.resolve(demoProjectSummaries()),
+  discoverProjects: () => invoke<ProjectDiscovery>('discover_skill_projects_v2', undefined, LOCAL_RUNTIME_ENVIRONMENT_ID),
   addProject: (rootPath: string) =>
     isTauriRuntime() ? invoke<ProjectDetail>('add_skill_project_v2', { rootPath }) : Promise.resolve(demoProjectDetail(rootPath)),
   removeProject: (projectId: string) =>

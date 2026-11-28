@@ -700,6 +700,25 @@
     "dismiss": "閉じる"
   },
   "skills": {
+    "projectImport": {
+      "chooseFolder": "プロジェクトフォルダーを選択",
+      "discover": "最近のプロジェクト",
+      "localPath": "フォルダーをドロップするか、パスを貼り付け",
+      "path": "プロジェクトフォルダーのパス",
+      "oneFolder": "一度に 1 つのフォルダーをドロップしてください。",
+      "add": "追加",
+      "adding": "追加中…",
+      "addSelected": "選択したプロジェクトを追加（{{count}}）",
+      "loading": "ローカルのエージェント履歴からプロジェクトを確認中…",
+      "unavailableSources": "{{sources}} の履歴を読み込めませんでした。",
+      "noCandidates": "ローカルのエージェント履歴にプロジェクトフォルダーが見つかりません。",
+      "unavailablePath": "フォルダーが存在しないか、アクセスできません。",
+      "alreadyAdded": "追加済み",
+      "showProject": "プロジェクトを表示",
+      "gitWorktree": "Git 作業ツリー",
+      "gitCommon": "Git 共通ディレクトリ",
+      "empty": "プロジェクトを追加すると、エージェントのリソースを確認できます。"
+    },
     "conversationMigration": {
       "migrateClaude": "Claude Code に移行",
       "saveMarkdown": "Antigravity 用の Markdown を保存",

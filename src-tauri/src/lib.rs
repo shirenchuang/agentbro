@@ -6960,6 +6960,7 @@ pub fn run() {
             skills::v2::commands::list_unmanaged_v2,
             skills::v2::commands::list_agent_skill_inventory_v2,
             skills::v2::commands::list_skill_projects_v2,
+            skills::v2::commands::discover_skill_projects_v2,
             skills::v2::commands::add_skill_project_v2,
             skills::v2::commands::remove_skill_project_v2,
             skills::v2::commands::get_skill_project_detail_v2,

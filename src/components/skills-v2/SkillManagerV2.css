@@ -5566,6 +5566,17 @@
   gap: 6px;
 }
 
+.sm2__project-import--dragging {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+
+.sm2__project-import-actions {
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
 .sm2__project-import label,
 .sm2__project-install-controls label span {
   color: var(--text-secondary, #64748b);
@@ -5624,18 +5635,37 @@
   font-size: 11px;
 }
 
-.sm2__project-empty {
-  display: grid;
-  gap: 5px;
-  padding: 12px;
-  border: 1px dashed var(--border, rgba(15, 23, 42, 0.16));
-  border-radius: 8px;
-  color: var(--text-secondary, #64748b);
-  font-size: 12px;
+.sm2__project-candidates {
+  list-style: none;
+  padding: 0;
+  margin: 0;
 }
 
-.sm2__project-empty strong {
-  color: var(--text-primary, #0f172a);
+.sm2__project-candidates li {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.sm2__project-candidates label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.sm2__project-candidates label code,
+.sm2__project-candidates label strong {
+  display: block;
+}
+
+.sm2__project-candidates time {
+  margin-inline-start: 8px;
+}
+
+.sm2__project-candidates p,
+.sm2__project-candidates time {
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .sm2__project-workspace {

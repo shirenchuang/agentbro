@@ -2,6 +2,7 @@ mod antigravity;
 mod claude;
 mod codex;
 mod codex_source;
+pub(super) mod project_discovery;
 mod zcode;
 
 use super::service::Service;
@@ -179,25 +180,33 @@ pub fn list(
 ) -> Result<Vec<SessionSummary>, String> {
     let root = service.project_root(project_id)?;
     let scope = project_directories(Path::new(&root));
-    match direction.agents().0 {
+    source_summaries(service.home(), direction.agents().0, Some(&scope))
+}
+
+fn source_summaries(
+    home: &Path,
+    source: ConversationAgent,
+    scope: Option<&[PathBuf]>,
+) -> Result<Vec<SessionSummary>, String> {
+    match source {
         ConversationAgent::Zcode => {
-            let database = zcode_history::database_path(service.home());
+            let database = zcode_history::database_path(home);
             if !database.exists() {
                 return Ok(Vec::new());
             }
             let connection =
                 zcode_history::open_database(&database).map_err(|err| err.to_string())?;
-            catalog(&connection, &scope)
+            catalog(&connection, scope)
         }
-        ConversationAgent::Codex => Ok(codex_source::catalog(service.home(), &scope)?
+        ConversationAgent::Codex => Ok(codex_source::catalog(home, scope)?
             .into_iter()
             .map(|row| row.summary)
             .collect()),
-        ConversationAgent::ClaudeCode => Ok(claude::catalog(service.home(), Some(&scope))?
+        ConversationAgent::ClaudeCode => Ok(claude::catalog(home, scope)?
             .into_iter()
             .map(|row| row.summary)
             .collect()),
-        ConversationAgent::Antigravity => Ok(antigravity::catalog(service.home(), &scope)?
+        ConversationAgent::Antigravity => Ok(antigravity::catalog(home, scope)?
             .into_iter()
             .map(|row| row.summary)
             .collect()),
@@ -232,7 +241,7 @@ fn in_project_scope(path: &Path, roots: &[PathBuf]) -> bool {
 
 fn catalog(
     connection: &rusqlite::Connection,
-    scope: &[PathBuf],
+    scope: Option<&[PathBuf]>,
 ) -> Result<Vec<SessionSummary>, String> {
     let mut query = connection
         .prepare(
@@ -252,7 +261,7 @@ fn catalog(
             continue;
         };
         let path = Path::new(&cwd);
-        if !in_project_scope(path, scope) {
+        if !path.is_absolute() || scope.is_some_and(|roots| !in_project_scope(path, roots)) {
             continue;
         }
         let directory_exists = path.is_dir();
@@ -295,7 +304,7 @@ pub fn preview(service: &Service, selection: HandoffSelection) -> Result<Handoff
             let mut connection =
                 zcode_history::open_database(&database).map_err(|err| err.to_string())?;
             let snapshot = connection.transaction().map_err(|err| err.to_string())?;
-            for summary in catalog(&snapshot, &scope)? {
+            for summary in catalog(&snapshot, Some(&scope))? {
                 if selected.remove(&summary.id) {
                     let (messages, issue) =
                         match zcode_history::query_messages(&snapshot, &summary.id) {
@@ -313,7 +322,7 @@ pub fn preview(service: &Service, selection: HandoffSelection) -> Result<Handoff
             }
         }
         ConversationAgent::Codex => {
-            for row in codex_source::catalog(service.home(), &scope)? {
+            for row in codex_source::catalog(service.home(), Some(&scope))? {
                 if selected.remove(&row.summary.id) {
                     let (messages, issue) = match codex_source::messages(&row) {
                         Ok((messages, partial)) => (messages, partial.then_some("partial")),
@@ -362,7 +371,7 @@ pub fn preview(service: &Service, selection: HandoffSelection) -> Result<Handoff
             }
         }
         ConversationAgent::Antigravity => {
-            for row in antigravity::catalog(service.home(), &scope)? {
+            for row in antigravity::catalog(service.home(), Some(&scope))? {
                 if selected.remove(&row.summary.id) {
                     let (messages, issue) = match antigravity::messages(&row) {
                         Ok((messages, partial)) => (messages, partial.then_some("partial")),
