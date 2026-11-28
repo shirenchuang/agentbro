@@ -143,6 +143,7 @@ function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: Ag
     && reviewed.binaryPath === current.binaryPath
     && reviewed.appPath === current.appPath
     && reviewed.appUninstall?.identity === current.appUninstall?.identity
+    && reviewed.aiderUninstall?.identity === current.aiderUninstall?.identity
     && reviewed.installedVersion === current.installedVersion
     && reviewed.packageManager === current.packageManager
     && reviewed.packageName === current.packageName
@@ -662,11 +663,12 @@ export function AgentManagementPage() {
       let cleanupBlocked: string | null = null
       let preserveSkills = preservesSharedSkills
       if (uninstallProgram) {
+        const target = program.appUninstall ?? program.aiderUninstall
         try {
           if (isNpmProgram(program) && program.binaryPath) {
             await agentApi.uninstall(agent.id, environmentId, program.binaryPath)
-          } else if (program.appUninstall) {
-            await agentApi.uninstall(agent.id, environmentId, undefined, program.appUninstall)
+          } else if (target) {
+            await agentApi.uninstall(agent.id, environmentId, undefined, target)
           } else {
             await agentApi.uninstall(agent.id, environmentId)
           }
@@ -1085,6 +1087,7 @@ export function AgentManagementPage() {
                 ? `移到废纸篓：${uninstallProgram.appPath}`
                 : uninstallProgram.uninstallCommand}
               {isNpmProgram(uninstallProgram) && uninstallProgram.binaryPath && <><br /><span>{uninstallProgram.binaryPath}</span></>}
+              {uninstallProgram.aiderUninstall && <><br /><span>{uninstallProgram.aiderUninstall.path}</span></>}
             </code>
           )}
         </PreviewDialog>

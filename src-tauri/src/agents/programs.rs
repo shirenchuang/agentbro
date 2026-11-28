@@ -15,6 +15,7 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::{timeout, Duration};
 
+mod aider_installation;
 mod npm_installation;
 #[cfg(target_os = "windows")]
 mod windows_app_paths;
@@ -58,7 +59,7 @@ enum PackageOperationOutcome {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct AppUninstallTarget {
+pub struct ProgramUninstallTarget {
     path: String,
     identity: String,
 }
@@ -79,7 +80,9 @@ pub struct AgentProgramInfo {
     pub config_dir: Option<String>,
     pub app_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_uninstall: Option<AppUninstallTarget>,
+    pub app_uninstall: Option<ProgramUninstallTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aider_uninstall: Option<ProgramUninstallTarget>,
     pub download_url: Option<String>,
     pub install_command: Option<String>,
     pub update_command: Option<String>,
@@ -225,9 +228,15 @@ pub async fn agent_install(
     state: State<'_, AppState>,
     agent_id: String,
 ) -> Result<(), String> {
-    run_agent_command(app, &state.adapters, &agent_id, "install", None, None)
-        .await
-        .map(|_| ())
+    run_agent_command(
+        app,
+        &state.adapters,
+        &agent_id,
+        "install",
+        ProgramOperationReview::default(),
+    )
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -242,8 +251,10 @@ pub async fn agent_update(
         &state.adapters,
         &agent_id,
         "update",
-        expected_binary_path.as_deref(),
-        None,
+        ProgramOperationReview {
+            binary: expected_binary_path.as_deref(),
+            ..Default::default()
+        },
     )
     .await
     .map(|outcome| match outcome {
@@ -258,15 +269,19 @@ pub async fn agent_uninstall(
     state: State<'_, AppState>,
     agent_id: String,
     expected_binary_path: Option<String>,
-    expected_app: Option<AppUninstallTarget>,
+    expected_app: Option<ProgramUninstallTarget>,
+    expected_aider: Option<ProgramUninstallTarget>,
 ) -> Result<(), String> {
     run_agent_command(
         app,
         &state.adapters,
         &agent_id,
         "uninstall",
-        expected_binary_path.as_deref(),
-        expected_app.as_ref(),
+        ProgramOperationReview {
+            binary: expected_binary_path.as_deref(),
+            app: expected_app.as_ref(),
+            aider: expected_aider.as_ref(),
+        },
     )
     .await
     .map(|_| ())
@@ -568,6 +583,14 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         meta.update_command = None;
         meta.uninstall_command = None;
     }
+    let aider = if let ("aider", Some(binary)) = (id.as_str(), binary_path.as_deref()) {
+        let installation = aider_installation::find(binary).await;
+        meta.package_manager = installation.as_ref().map(|owner| owner.manager_name());
+        meta.uninstall_command = None;
+        installation
+    } else {
+        None
+    };
     let app_path = match &meta.kind {
         AgentProgramKind::Cli => None,
         AgentProgramKind::App => installed_app_path(&id, &meta),
@@ -603,6 +626,8 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         })
         .await;
         (version, None)
+    } else if let Some(installation) = &aider {
+        (Some(installation.version().to_string()), None)
     } else if installed {
         version_info_for(
             &id,
@@ -651,10 +676,14 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         config_dir,
         app_path: display_app_path,
         app_uninstall,
+        aider_uninstall: aider.as_ref().map(|owner| owner.target().clone()),
         download_url: meta.download_url.map(ToString::to_string),
         install_command: meta.install_command.map(ToString::to_string),
         update_command: meta.update_command.map(ToString::to_string),
-        uninstall_command: meta.uninstall_command.map(ToString::to_string),
+        uninstall_command: aider
+            .as_ref()
+            .map(|owner| owner.uninstall_display())
+            .or_else(|| meta.uninstall_command.map(ToString::to_string)),
         hooks_installed: seed.hooks_installed,
         skills_dir,
         is_custom: false,
@@ -954,6 +983,7 @@ fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo 
         config_dir: Some(config_dir),
         app_path: None,
         app_uninstall: None,
+        aider_uninstall: None,
         download_url: None,
         install_command: None,
         update_command: None,
@@ -970,13 +1000,19 @@ fn claim_agent_package_operation() -> Result<MutexGuard<'static, ()>, String> {
         .map_err(|_| "agent_package_operation_in_progress".to_string())
 }
 
+#[derive(Default)]
+struct ProgramOperationReview<'a> {
+    binary: Option<&'a str>,
+    app: Option<&'a ProgramUninstallTarget>,
+    aider: Option<&'a ProgramUninstallTarget>,
+}
+
 async fn run_agent_command(
     app: AppHandle,
     _adapters: &[std::sync::Arc<dyn AgentAdapter>],
     agent_id: &str,
     operation: &str,
-    expected_binary_path: Option<&str>,
-    expected_app: Option<&AppUninstallTarget>,
+    review: ProgramOperationReview<'_>,
 ) -> Result<PackageOperationOutcome, String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let _package_operation = claim_agent_package_operation()?;
@@ -995,8 +1031,7 @@ async fn run_agent_command(
         operation,
         &meta,
         installed_binary.as_deref(),
-        expected_binary_path,
-        expected_app,
+        review,
     )
     .await;
     let (stream, message) = match &result {
@@ -1022,19 +1057,20 @@ async fn execute_package_operation(
     operation: &str,
     meta: &ProgramMetadata,
     installed_binary: Option<&Path>,
-    expected_binary_path: Option<&str>,
-    expected_app: Option<&AppUninstallTarget>,
+    review: ProgramOperationReview<'_>,
 ) -> Result<PackageOperationOutcome, String> {
-    let npm = meta.reviewed_npm_installation(installed_binary, expected_binary_path)?;
+    let npm = meta.reviewed_npm_installation(installed_binary, review.binary)?;
+    let uninstall_aider = agent_id == "aider" && operation == "uninstall";
     if operation == "uninstall"
         && meta.kind == AgentProgramKind::App
         && meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND)
     {
-        return trash_agent_app(app, agent_id, meta, expected_app)
+        return trash_agent_app(app, agent_id, meta, review.app)
             .await
             .map(PackageOperationOutcome::Completed);
     }
     if operation == "uninstall"
+        && !uninstall_aider
         && !program_is_installed_for_agent(
             agent_id,
             meta,
@@ -1053,8 +1089,16 @@ async fn execute_package_operation(
             CLAUDE_NATIVE_UPDATE_COMMAND.to_string(),
             native_claude_package_command(launcher, operation)?,
         )
-    } else if agent_id == "aider" && operation == "uninstall" {
-        aider_uninstall_command(RuntimePlatform::current(), executable::find_binary).await?
+    } else if uninstall_aider {
+        let detected = match installed_binary {
+            Some(launcher) => aider_installation::find(launcher).await,
+            None => None,
+        };
+        let installation = aider_installation::reviewed(detected, review.aider)?;
+        (
+            installation.uninstall_display(),
+            installation.uninstall_command(),
+        )
     } else {
         let mut command_line = match operation {
             "install" => meta.install_command,
@@ -1208,67 +1252,11 @@ fn native_claude_package_command(launcher: &Path, operation: &str) -> Result<Com
     Ok(command)
 }
 
-async fn aider_uninstall_command(
-    platform: RuntimePlatform,
-    find_binary: impl Fn(&str) -> Option<PathBuf>,
-) -> Result<(String, Command), String> {
-    let path = executable::augmented_path_env();
-    let python_launchers: &[&str] = if platform == RuntimePlatform::Windows {
-        &["python", "py", "python3"]
-    } else {
-        &["python3"]
-    };
-    let tool_managers = [
-        (
-            "uv",
-            &["tool", "list"][..],
-            &["tool", "uninstall", "aider-chat"][..],
-        ),
-        (
-            "pipx",
-            &["list", "--short"][..],
-            &["uninstall", "aider-chat"][..],
-        ),
-    ];
-    let pip_managers = python_launchers.iter().map(|&launcher| {
-        (
-            launcher,
-            &["-m", "pip", "show", "aider-chat"][..],
-            &["-m", "pip", "uninstall", "-y", "aider-chat"][..],
-        )
-    });
-    for (binary, probe_args, uninstall_args) in tool_managers.into_iter().chain(pip_managers) {
-        let Some(launcher) = find_binary(binary) else {
-            continue;
-        };
-        let is_pip = python_launchers.contains(&binary);
-        let command_for_launcher = || {
-            let mut command = package_command(&launcher, path.as_deref());
-            if is_pip && platform == RuntimePlatform::Windows {
-                command.env("PYTHON_MANAGER_AUTOMATIC_INSTALL", "false");
-            }
-            command
-        };
-        let mut probe = command_for_launcher();
-        let output = package_probe_output(probe.args(probe_args), Duration::from_secs(5)).await;
-        let package_found = output.is_ok_and(|output| {
-            output.status.success()
-                && (is_pip || String::from_utf8_lossy(&output.stdout).contains("aider-chat"))
-        });
-        if package_found {
-            let mut command = command_for_launcher();
-            command.args(uninstall_args);
-            return Ok((format!("{binary} {}", uninstall_args.join(" ")), command));
-        }
-    }
-    Err("Aider is present, but its package manager could not be determined".to_string())
-}
-
 async fn trash_agent_app(
     app: &AppHandle,
     agent_id: &str,
     meta: &ProgramMetadata,
-    expected_app: Option<&AppUninstallTarget>,
+    expected_app: Option<&ProgramUninstallTarget>,
 ) -> Result<&'static str, String> {
     let detected = installed_app_path(agent_id, meta)
         .as_deref()
@@ -1309,15 +1297,15 @@ async fn trash_agent_app(
 }
 
 fn reviewed_app_uninstall_target(
-    detected: Option<AppUninstallTarget>,
-    expected: Option<&AppUninstallTarget>,
-) -> Result<AppUninstallTarget, String> {
+    detected: Option<ProgramUninstallTarget>,
+    expected: Option<&ProgramUninstallTarget>,
+) -> Result<ProgramUninstallTarget, String> {
     detected.filter(|target| Some(target) == expected).ok_or_else(|| {
         "The desktop Agent application changed. Refresh Agent Management and review the installation again.".to_string()
     })
 }
 
-fn app_uninstall_target(path: &str) -> Option<AppUninstallTarget> {
+fn app_uninstall_target(path: &str) -> Option<ProgramUninstallTarget> {
     #[cfg(target_os = "macos")]
     {
         let user_apps = dirs::home_dir().map(|home| home.join("Applications"));
@@ -1331,7 +1319,10 @@ fn app_uninstall_target(path: &str) -> Option<AppUninstallTarget> {
 }
 
 #[cfg(target_os = "macos")]
-fn app_uninstall_target_at(app_path: &str, user_apps: Option<&Path>) -> Option<AppUninstallTarget> {
+fn app_uninstall_target_at(
+    app_path: &str,
+    user_apps: Option<&Path>,
+) -> Option<ProgramUninstallTarget> {
     use std::os::unix::fs::MetadataExt;
 
     let path = Path::new(app_path);
@@ -1358,7 +1349,7 @@ fn app_uninstall_target_at(app_path: &str, user_apps: Option<&Path>) -> Option<A
             )
         })
         .join("/");
-    Some(AppUninstallTarget {
+    Some(ProgramUninstallTarget {
         path: app_path.to_string(),
         identity,
     })
@@ -3167,61 +3158,6 @@ mod tests {
             false,
             false
         ));
-    }
-
-    #[cfg(any(unix, windows))]
-    #[tokio::test]
-    async fn windows_aider_uninstall_reuses_the_detected_python_launcher() {
-        let directory =
-            std::env::temp_dir().join(format!("agentbro aider {}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&directory).unwrap();
-        #[cfg(windows)]
-        let (launcher, script) = (
-            directory.join("python launcher.cmd"),
-            concat!(
-                "@echo off\r\n",
-                "if not \"%PYTHON_MANAGER_AUTOMATIC_INSTALL%\"==\"false\" exit /b 1\r\n",
-                "if \"%*\"==\"-m pip show aider-chat\" exit /b 0\r\n",
-                "if not \"%*\"==\"-m pip uninstall -y aider-chat\" exit /b 1\r\n",
-                "echo removed aider-chat\r\n",
-            ),
-        );
-        #[cfg(unix)]
-        let (launcher, script) = (
-            directory.join("python launcher"),
-            r#"#!/bin/sh
-[ "$PYTHON_MANAGER_AUTOMATIC_INSTALL" = false ] || exit 1
-case "$*" in
-    "-m pip show aider-chat") exit 0 ;;
-    "-m pip uninstall -y aider-chat") echo "removed aider-chat" ;;
-    *) exit 1 ;;
-esac
-"#,
-        );
-        std::fs::write(&launcher, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        for binary in ["python", "py", "python3"] {
-            let (line, mut command) =
-                super::aider_uninstall_command(RuntimePlatform::Windows, |name| {
-                    (name == binary).then(|| launcher.clone())
-                })
-                .await
-                .unwrap();
-            assert_eq!(line, format!("{binary} -m pip uninstall -y aider-chat"));
-            assert_eq!(command.as_std().get_program(), launcher.as_os_str());
-            let result = command.output().await.unwrap();
-            assert!(result.status.success());
-            assert_eq!(
-                String::from_utf8_lossy(&result.stdout).trim(),
-                "removed aider-chat"
-            );
-        }
-        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(target_os = "macos")]

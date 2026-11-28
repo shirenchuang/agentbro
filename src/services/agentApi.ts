@@ -58,7 +58,7 @@ export type AgentProgramStatus = 'installed' | 'notInstalled' | 'updateAvailable
 export type AgentUpdateOutcome = 'completed' | 'noNewerVersion' | null
 export type RemoteAgentHookStatus = 'unsupported' | 'notInstalled' | 'installed' | 'needsReinstall' | 'settingsCorrupted'
 
-export interface AppUninstallTarget {
+export interface ProgramUninstallTarget {
   path: string
   identity: string
 }
@@ -76,7 +76,8 @@ export interface AgentProgramInfo {
   binaryPath: string | null
   configDir: string | null
   appPath: string | null
-  appUninstall?: AppUninstallTarget | null
+  appUninstall?: ProgramUninstallTarget | null
+  aiderUninstall?: ProgramUninstallTarget | null
   downloadUrl: string | null
   installCommand: string | null
   updateCommand: string | null
@@ -315,11 +316,11 @@ export const agentApi = {
     ? invoke<AgentUpdateOutcome | void>('agent_update', expectedBinaryPath ? { agentId, expectedBinaryPath } : { agentId }, environmentId)
     : Promise.resolve(),
 
-  uninstall: (agentId: string, environmentId?: string, expectedBinaryPath?: string, expectedApp?: AppUninstallTarget) => isTauriRuntime()
+  uninstall: (agentId: string, environmentId?: string, expectedBinaryPath?: string, target?: ProgramUninstallTarget) => isTauriRuntime()
     ? invoke('agent_uninstall', {
         agentId,
         ...(expectedBinaryPath ? { expectedBinaryPath } : {}),
-        ...(expectedApp ? { expectedApp } : {}),
+        ...(target ? { [agentId === 'aider' ? 'expectedAider' : 'expectedApp']: target } : {}),
       }, environmentId)
     : Promise.resolve(),
 
