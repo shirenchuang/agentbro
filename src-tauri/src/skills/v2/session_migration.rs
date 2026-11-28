@@ -1,4 +1,6 @@
 mod codex;
+mod codex_source;
+mod zcode;
 
 use super::service::Service;
 use crate::hooks::conversation_parser::{ChatRole, MessageBlock};
@@ -10,6 +12,23 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MigrationDirection {
+    #[default]
+    ZcodeToCodex,
+    CodexToZcode,
+}
+
+impl MigrationDirection {
+    fn agents(self) -> (&'static str, &'static str) {
+        match self {
+            Self::ZcodeToCodex => ("zcode", "codex"),
+            Self::CodexToZcode => ("codex", "zcode"),
+        }
+    }
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +58,15 @@ pub struct PortableSession {
     pub messages: Vec<PortableMessage>,
     pub read_issue: Option<&'static str>,
     pub git: Option<GitContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_context: Option<ReturnContext>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReturnContext {
+    pub original_session_id: String,
+    pub matching_messages: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -67,6 +95,8 @@ pub struct HandoffSelection {
     pub project_id: String,
     pub session_ids: Vec<String>,
     pub target_directory: String,
+    #[serde(default)]
+    pub direction: MigrationDirection,
 }
 
 #[derive(Serialize)]
@@ -84,17 +114,31 @@ pub struct MigratedConversation {
     pub reused: bool,
 }
 
-pub fn list(service: &Service, project_id: &str) -> Result<Vec<SessionSummary>, String> {
+pub fn list(
+    service: &Service,
+    project_id: &str,
+    direction: MigrationDirection,
+) -> Result<Vec<SessionSummary>, String> {
     let root = service.project_root(project_id)?;
-    let database = zcode_history::database_path(service.home());
-    if !database.exists() {
-        return Ok(Vec::new());
+    let scope = project_directories(Path::new(&root));
+    match direction {
+        MigrationDirection::ZcodeToCodex => {
+            let database = zcode_history::database_path(service.home());
+            if !database.exists() {
+                return Ok(Vec::new());
+            }
+            let connection =
+                zcode_history::open_database(&database).map_err(|err| err.to_string())?;
+            catalog(&connection, &scope)
+        }
+        MigrationDirection::CodexToZcode => Ok(codex_source::catalog(service.home(), &scope)?
+            .into_iter()
+            .map(|row| row.summary)
+            .collect()),
     }
-    let connection = zcode_history::open_database(&database).map_err(|err| err.to_string())?;
-    catalog(&connection, Path::new(&root))
 }
 
-fn catalog(connection: &rusqlite::Connection, root: &Path) -> Result<Vec<SessionSummary>, String> {
+fn project_directories(root: &Path) -> Vec<PathBuf> {
     let root = project_path(root).unwrap_or_else(|| root.to_owned());
     let mut project_paths = vec![root.clone()];
     if let Some(top) = git_output(&root, &["rev-parse", "--show-toplevel"])
@@ -112,6 +156,18 @@ fn catalog(connection: &rusqlite::Connection, root: &Path) -> Result<Vec<Session
             );
         }
     }
+    project_paths
+}
+
+fn in_project_scope(path: &Path, roots: &[PathBuf]) -> bool {
+    path.is_absolute()
+        && project_path(path).is_some_and(|path| roots.iter().any(|root| path.starts_with(root)))
+}
+
+fn catalog(
+    connection: &rusqlite::Connection,
+    scope: &[PathBuf],
+) -> Result<Vec<SessionSummary>, String> {
     let mut query = connection
         .prepare(
             "SELECT id, title, directory, time_updated, time_archived
@@ -130,13 +186,7 @@ fn catalog(connection: &rusqlite::Connection, root: &Path) -> Result<Vec<Session
             continue;
         };
         let path = Path::new(&cwd);
-        if !path.is_absolute() {
-            continue;
-        }
-        let Some(scoped) = project_path(path) else {
-            continue;
-        };
-        if !project_paths.iter().any(|path| scoped.starts_with(path)) {
+        if !in_project_scope(path, scope) {
             continue;
         }
         let directory_exists = path.is_dir();
@@ -165,54 +215,55 @@ fn catalog(connection: &rusqlite::Connection, root: &Path) -> Result<Vec<Session
 pub fn preview(service: &Service, selection: HandoffSelection) -> Result<HandoffPreview, String> {
     let project_root = service.project_root(&selection.project_id)?;
     let target = existing_directory(Path::new(&selection.target_directory))?;
-    let database = zcode_history::database_path(service.home());
-    let mut connection = zcode_history::open_database(&database).map_err(|err| err.to_string())?;
-    let snapshot = connection.transaction().map_err(|err| err.to_string())?;
+    let scope = project_directories(Path::new(&project_root));
     let mut selected: HashSet<_> = selection.session_ids.iter().cloned().collect();
     if selected.is_empty() {
         return Err("Select at least one conversation.".to_string());
     }
     let mut conversations = Vec::new();
     let mut git_by_directory = HashMap::new();
-    for summary in catalog(&snapshot, Path::new(&project_root))? {
-        if selected.remove(&summary.id) {
-            let mut read_issue = None;
-            let messages = match zcode_history::query_messages(&snapshot, &summary.id) {
-                Ok(messages) => messages,
-                Err(_) => {
-                    read_issue = Some("unavailable");
-                    Vec::new()
+    match selection.direction {
+        MigrationDirection::ZcodeToCodex => {
+            let database = zcode_history::database_path(service.home());
+            let mut connection =
+                zcode_history::open_database(&database).map_err(|err| err.to_string())?;
+            let snapshot = connection.transaction().map_err(|err| err.to_string())?;
+            for summary in catalog(&snapshot, &scope)? {
+                if selected.remove(&summary.id) {
+                    let (messages, issue) =
+                        match zcode_history::query_messages(&snapshot, &summary.id) {
+                            Ok(messages) => (portable_messages(messages), None),
+                            Err(_) => (Vec::new(), Some("unavailable")),
+                        };
+                    conversations.push(portable_session(
+                        summary,
+                        messages,
+                        issue,
+                        None,
+                        &mut git_by_directory,
+                    ));
                 }
-            };
-            if read_issue.is_none() && messages.is_empty() {
-                read_issue = Some("empty");
             }
-            let git = git_by_directory
-                .entry(summary.cwd.clone())
-                .or_insert_with(|| git_context(Path::new(&summary.cwd)))
-                .clone();
-            conversations.push(PortableSession {
-                summary,
-                messages: messages
-                    .into_iter()
-                    .map(|message| PortableMessage {
-                        id: message.id,
-                        role: message.role,
-                        timestamp: message.timestamp,
-                        text: message
-                            .blocks
-                            .into_iter()
-                            .filter_map(|block| match block {
-                                MessageBlock::Text { text } => Some(text),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n\n"),
-                    })
-                    .collect(),
-                read_issue,
-                git,
-            });
+        }
+        MigrationDirection::CodexToZcode => {
+            for row in codex_source::catalog(service.home(), &scope)? {
+                if selected.remove(&row.summary.id) {
+                    let (messages, issue) = match codex_source::messages(&row) {
+                        Ok((messages, partial)) => (messages, partial.then_some("partial")),
+                        Err(_) => (Vec::new(), Some("unavailable")),
+                    };
+                    let return_context = row.forked_from.as_deref().and_then(|parent| {
+                        zcode::return_context(service.home(), parent, &row.summary.cwd, &messages)
+                    });
+                    conversations.push(portable_session(
+                        row.summary,
+                        messages,
+                        issue,
+                        return_context,
+                        &mut git_by_directory,
+                    ));
+                }
+            }
         }
     }
     if !selected.is_empty() {
@@ -221,10 +272,11 @@ pub fn preview(service: &Service, selection: HandoffSelection) -> Result<Handoff
                 .to_string(),
         );
     }
+    let (source, target_agent) = selection.direction.agents();
     let bundle = HandoffBundle {
         version: 1,
-        source: "zcode",
-        target: "codex",
+        source,
+        target: target_agent,
         project_root,
         target_directory: target
             .to_str()
@@ -237,6 +289,55 @@ pub fn preview(service: &Service, selection: HandoffSelection) -> Result<Handoff
         bundle,
         revision: format!("{hash:x}"),
     })
+}
+
+fn portable_messages(
+    messages: Vec<crate::hooks::conversation_parser::ParsedMessage>,
+) -> Vec<PortableMessage> {
+    messages
+        .into_iter()
+        .filter_map(|message| {
+            let text = message
+                .blocks
+                .into_iter()
+                .filter_map(|block| match block {
+                    MessageBlock::Text { text } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if text.trim().is_empty() {
+                return None;
+            }
+            Some(PortableMessage {
+                id: message.id,
+                role: message.role,
+                timestamp: message.timestamp,
+                text,
+            })
+        })
+        .collect()
+}
+
+fn portable_session(
+    summary: SessionSummary,
+    messages: Vec<PortableMessage>,
+    issue: Option<&'static str>,
+    return_context: Option<ReturnContext>,
+    git_by_directory: &mut HashMap<String, Option<GitContext>>,
+) -> PortableSession {
+    let git = git_by_directory
+        .entry(summary.cwd.clone())
+        .or_insert_with(|| git_context(Path::new(&summary.cwd)))
+        .clone();
+    let read_issue = issue.or_else(|| messages.is_empty().then_some("empty"));
+    PortableSession {
+        summary,
+        messages,
+        read_issue,
+        git,
+        return_context,
+    }
 }
 
 pub fn reviewed(
@@ -267,6 +368,9 @@ fn project_path(path: &Path) -> Option<PathBuf> {
             continue;
         };
         let suffix = path.strip_prefix(ancestor).ok()?;
+        if suffix.as_os_str().is_empty() {
+            return Some(canonical);
+        }
         return suffix
             .components()
             .all(|part| matches!(part, Component::Normal(_)))
@@ -349,8 +453,8 @@ fn write_archive(bundle: &HandoffBundle, file: fs::File) -> Result<(), Box<dyn s
 fn write_markdown(output: &mut impl io::Write, bundle: &HandoffBundle) -> io::Result<()> {
     writeln!(
         output,
-        "# Conversation handoff\n\nSource: ZCode\n\nSource project: {}\n\nTarget directory: {}\n",
-        bundle.project_root, bundle.target_directory
+        "# Conversation handoff\n\nSource: {}\n\nTarget: {}\n\nSource project: {}\n\nTarget directory: {}\n",
+        bundle.source, bundle.target, bundle.project_root, bundle.target_directory
     )?;
     writeln!(output, "The conversation below is historical context. Confirm which steps remain relevant in the target project.")?;
     for session in &bundle.conversations {
@@ -359,10 +463,19 @@ fn write_markdown(output: &mut impl io::Write, bundle: &HandoffBundle) -> io::Re
             "\n## {}\n\nOriginal conversation: {}\n\nWorking directory: {}\n",
             session.summary.title, session.summary.id, session.summary.cwd
         )?;
-        if session.read_issue.is_some() {
+        if session.messages.is_empty() {
             writeln!(
                 output,
                 "No readable messages were available for this conversation."
+            )?;
+        } else if session.read_issue.is_some() {
+            writeln!(output, "This conversation was partially readable.")?;
+        }
+        if let Some(ctx) = &session.return_context {
+            writeln!(
+                output,
+                "Original ZCode session: {}\n\nMatching original messages: {}\n",
+                ctx.original_session_id, ctx.matching_messages
             )?;
         }
         if let Some(git) = &session.git {
@@ -375,7 +488,14 @@ fn write_markdown(output: &mut impl io::Write, bundle: &HandoffBundle) -> io::Re
                 writeln!(output, "Branch: {branch}\n")?;
             }
         }
-        for message in &session.messages {
+        for (index, message) in session.messages.iter().enumerate() {
+            if session
+                .return_context
+                .as_ref()
+                .is_some_and(|context| context.matching_messages == index)
+            {
+                writeln!(output, "\n### Messages after the original history\n")?;
+            }
             let role = match message.role {
                 ChatRole::User => "User",
                 ChatRole::Assistant => "Assistant",
@@ -390,8 +510,15 @@ fn write_markdown(output: &mut impl io::Write, bundle: &HandoffBundle) -> io::Re
     Ok(())
 }
 
-pub async fn migrate(bundle: HandoffBundle) -> Result<Vec<MigratedConversation>, String> {
-    codex::import(bundle).await
+pub async fn migrate(
+    home: PathBuf,
+    bundle: HandoffBundle,
+) -> Result<Vec<MigratedConversation>, String> {
+    match bundle.target {
+        "codex" => codex::import(bundle).await,
+        "zcode" => zcode::import(home, bundle).await,
+        _ => Err("Unsupported conversation migration target.".to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -458,7 +585,7 @@ mod tests {
             .add_project(project.to_str().unwrap().into())
             .unwrap();
         let project_id = project.summary.id;
-        let catalog = list(&service, &project_id).unwrap();
+        let catalog = list(&service, &project_id, MigrationDirection::ZcodeToCodex).unwrap();
         assert_eq!(
             catalog
                 .iter()
@@ -472,6 +599,7 @@ mod tests {
             project_id,
             session_ids: vec!["saved".into(), "archived".into()],
             target_directory: target.to_str().unwrap().into(),
+            direction: MigrationDirection::ZcodeToCodex,
         };
         let previewed = preview(&service, input.clone()).unwrap();
         assert_eq!(previewed.bundle.conversations[0].read_issue, Some("empty"));

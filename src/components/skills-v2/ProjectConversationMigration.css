@@ -4,6 +4,13 @@
   justify-items: start;
 }
 
+.sm2-conversation-migration__direction {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .sm2-conversation-migration__sessions {
   display: grid;
   gap: 8px;

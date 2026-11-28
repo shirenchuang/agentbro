@@ -183,8 +183,8 @@ describe('ProjectManagementPage', () => {
       { id: 'saved', title: 'Finish the fix', cwd: '/Users/me/agentbro', archived: false, updatedAt: null, directoryExists: true },
       { id: 'older', title: 'Prior approach', cwd: '/Users/me/agentbro', archived: true, updatedAt: null, directoryExists: true },
     ]
-    const selection = { projectId: 'project-1', sessionIds: ['saved', 'older'], targetDirectory: '/projects/target' }
-    vi.spyOn(skillApiV2, 'listProjectZCodeConversations').mockResolvedValue(sessions)
+    const selection = { projectId: 'project-1', sessionIds: ['saved', 'older'], targetDirectory: '/projects/target', direction: 'zcodeToCodex' }
+    vi.spyOn(skillApiV2, 'listProjectConversations').mockResolvedValue(sessions)
     const review = vi.spyOn(skillApiV2, 'previewProjectConversationMigration').mockResolvedValue({
       revision: 'verified-content',
       bundle: {
@@ -200,7 +200,7 @@ describe('ProjectManagementPage', () => {
       },
     })
     const save = vi.spyOn(skillApiV2, 'exportProjectConversationHandoff').mockResolvedValue()
-    const migrate = vi.spyOn(skillApiV2, 'migrateProjectConversationsToCodex').mockResolvedValue([{ sourceId: 'saved', targetId: 'codex-fork', reused: true }])
+    const migrate = vi.spyOn(skillApiV2, 'migrateProjectConversations').mockResolvedValue([{ sourceId: 'saved', targetId: 'codex-fork', reused: true }])
     const open = vi.spyOn(skillApiV2, 'openMigratedCodexThread').mockResolvedValue()
     render(<ProjectManagementPage />)
 
@@ -228,6 +228,46 @@ describe('ProjectManagementPage', () => {
     expect(migrate).toHaveBeenCalledExactlyOnceWith(selection, 'verified-content')
     fireEvent.click(screen.getByRole('button', { name: 'Open in Codex' }))
     expect(open).toHaveBeenCalledExactlyOnceWith('codex-fork')
+  })
+
+  it('switches to Codex source and distinguishes continued messages in the ZCode review', async () => {
+    await i18n.changeLanguage('en')
+    vi.spyOn(tauriApi, 'isTauri').mockReturnValue(true)
+    const archived = { id: 'codex-fork', title: 'Imported conversation', cwd: '/Users/me/agentbro', archived: true, updatedAt: null, directoryExists: true }
+    const list = vi.spyOn(skillApiV2, 'listProjectConversations')
+      .mockImplementation(async (_id, direction) => direction === 'codexToZcode' ? [archived] : [])
+    const preview = vi.spyOn(skillApiV2, 'previewProjectConversationMigration').mockResolvedValue({
+      revision: 'reverse-preview',
+      bundle: {
+        projectRoot: '/Users/me/agentbro',
+        targetDirectory: '/Users/me/agentbro',
+        conversations: [{
+          ...archived, readIssue: 'partial', git: null,
+          returnContext: { originalSessionId: 'sess-source', matchingMessages: 1 },
+          messages: [
+            { id: 'original', role: 'user', timestamp: null, text: 'Original message' },
+            { id: 'continued', role: 'assistant', timestamp: null, text: 'Work continued in Codex' },
+          ],
+        }],
+      },
+    })
+    const migrate = vi.spyOn(skillApiV2, 'migrateProjectConversations').mockResolvedValue([{ sourceId: 'codex-fork', targetId: 'sess-restored', reused: false }])
+    render(<ProjectManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversations' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Migration direction' }), { target: { value: 'codexToZcode' } })
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Imported conversation/ }))
+    expect(list).toHaveBeenCalledWith('project-1', 'codexToZcode')
+    fireEvent.click(screen.getByRole('button', { name: 'Preview migration' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Preview migration' })
+    expect(within(dialog).getByText(/sess-source/)).toBeInTheDocument()
+    expect(within(dialog).getByText('Work continued in Codex')).toBeInTheDocument()
+    expect(within(dialog).getByText('Messages after the original history')).toBeInTheDocument()
+    expect(within(dialog).getByText(/Some content was unavailable/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Migrate to ZCode' }))
+    await screen.findByText('sess-restored')
+    const selection = { projectId: 'project-1', direction: 'codexToZcode', sessionIds: ['codex-fork'], targetDirectory: '/Users/me/agentbro' }
+    expect(preview).toHaveBeenCalledExactlyOnceWith(selection)
+    expect(migrate).toHaveBeenCalledExactlyOnceWith(selection, 'reverse-preview')
   })
 
   it('previews a project lock and restores only checked Skills with per-Skill feedback', async () => {

@@ -701,11 +701,16 @@
   },
   "skills": {
     "conversationMigration": {
+      "directionLabel": "移行方向",
+      "openZcode": "ZCode を開く",
+      "migrateZcode": "ZCode に移行",
+      "partiallyReadable": "一部の内容を読み取れませんでした。読み取れたメッセージを以下に表示します。",
+      "returnedHistory": "元の ZCode 会話 {{id}} · 一致するメッセージ {{count}} 件",
+      "continuedMessages": "元の履歴以降のメッセージ",
       "missingFolder": "移行元フォルダーが見つかりません",
       "tab": "会話",
-      "direction": "ZCode → Codex",
       "loading": "会話を読み込んでいます…",
-      "empty": "このプロジェクトには保存された ZCode 会話がありません。",
+      "empty": "このプロジェクトには保存された会話がありません。",
       "selectAll": "すべて選択",
       "clear": "選択を解除",
       "archived": "アーカイブ済み",

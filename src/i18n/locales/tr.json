@@ -595,11 +595,16 @@
   },
   "skills": {
     "conversationMigration": {
+      "directionLabel": "Taşıma yönü",
+      "openZcode": "ZCode'u aç",
+      "migrateZcode": "ZCode'a taşı",
+      "partiallyReadable": "İçeriğin bir kısmı okunamadı. Okunabilen mesajlar aşağıda gösterilir.",
+      "returnedHistory": "Özgün ZCode oturumu {{id}} · {{count}} eşleşen mesaj",
+      "continuedMessages": "Özgün geçmişten sonraki mesajlar",
       "missingFolder": "Kaynak klasör eksik",
       "tab": "Konuşmalar",
-      "direction": "ZCode → Codex",
       "loading": "Konuşmalar yükleniyor…",
-      "empty": "Bu projede kayıtlı ZCode konuşması bulunamadı.",
+      "empty": "Bu projede kayıtlı konuşma bulunamadı.",
       "selectAll": "Tümünü seç",
       "clear": "Seçimi temizle",
       "archived": "Arşivlendi",

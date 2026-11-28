@@ -90,7 +90,7 @@ pub(super) async fn import(bundle: HandoffBundle) -> Result<Vec<MigratedConversa
     Ok(migrated)
 }
 
-fn provenance_id(id: &str, target: &str) -> Uuid {
+pub(super) fn provenance_id(id: &str, target: &str) -> Uuid {
     let mut hasher = Sha256::new();
     hasher.update(b"AgentBro portability v1\0zcode\0codex\0");
     hasher.update(id.as_bytes());
@@ -426,6 +426,7 @@ mod tests {
             .collect(),
             read_issue: None,
             git: None,
+            return_context: None,
         };
         write_rollout(&path, source, &session, &target).unwrap();
         let stored = fs::read_to_string(path).unwrap();

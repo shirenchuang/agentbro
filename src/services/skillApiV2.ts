@@ -45,7 +45,10 @@ export interface ConversationMigrationSelection {
   projectId: string
   sessionIds: string[]
   targetDirectory: string
+  direction: ConversationMigrationDirection
 }
+
+export type ConversationMigrationDirection = 'zcodeToCodex' | 'codexToZcode'
 
 export interface ConversationMigrationPreview {
   revision: string
@@ -54,8 +57,9 @@ export interface ConversationMigrationPreview {
     targetDirectory: string
     conversations: Array<ProjectConversationSummary & {
       messages: Array<{ id: string; role: 'user' | 'assistant'; timestamp: string | null; text: string }>
-      readIssue: 'empty' | 'unavailable' | null
+      readIssue: 'empty' | 'unavailable' | 'partial' | null
       git: { worktree: string; commonDirectory: string; branch: string | null; commit: string } | null
+      returnContext?: { originalSessionId: string; matchingMessages: number }
     }>
   }
 }
@@ -1661,14 +1665,14 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<void>('remove_skill_project_v2', { projectId }) : Promise.resolve(),
   getProjectDetail: (projectId: string) =>
     isTauriRuntime() ? invoke<ProjectDetail>('get_skill_project_detail_v2', { projectId }) : Promise.resolve(demoProjectDetail(projectId)),
-  listProjectZCodeConversations: (projectId: string) =>
-    invoke<ProjectConversationSummary[]>('list_project_zcode_conversations', { projectId }, LOCAL_RUNTIME_ENVIRONMENT_ID),
+  listProjectConversations: (projectId: string, direction: ConversationMigrationDirection) =>
+    invoke<ProjectConversationSummary[]>('list_project_conversations', { projectId, direction }, LOCAL_RUNTIME_ENVIRONMENT_ID),
   previewProjectConversationMigration: (selection: ConversationMigrationSelection) =>
     invoke<ConversationMigrationPreview>('preview_project_conversation_migration', { selection }, LOCAL_RUNTIME_ENVIRONMENT_ID),
   exportProjectConversationHandoff: (selection: ConversationMigrationSelection, revision: string, destination: string) =>
     invoke<void>('export_project_conversation_handoff', { selection, revision, destination }, LOCAL_RUNTIME_ENVIRONMENT_ID),
-  migrateProjectConversationsToCodex: (selection: ConversationMigrationSelection, revision: string) =>
-    invoke<MigratedConversation[]>('migrate_project_conversations_to_codex', { selection, revision }, LOCAL_RUNTIME_ENVIRONMENT_ID),
+  migrateProjectConversations: (selection: ConversationMigrationSelection, revision: string) =>
+    invoke<MigratedConversation[]>('migrate_project_conversations', { selection, revision }, LOCAL_RUNTIME_ENVIRONMENT_ID),
   openMigratedCodexThread: (threadId: string) =>
     invoke<void>('open_migrated_codex_thread', { threadId }, LOCAL_RUNTIME_ENVIRONMENT_ID),
   scanProject: (projectId: string) =>
