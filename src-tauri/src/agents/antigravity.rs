@@ -155,16 +155,18 @@ impl AgentAdapter for AntiGravityAdapter {
                         session_id,
                         message: format!("{} stopped with an error", self.display_name()),
                     })
-                } else if self.agent_id == super::gemini_desktop::ID
-                    && raw
-                        .get("fully_idle")
-                        .or_else(|| raw.get("fullyIdle"))
-                        .and_then(Value::as_bool)
-                        == Some(false)
+                } else if raw
+                    .get("fully_idle")
+                    .or_else(|| raw.get("fullyIdle"))
+                    .and_then(Value::as_bool)
+                    == Some(false)
                 {
                     Ok(AgentEvent::Processing {
                         session_id,
-                        description: "Gemini is finishing background tasks".to_string(),
+                        description: format!(
+                            "{} is finishing background tasks",
+                            self.display_name()
+                        ),
                     })
                 } else {
                     Ok(AgentEvent::TaskComplete {
@@ -244,6 +246,24 @@ mod tests {
                 session_id,
                 summary,
             } if session_id == "conversation-2" && summary.contains("model_stop")
+        ));
+    }
+
+    #[test]
+    fn antigravity_stays_active_until_background_work_finishes() {
+        let adapter = AntiGravityAdapter::new();
+        let event = adapter
+            .parse_event(&serde_json::json!({
+                "event": "Stop",
+                "conversationId": "conversation-2",
+                "terminationReason": "model_stop",
+                "fullyIdle": false,
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            event,
+            AgentEvent::Processing { session_id, .. } if session_id == "conversation-2"
         ));
     }
 

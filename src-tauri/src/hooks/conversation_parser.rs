@@ -443,11 +443,7 @@ impl ConversationParser {
         msg_type: &str,
         json: &serde_json::Value,
     ) -> Option<ParsedMessage> {
-        let role = match (msg_type, json.get("source")?.as_str()?) {
-            ("USER_INPUT", "USER_EXPLICIT") => ChatRole::User,
-            ("PLANNER_RESPONSE", "MODEL") => ChatRole::Assistant,
-            _ => return None,
-        };
+        let role = antigravity_message_role(msg_type, json)?;
         let content = json.get("content")?.as_str()?;
         if content.trim().is_empty() {
             return None;
@@ -870,6 +866,54 @@ pub fn discover_antigravity_session_file(
             .join(".system_generated/logs/transcript.jsonl");
         path.is_file().then_some(path)
     })
+}
+
+fn antigravity_message_role(msg_type: &str, record: &serde_json::Value) -> Option<ChatRole> {
+    match (msg_type, record.get("source")?.as_str()?) {
+        ("USER_INPUT", "USER_EXPLICIT") => Some(ChatRole::User),
+        ("PLANNER_RESPONSE", "MODEL") => Some(ChatRole::Assistant),
+        _ => None,
+    }
+}
+
+pub fn extract_antigravity_invocation_reply(path: &Path, first_step: u64) -> Option<String> {
+    let mut latest = None;
+    let reader = BufReader::new(File::open(path).ok()?);
+    for line in reader.lines().map_while(Result::ok) {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if record
+            .get("step_index")
+            .and_then(|step| step.as_u64())
+            .is_none_or(|step| step < first_step)
+        {
+            continue;
+        }
+        let msg_type = record
+            .get("type")
+            .and_then(|kind| kind.as_str())
+            .unwrap_or("");
+        match antigravity_message_role(msg_type, &record) {
+            // An explicit user step after PreInvocation belongs to a later turn.
+            Some(ChatRole::User) => return None,
+            Some(ChatRole::Assistant) => {
+                let complete = record
+                    .get("status")
+                    .and_then(|status| status.as_str())
+                    .is_none_or(|status| status == "DONE");
+                let text = record
+                    .get("content")
+                    .and_then(|text| text.as_str())
+                    .map(str::trim);
+                if let Some(text) = text.filter(|text| complete && !text.is_empty()) {
+                    latest = Some(text.to_string());
+                }
+            }
+            None => {}
+        }
+    }
+    latest
 }
 
 /// Discover a Codex JSONL rollout file for a session id.

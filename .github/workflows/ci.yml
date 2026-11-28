@@ -100,6 +100,11 @@ jobs:
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::hook_manager::tests'
       - name: Test shared Antigravity Hook recovery
         run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE shared_antigravity_hook_'
+      - name: Test Antigravity turn completion
+        run: |
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::antigravity::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE hooks::server::tests::antigravity_completion_
       - name: Test concurrent Island preference saves
         run: |
           & $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE config::tests::island_preferences_
