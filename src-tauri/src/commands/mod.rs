@@ -9,9 +9,9 @@ use crate::config::{AppConfig, ConfigStore};
 use crate::energy::{self, EnergyMode};
 use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
-    all_projects_dirs, discover_codex_session_file, discover_session_file_in_dirs,
-    extract_subagents_from_transcript, ChatRole, MessageBlock, ParsedMessage,
-    TranscriptSubagentInfo,
+    all_projects_dirs, discover_antigravity_session_file, discover_codex_session_file,
+    discover_session_file_in_dirs, extract_subagents_from_transcript, ChatRole, MessageBlock,
+    ParsedMessage, TranscriptSubagentInfo,
 };
 use crate::hooks::diagnostics::DiagnosticRingBuffer;
 use crate::hooks::file_watcher::ConversationWatcher;
@@ -5760,6 +5760,19 @@ fn resolve_transcript_path_for_session(
     let session = state.session_store.get_session(session_id)?;
     if session.wsl_distribution.is_some() {
         return None;
+    }
+    if matches!(
+        session.agent_type.as_str(),
+        "antigravity" | crate::agents::gemini_desktop::ID
+    ) {
+        if session.remote_host_id.is_some() || session.remote_host_name.is_some() {
+            return None;
+        }
+        return discover_antigravity_session_file(
+            &dirs::home_dir()?,
+            session_id,
+            &session.agent_type,
+        );
     }
     let cwd = session.cwd.clone();
     let mut projects_dirs = all_projects_dirs();
