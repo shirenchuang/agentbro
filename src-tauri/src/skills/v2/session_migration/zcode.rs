@@ -1,6 +1,6 @@
 use super::{
-    codex, portable_messages, HandoffBundle, MigratedConversation, PortableMessage,
-    PortableSession, ReturnContext,
+    codex, portable_messages, ConversationAgent, HandoffBundle, MigratedConversation,
+    PortableMessage, PortableSession, ReturnContext,
 };
 use crate::agents::programs::installed_app_path_for_agent;
 use crate::hooks::conversation_parser::ChatRole;
@@ -108,16 +108,18 @@ struct ImportTarget {
     directory: String,
 }
 
-fn target_for(session_id: &str, directory: &str) -> ImportTarget {
+fn target_for(agent: ConversationAgent, session_id: &str, directory: &str) -> ImportTarget {
     let mut digest = Sha256::new();
-    digest.update(b"AgentBro portability v1\0codex\0zcode\0");
+    digest.update(b"AgentBro portability v1\0");
+    digest.update(agent.id());
+    digest.update(b"\0zcode\0");
     digest.update(session_id);
     digest.update(b"\0");
     digest.update(directory);
     let hash = format!("{:x}", digest.finalize());
     let id = format!("sess_agentbro_{}", &hash[..32]);
     ImportTarget {
-        trace: format!("agentbro:codex:{hash}"),
+        trace: format!("agentbro:{}:{hash}", agent.id()),
         id,
         directory: directory.to_owned(),
     }
@@ -141,7 +143,7 @@ pub(super) fn return_context(
         .ok()?;
     let original_session_id = ids
         .filter_map(Result::ok)
-        .find(|id| codex::provenance_id(id, directory) == parent)?;
+        .find(|id| codex::provenance_id(ConversationAgent::Zcode, id, directory) == parent)?;
     let original =
         portable_messages(zcode_history::query_messages(&database, &original_session_id).ok()?);
     let matching_messages = original
@@ -150,6 +152,7 @@ pub(super) fn return_context(
         .take_while(|(left, right)| left.role == right.role && left.text == right.text)
         .count();
     (matching_messages > 0).then_some(ReturnContext {
+        original_agent: ConversationAgent::Zcode,
         original_session_id,
         matching_messages,
     })
@@ -175,10 +178,10 @@ pub(super) async fn import(
         .iter()
         .filter(|session| !session.messages.is_empty())
     {
-        let target = target_for(&session.summary.id, &bundle.target_directory);
+        let target = target_for(bundle.source, &session.summary.id, &bundle.target_directory);
         let stage = stage_dir.path().join(&target.id);
         let (live_paths, pending, stage_path) = (live.clone(), target.clone(), stage.clone());
-        let payload = snapshot(session, &target);
+        let payload = snapshot(bundle.source, session, &target);
         let expected = session.messages.len();
         let needs_restore = tokio::task::spawn_blocking(move || {
             prepare(&live_paths, &pending, &stage_path, payload).map_err(|err| err.to_string())
@@ -207,7 +210,7 @@ pub(super) async fn import(
     Ok(result)
 }
 
-fn snapshot(source: &PortableSession, target: &ImportTarget) -> Value {
+fn snapshot(agent: ConversationAgent, source: &PortableSession, target: &ImportTarget) -> Value {
     let default_time = chrono::Utc::now().timestamp_millis();
     let timestamp = |message: &PortableMessage| {
         message
@@ -234,11 +237,11 @@ fn snapshot(source: &PortableSession, target: &ImportTarget) -> Value {
             "title": source.summary.title,
             "workspacePath": target.directory,
             "traceId": target.trace,
-            "provider": "codex",
+            "provider": agent.id(),
             "status": "completed",
             "createdAt": source.messages.first().map(timestamp).unwrap_or(default_time),
             "updatedAt": source.messages.last().map(timestamp).unwrap_or(default_time),
-            "agentbroHandoff": {"source": "codex", "sessionId": source.summary.id, "returnContext": source.return_context},
+            "agentbroHandoff": {"source": agent.id(), "sessionId": source.summary.id, "returnContext": source.return_context},
         },
         "messages": messages,
     })
@@ -485,7 +488,11 @@ mod tests {
              INSERT INTO part VALUES ('p0', 'original', 'm0', 1000, 0, '{"type":"text","text":"original"}');"#,
         ).unwrap();
         let canonical = project.canonicalize().unwrap();
-        let parent = codex::provenance_id("original", canonical.to_str().unwrap());
+        let parent = codex::provenance_id(
+            ConversationAgent::Zcode,
+            "original",
+            canonical.to_str().unwrap(),
+        );
         let conversations = ["original", "continued in Codex"]
             .into_iter()
             .map(|text| PortableMessage {
@@ -517,7 +524,11 @@ mod tests {
         let staged = Stores::stage(&staged_folder);
         schemas(&live);
         schemas(&staged);
-        let target = target_for("source-1", dir.path().to_str().unwrap());
+        let target = target_for(
+            ConversationAgent::Codex,
+            "source-1",
+            dir.path().to_str().unwrap(),
+        );
         let cli = Connection::open(&staged.cli).unwrap();
         cli.execute(
             "INSERT INTO session VALUES (?1, ?2, ?3, NULL, 'temporary', 1)",

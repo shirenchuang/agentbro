@@ -5,7 +5,19 @@ import { skillApiV2, type ConversationMigrationDirection, type ConversationMigra
 import { agentApi } from '../../services/agentApi'
 import { captureProjectView } from '../../stores/skillStoreV2'
 import { PreviewDialog } from './PreviewDialog'
+import { writeClipboardText } from './clipboard'
 import './ProjectConversationMigration.css'
+
+const agents = { codex: 'Codex', zcode: 'ZCode', 'claude-code': 'Claude Code' }
+
+const directions = [
+  { id: 'zcodeToCodex', source: 'zcode', target: 'codex' },
+  { id: 'codexToZcode', source: 'codex', target: 'zcode' },
+  { id: 'claudeCodeToCodex', source: 'claude-code', target: 'codex' },
+  { id: 'codexToClaudeCode', source: 'codex', target: 'claude-code' },
+  { id: 'claudeCodeToZcode', source: 'claude-code', target: 'zcode' },
+  { id: 'zcodeToClaudeCode', source: 'zcode', target: 'claude-code' },
+] as const
 
 export function ProjectConversationMigration({ projectId, rootPath }: { projectId: string; rootPath: string }) {
   const { t } = useTranslation()
@@ -15,10 +27,12 @@ export function ProjectConversationMigration({ projectId, rootPath }: { projectI
       <label className="sm2-conversation-migration__direction">
         <span>{t('skills.conversationMigration.directionLabel')}</span>
         <select className="sm2__search" value={direction} onChange={(event) => {
-          setDirection(event.currentTarget.value === 'codexToZcode' ? 'codexToZcode' : 'zcodeToCodex')
+          const option = directions.find((item) => item.id === event.currentTarget.value)
+          if (option) setDirection(option.id)
         }}>
-          <option value="zcodeToCodex">ZCode → Codex</option>
-          <option value="codexToZcode">Codex → ZCode</option>
+          {directions.map(({ id, source, target }) => (
+            <option key={id} value={id}>{agents[source]} → {agents[target]}</option>
+          ))}
         </select>
       </label>
       <ConversationSelection key={direction} direction={direction} projectId={projectId} rootPath={rootPath} />
@@ -37,6 +51,8 @@ function ConversationSelection({ direction, projectId, rootPath }: {
   const [targetDirectory, setTargetDirectory] = useState(rootPath)
   const [preview, setPreview] = useState<{ selection: ConversationMigrationSelection; value: ConversationMigrationPreview } | null>(null)
   const [result, setResult] = useState<MigratedConversation[]>([])
+  const [resultDirectory, setResultDirectory] = useState('')
+  const [copiedResume, setCopiedResume] = useState(false)
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -65,6 +81,7 @@ function ConversationSelection({ direction, projectId, rootPath }: {
     setBusy(true)
     setError(null)
     setSaved(false)
+    setCopiedResume(false)
     setResult([])
     try {
       const value = await skillApiV2.previewProjectConversationMigration(selection)
@@ -93,7 +110,10 @@ function ConversationSelection({ direction, projectId, rootPath }: {
         if (view.isSelected()) setSaved(true)
       } else {
         const migrated = await skillApiV2.migrateProjectConversations(selection, value.revision)
-        if (view.isSelected()) setResult(migrated)
+        if (view.isSelected()) {
+          setResult(migrated)
+          setResultDirectory(value.bundle.targetDirectory)
+        }
       }
       if (view.isSelected()) setPreview(null)
     } catch (cause) {
@@ -105,8 +125,17 @@ function ConversationSelection({ direction, projectId, rootPath }: {
 
   const title = (row: ProjectConversationSummary) => row.title || row.id
   const text = (key: string) => t('skills.conversationMigration.' + key)
-  const codexTarget = direction === 'zcodeToCodex'
-  const openTarget = (id: string) => codexTarget ? skillApiV2.openMigratedCodexThread(id) : agentApi.openApp('zcode')
+  const target = directions.find((item) => item.id === direction)?.target ?? 'codex'
+  const openTarget = async (id: string) => {
+    if (target === 'codex') await skillApiV2.openMigratedCodexThread(id)
+    else if (target === 'zcode') await agentApi.openApp('zcode')
+    else {
+      await writeClipboardText(`claude --resume ${id}`)
+      setCopiedResume(true)
+    }
+  }
+  const openLabel = { codex: 'openCodex', zcode: 'openZcode', 'claude-code': 'copyResume' }[target]
+  const migrateLabel = { codex: 'migrate', zcode: 'migrateZcode', 'claude-code': 'migrateClaude' }[target]
 
   return (
     <section className="sm2-conversation-migration">
@@ -144,6 +173,10 @@ function ConversationSelection({ direction, projectId, rootPath }: {
         </>
       )}
       {saved && <p role="status">{text('saved')}</p>}
+      {result.length > 0 && target === 'claude-code' && (
+        <p>{t('skills.conversationMigration.claudeResumeCwd', { directory: resultDirectory })}</p>
+      )}
+      {copiedResume && <p role="status">{text('resumeCopied')}</p>}
       {result.length > 0 && (
         <ul className="sm2-conversation-migration__results" aria-label={text('results')}>
           {result.map((row) => (
@@ -151,7 +184,7 @@ function ConversationSelection({ direction, projectId, rootPath }: {
               <span>{sessions?.find((session) => session.id === row.sourceId)?.title || row.sourceId}</span>
               <span>{row.reused ? text('alreadyImported') : text('imported')}</span>
               <code>{row.targetId}</code>
-              <button className="sm2__btn" onClick={() => void openTarget(row.targetId).catch((cause: unknown) => setError(String(cause)))}>{text(codexTarget ? 'openCodex' : 'openZcode')}</button>
+              <button className="sm2__btn" onClick={() => void openTarget(row.targetId).catch((cause: unknown) => setError(String(cause)))}>{text(openLabel)}</button>
             </li>
           ))}
         </ul>
@@ -166,7 +199,7 @@ function ConversationSelection({ direction, projectId, rootPath }: {
             <>
               <button className="sm2__btn" disabled={busy} onClick={() => setPreview(null)}>{t('skills.cancel')}</button>
               <button className="sm2__btn" disabled={busy} onClick={() => void apply('export')}>{text('export')}</button>
-              <button className="sm2__btn sm2__btn--primary" disabled={busy || !preview.value.bundle.conversations.some((row) => row.messages.length > 0)} onClick={() => void apply('migrate')}>{busy ? text('working') : text(codexTarget ? 'migrate' : 'migrateZcode')}</button>
+              <button className="sm2__btn sm2__btn--primary" disabled={busy || !preview.value.bundle.conversations.some((row) => row.messages.length > 0)} onClick={() => void apply('migrate')}>{busy ? text('working') : text(migrateLabel)}</button>
             </>
           )}
         >
@@ -181,7 +214,7 @@ function ConversationSelection({ direction, projectId, rootPath }: {
               <code>{row.cwd}</code>
               {row.git?.branch && <p>{row.git.branch} · <code>{row.git.commit}</code></p>}
               {row.readIssue && <p>{text(row.messages.length ? 'partiallyReadable' : 'unreadable')}</p>}
-              {row.returnContext && <p>{t('skills.conversationMigration.returnedHistory', { id: row.returnContext.originalSessionId, count: row.returnContext.matchingMessages })}</p>}
+              {row.returnContext && <p>{t('skills.conversationMigration.returnedHistory', { agent: agents[row.returnContext.originalAgent], id: row.returnContext.originalSessionId, count: row.returnContext.matchingMessages })}</p>}
               {row.messages.map((message, index) => (
                 <article key={message.id}>
                   {row.returnContext?.matchingMessages === index && <p><strong>{text('continuedMessages')}</strong></p>}

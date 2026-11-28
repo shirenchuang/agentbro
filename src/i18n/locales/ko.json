@@ -701,11 +701,15 @@
   },
   "skills": {
     "conversationMigration": {
+      "migrateClaude": "Claude Code로 이전",
+      "copyResume": "재개 명령 복사",
+      "claudeResumeCwd": "{{directory}}에서 재개 명령을 실행하세요.",
+      "resumeCopied": "재개 명령을 복사했습니다.",
       "directionLabel": "이전 방향",
       "openZcode": "ZCode 열기",
       "migrateZcode": "ZCode로 이전",
       "partiallyReadable": "일부 내용을 읽을 수 없습니다. 읽을 수 있는 메시지는 아래에 표시됩니다.",
-      "returnedHistory": "원래 ZCode 대화 {{id}} · 일치하는 메시지 {{count}}개",
+      "returnedHistory": "원래 {{agent}} 대화 {{id}} · 일치하는 메시지 {{count}}개",
       "continuedMessages": "원래 기록 이후의 메시지",
       "missingFolder": "원본 폴더가 없음",
       "tab": "대화",

@@ -701,11 +701,15 @@
   },
   "skills": {
     "conversationMigration": {
+      "migrateClaude": "Claude Code に移行",
+      "copyResume": "再開コマンドをコピー",
+      "claudeResumeCwd": "{{directory}} で再開コマンドを実行してください。",
+      "resumeCopied": "再開コマンドをコピーしました。",
       "directionLabel": "移行方向",
       "openZcode": "ZCode を開く",
       "migrateZcode": "ZCode に移行",
       "partiallyReadable": "一部の内容を読み取れませんでした。読み取れたメッセージを以下に表示します。",
-      "returnedHistory": "元の ZCode 会話 {{id}} · 一致するメッセージ {{count}} 件",
+      "returnedHistory": "元の {{agent}} 会話 {{id}} · 一致するメッセージ {{count}} 件",
       "continuedMessages": "元の履歴以降のメッセージ",
       "missingFolder": "移行元フォルダーが見つかりません",
       "tab": "会話",
