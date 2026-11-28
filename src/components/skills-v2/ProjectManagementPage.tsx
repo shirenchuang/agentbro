@@ -4,10 +4,13 @@ import { captureProjectView, useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { ProjectAgentDetail, ProjectDetail, ProjectSkillItem } from '../../services/skillApiV2'
 import { isWindowsPlatform } from '../../utils/platform'
+import { isTauri } from '../../services/tauriApi'
+import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { AgentIconBadge } from './AgentIconBadge'
+import { ProjectConversationMigration } from './ProjectConversationMigration'
 import { ProjectSkillLockPanel } from './ProjectSkillLockPanel'
 
-type ProjectTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'instructions' | 'config'
+type ProjectTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'instructions' | 'config' | 'conversations'
 
 function showProjectPathError(error: unknown) {
   useSkillStoreV2.getState().setError(String(error))
@@ -181,6 +184,9 @@ function ProjectDetailView({
   onScan: () => Promise<void>
   onRemove: () => void
 }) {
+  const { t } = useTranslation()
+  const local = useRuntimeEnvironmentStore((state) => state.selectedEnvironmentId === LOCAL_RUNTIME_ENVIRONMENT_ID)
+  const conversationMigration = local && isTauri()
   const [scanning, setScanning] = useState(false)
   const busy = projectDetailLoading || scanning
   const onScan = async () => {
@@ -199,6 +205,7 @@ function ProjectDetailView({
     { id: 'instructions', label: `指令 (${detail.instructionCount})` },
     { id: 'config', label: '路径' },
   ]
+  if (conversationMigration) tabs.push({ id: 'conversations', label: t('skills.conversationMigration.tab') })
   const visibleAgents = agentFilter === 'all'
     ? detail.agents
     : detail.agents.filter((agent) => agent.agentId === agentFilter)
@@ -283,6 +290,7 @@ function ProjectDetailView({
         {tab === 'plugins' && <ProjectPlugins agents={visibleAgents} />}
         {tab === 'instructions' && <ProjectInstructions detail={detail} agentFilter={agentFilter} />}
         {tab === 'config' && <ProjectConfig agents={visibleAgents} />}
+        {tab === 'conversations' && conversationMigration && <ProjectConversationMigration projectId={detail.id} rootPath={detail.rootPath} />}
       </div>
     </div>
   )

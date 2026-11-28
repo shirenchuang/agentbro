@@ -700,6 +700,33 @@
     "dismiss": "닫기"
   },
   "skills": {
+    "conversationMigration": {
+      "missingFolder": "원본 폴더가 없음",
+      "tab": "대화",
+      "direction": "ZCode → Codex",
+      "loading": "대화를 불러오는 중…",
+      "empty": "이 프로젝트에 저장된 ZCode 대화가 없습니다.",
+      "selectAll": "모두 선택",
+      "clear": "선택 해제",
+      "archived": "보관됨",
+      "targetFolder": "대상 폴더",
+      "chooseFolder": "폴더 선택",
+      "preview": "마이그레이션 미리보기",
+      "archive": "ZIP 아카이브",
+      "export": "인계 파일 저장",
+      "saved": "인계 파일을 저장했습니다.",
+      "results": "마이그레이션 결과",
+      "alreadyImported": "이미 이전됨",
+      "imported": "이전 완료",
+      "openCodex": "Codex에서 열기",
+      "working": "이전 중…",
+      "migrate": "Codex로 이전",
+      "sourceProject": "원본 프로젝트",
+      "messageCount": "메시지 {{count}}개",
+      "unreadable": "이 대화에서 읽을 수 있는 메시지가 없습니다.",
+      "user": "사용자",
+      "assistant": "어시스턴트"
+    },
     "projectsTab": "프로젝트",
     "packManifest": {
       "occupiedBy": "{{id}}에서 이미 사용 중인 ID",

@@ -1,0 +1,51 @@
+.sm2-conversation-migration {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
+.sm2-conversation-migration__sessions {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.sm2-conversation-migration__session {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.sm2-conversation-migration__session code {
+  display: block;
+  font-size: 0.85em;
+}
+
+.sm2-conversation-migration__target,
+.sm2-conversation-migration__results li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.sm2-conversation-migration__mapping dd {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+
+.sm2-conversation-migration__preview {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.sm2-conversation-migration__preview time {
+  margin-inline-start: 8px;
+  font-size: 0.85em;
+}
+
+.sm2-conversation-migration__preview p {
+  white-space: pre-wrap;
+}

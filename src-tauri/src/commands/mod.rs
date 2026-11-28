@@ -2970,6 +2970,20 @@ fn open_codex_desktop_session(session: &SessionState) -> Result<(), String> {
     }
 }
 
+#[tauri::command(async)]
+pub fn open_migrated_codex_thread(thread_id: String) -> Result<(), String> {
+    let id = uuid::Uuid::parse_str(&thread_id)
+        .map_err(|_| "Codex returned an invalid thread ID.".to_string())?
+        .to_string();
+    open_codex_desktop_session(&SessionState::new(
+        id,
+        "codex".to_string(),
+        String::new(),
+        String::new(),
+        String::new(),
+    ))
+}
+
 #[cfg(target_os = "macos")]
 fn open_codex_desktop_session_macos(session: &SessionState) -> Result<(), String> {
     let opened_thread = is_uuid_like(&session.id)

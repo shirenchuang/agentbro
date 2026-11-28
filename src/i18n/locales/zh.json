@@ -740,6 +740,33 @@
     "dismiss": "关闭"
   },
   "skills": {
+    "conversationMigration": {
+      "missingFolder": "来源目录不存在",
+      "tab": "会话",
+      "direction": "ZCode → Codex",
+      "loading": "正在读取会话…",
+      "empty": "这个项目没有已保存的 ZCode 会话。",
+      "selectAll": "全选",
+      "clear": "清空选择",
+      "archived": "已归档",
+      "targetFolder": "目标目录",
+      "chooseFolder": "选择目录",
+      "preview": "预览迁移",
+      "archive": "ZIP 压缩包",
+      "export": "保存交接文件",
+      "saved": "交接文件已保存。",
+      "results": "迁移结果",
+      "alreadyImported": "已迁移过",
+      "imported": "迁移成功",
+      "openCodex": "在 Codex 中打开",
+      "working": "正在迁移…",
+      "migrate": "迁移到 Codex",
+      "sourceProject": "来源项目",
+      "messageCount": "{{count}} 条消息",
+      "unreadable": "这条会话没有可读取的消息。",
+      "user": "用户",
+      "assistant": "助手"
+    },
     "projectsTab": "项目",
     "packManifest": {
       "occupiedBy": "ID 已被 {{id}} 占用",

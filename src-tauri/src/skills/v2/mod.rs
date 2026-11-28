@@ -10,6 +10,7 @@ mod pack_archive;
 mod pack_manifest;
 mod project_lock;
 pub mod service;
+mod session_migration;
 pub mod snapshot;
 #[cfg(test)]
 mod tests;
