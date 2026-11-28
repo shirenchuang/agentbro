@@ -504,8 +504,6 @@ if ($VerifyStartupFailure) {
 }
 
 if ($VerifyDrag) { $env:AGENTBRO_TRACE_ISLAND_DRAG = '1' }
-$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
-    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
     do {
@@ -520,11 +518,7 @@ function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     throw "Timed out waiting for $Description"
 }
 
-function Write-LocalStartupStacks {
-    $pdb = Get-ChildItem -LiteralPath $SymbolsDirectory -Filter agentbro.pdb -Recurse -File |
-        Select-Object -First 1
-    if (-not $pdb) { throw 'The Windows artifact does not contain the AgentBro PDB' }
-
+function Build-LocalStartupSampler {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
         throw 'The Visual Studio toolset locator is unavailable'
@@ -543,7 +537,15 @@ function Write-LocalStartupStacks {
         Pop-Location
     }
 
-    $sampler = Join-Path $stage 'windows-startup-stacks.exe'
+    Join-Path $stage 'windows-startup-stacks.exe'
+}
+
+function Write-LocalStartupStacks {
+    $pdb = Get-ChildItem -LiteralPath $SymbolsDirectory -Filter agentbro.pdb -Recurse -File |
+        Select-Object -First 1
+    if (-not $pdb) { throw 'The Windows artifact does not contain the AgentBro PDB' }
+
+    $sampler = if ($startupSampler) { $startupSampler } else { Build-LocalStartupSampler }
     $start = [System.Diagnostics.ProcessStartInfo]::new($sampler)
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
@@ -557,6 +559,10 @@ function Write-LocalStartupStacks {
         $errors = $capture.StandardError.ReadToEndAsync()
         if (-not $capture.WaitForExit(15000)) {
             $capture.Kill()
+            if ($capture.WaitForExit(3000)) {
+                Write-Output ($output.GetAwaiter().GetResult())
+                Write-Output ($errors.GetAwaiter().GetResult())
+            }
             throw 'Local startup stack capture timed out'
         }
         $stacks = $output.GetAwaiter().GetResult()
@@ -566,6 +572,12 @@ function Write-LocalStartupStacks {
         }
         if ($stacks -notmatch '(?m)^  agentbro![^+]+\+0x') {
             throw 'Local startup stacks do not contain a resolved AgentBro frame'
+        }
+        if ($VerifyStartupStackSampler -and (
+            $stacks -notmatch '(?m)^  native-window top .* class=Tauri Window\r?$' -or
+            $stacks -notmatch '(?m)^  native-window child .* class=Chrome_(WidgetWin_1|RenderWidgetHostHWND)\r?$'
+        )) {
+            throw 'Startup sampler did not capture both a native AgentBro host and a WebView2 child'
         }
     } finally {
         $capture.Dispose()
@@ -718,10 +730,28 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     }
 }
 
+$startupSampler = if ($VerifyStartupStackSampler) {
+    if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') {
+        throw 'The local startup stack sampler requires x64 Windows'
+    }
+    Build-LocalStartupSampler
+}
+$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+$startupWindowTrace = @{ Latest = $null }
 $hookReady = $false
 $desktopReady = $false
 try {
     Wait-AppCondition 'the installed app to listen on its Hook port' {
+        if ($startupSampler) {
+            $tree = (& $startupSampler $app.Id '--windows-only' | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) { throw 'The native startup window snapshot failed' }
+            if ($tree -ne $startupWindowTrace.Latest) {
+                Write-Host "Startup window snapshot at $([DateTimeOffset]::UtcNow.ToString('O')):"
+                Write-Host $tree
+                $startupWindowTrace.Latest = $tree
+            }
+        }
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
     }
     $hookReady = $true
